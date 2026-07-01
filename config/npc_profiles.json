@@ -1,0 +1,32 @@
+[
+  {
+    "id": "gargos_pirate",
+    "displayName": "Gargos Pirate",
+    "shipTypeId": "gargos",
+    "factionId": "hostile",
+    "aggroRange": 480.0,
+    "attackRange": 300.0,
+    "minGrade": "Common",
+    "maxGrade": "Uncommon"
+  },
+  {
+    "id": "gargos_patrol",
+    "displayName": "Gargos Patrol",
+    "shipTypeId": "gargos",
+    "factionId": "neutral",
+    "aggroRange": 360.0,
+    "attackRange": 280.0,
+    "minGrade": "Common",
+    "maxGrade": "Common"
+  },
+  {
+    "id": "gargos_veteran",
+    "displayName": "Gargos Veteran",
+    "shipTypeId": "gargos",
+    "factionId": "hostile",
+    "aggroRange": 560.0,
+    "attackRange": 340.0,
+    "minGrade": "Uncommon",
+    "maxGrade": "Unique"
+  }
+]

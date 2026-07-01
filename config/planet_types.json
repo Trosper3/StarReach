@@ -1,0 +1,26 @@
+[
+  {
+    "id": "terrestrial",
+    "displayName": "Terrestrial",
+    "radius": 180.0,
+    "atmosphereColor": { "r": 80, "g": 120, "b": 210, "a": 18 }
+  },
+  {
+    "id": "barren",
+    "displayName": "Barren",
+    "radius": 180.0,
+    "atmosphereColor": { "r": 90, "g": 80, "b": 70, "a": 14 }
+  },
+  {
+    "id": "gas_giant",
+    "displayName": "Gas Giant",
+    "radius": 240.0,
+    "atmosphereColor": { "r": 200, "g": 140, "b": 60, "a": 20 }
+  },
+  {
+    "id": "ice",
+    "displayName": "Ice World",
+    "radius": 180.0,
+    "atmosphereColor": { "r": 140, "g": 200, "b": 240, "a": 16 }
+  }
+]

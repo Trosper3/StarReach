@@ -1,0 +1,14 @@
+{
+  "factions": ["republic", "zenith", "korrath", "merchant", "eden", "reavers", "forge", "conclave", "void"],
+  "matrix": [
+    ["friendly", "neutral",  "neutral",  "neutral",  "friendly", "hostile",  "hostile",  "friendly", "neutral" ],
+    ["neutral",  "friendly", "hostile",  "neutral",  "friendly", "neutral",  "neutral",  "friendly", "hostile" ],
+    ["neutral",  "hostile",  "friendly", "friendly", "neutral",  "neutral",  "hostile",  "neutral",  "friendly"],
+    ["neutral",  "neutral",  "friendly", "friendly", "neutral",  "neutral",  "hostile",  "hostile",  "friendly"],
+    ["friendly", "friendly", "neutral",  "neutral",  "friendly", "hostile",  "neutral",  "neutral",  "hostile" ],
+    ["hostile",  "neutral",  "neutral",  "neutral",  "hostile",  "friendly", "friendly", "neutral",  "friendly"],
+    ["hostile",  "neutral",  "hostile",  "hostile",  "neutral",  "friendly", "friendly", "neutral",  "friendly"],
+    ["friendly", "friendly", "neutral",  "hostile",  "neutral",  "neutral",  "neutral",  "friendly", "hostile" ],
+    ["neutral",  "hostile",  "friendly", "friendly", "hostile",  "friendly", "friendly", "hostile",  "friendly"]
+  ]
+}

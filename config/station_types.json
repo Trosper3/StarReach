@@ -1,0 +1,92 @@
+[
+  {
+    "id": "trading_post",
+    "displayName": "Trading Post",
+    "radius": 90.0,
+    "hasTrading": true,
+    "hasShipyard": false,
+    "hasRepair": true,
+    "hardpoints": [
+      {
+        "id": "def_battery",  "displayName": "Defense Battery", "isCore": false, "maxHull":  80.0,
+        "wSlots": 1, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core", "displayName": "Station Core",    "isCore": true,  "maxHull": 200.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_hull_patch"]
+      }
+    ]
+  },
+  {
+    "id": "shipyard",
+    "displayName": "Shipyard",
+    "radius": 90.0,
+    "hasTrading": true,
+    "hasShipyard": true,
+    "hasRepair": true,
+    "hardpoints": [
+      {
+        "id": "def_battery_a", "displayName": "Defense Battery A", "isCore": false, "maxHull":  80.0,
+        "wSlots": 1, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "def_battery_b", "displayName": "Defense Battery B", "isCore": false, "maxHull":  80.0,
+        "wSlots": 1, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core",  "displayName": "Station Core",      "isCore": true,  "maxHull": 250.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_steel_plating"]
+      }
+    ]
+  },
+  {
+    "id": "military_outpost",
+    "displayName": "Military Outpost",
+    "radius": 90.0,
+    "hasTrading": false,
+    "hasShipyard": false,
+    "hasRepair": true,
+    "hardpoints": [
+      {
+        "id": "weapon_bay_a", "displayName": "Weapon Bay A", "isCore": false, "maxHull": 100.0,
+        "wSlots": 2, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["arc_cannon_i", "arc_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "weapon_bay_b", "displayName": "Weapon Bay B", "isCore": false, "maxHull": 100.0,
+        "wSlots": 2, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["arc_cannon_i", "arc_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core", "displayName": "Station Core", "isCore": true,  "maxHull": 300.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_steel_plating"]
+      }
+    ]
+  },
+  {
+    "id": "waystation",
+    "displayName": "Waystation",
+    "radius": 90.0,
+    "hasTrading": true,
+    "hasShipyard": false,
+    "hasRepair": false,
+    "hardpoints": [
+      {
+        "id": "def_battery",  "displayName": "Defense Battery", "isCore": false, "maxHull":  80.0,
+        "wSlots": 1, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core", "displayName": "Station Core",    "isCore": true,  "maxHull": 180.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_hull_patch"]
+      }
+    ]
+  }
+]

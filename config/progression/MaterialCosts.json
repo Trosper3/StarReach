@@ -1,0 +1,12 @@
+{
+  "_comment": "Per-grade material cost multipliers for attribute grafting. Common = base cost (x1.0). Each higher tier multiplies ingredient amounts (ceiling applied). Edit multipliers to tune the material sink without touching code.",
+  "gradeMultipliers": {
+    "Common":     1.0,
+    "Uncommon":   1.5,
+    "Unique":     2.25,
+    "Remarkable": 3.5,
+    "Epic":       5.5,
+    "Legendary":  8.5,
+    "Mythic":    13.0
+  }
+}

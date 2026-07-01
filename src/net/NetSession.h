@@ -1,0 +1,110 @@
+#pragma once
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+#include "NetCommon.h"
+#include "Protocol.h"
+#include "../shared/Entity.h"
+
+// Forward-declare ENet's host/peer so this header pulls no enet include.
+// (The .cpp includes <enet/enet.h>.)
+struct _ENetHost;
+struct _ENetPeer;
+typedef struct _ENetHost ENetHost;
+typedef struct _ENetPeer ENetPeer;
+
+namespace net {
+
+// One object drives the entire multiplayer connection for either role.
+//
+// Typical per-frame use (host):
+//     session.Poll(dt);                          // pump ENet, fill pendingInputs
+//     ApplyInputsToEntities(session.pendingInputs, world);
+//     session.pendingInputs.clear();
+//     session.HostBroadcast(world);              // ~20 Hz, not every frame
+//
+// Typical per-frame use (client):
+//     session.Poll(dt);                          // fills latestSnapshots
+//     ecs::NetworkSyncSystem::Update(world, session.latestSnapshots);
+//     session.ClientSendInput(localCmd);
+//
+// All methods are no-ops when role == Offline, so the game loop can call them
+// unconditionally in single-player.
+class NetSession {
+public:
+    NetSession() = default;
+    ~NetSession();
+
+    NetSession(const NetSession&)            = delete;
+    NetSession& operator=(const NetSession&) = delete;
+
+    // ── Lifecycle ───────────────────────────────────────────────────────────
+    bool StartHost(uint16_t port = kDefaultPort);
+    bool StartClient(const std::string& hostAddress, uint16_t port = kDefaultPort);
+    void Shutdown();
+
+    NetRole Role()      const { return _role; }
+    bool    IsOnline()  const { return _role != NetRole::Offline; }
+    bool    IsHost()    const { return _role == NetRole::Host; }
+    bool    IsClient()  const { return _role == NetRole::Client; }
+
+    // Client: 0 until the host's Welcome assigns one. Host: always 1 (the host
+    // player owns network id 1).
+    uint32_t LocalNetworkId() const { return _localNetworkId; }
+
+    // Client: true once the handshake with the host has completed.
+    bool IsConnected() const { return _connected; }
+
+    // ── Per-frame pump ───────────────────────────────────────────────────────
+    // Services ENet, processes connects/disconnects and inbound packets.
+    // Host  -> appends received InputCommands to pendingInputs.
+    // Client-> replaces latestSnapshots with the newest received world state.
+    void Poll(float dt);
+
+    // ── Host -> clients ───────────────────────────────────────────────────────
+    // Builds a snapshot from every networked entity (+ asteroids + projectiles) and
+    // broadcasts it unreliably at ~20 Hz.
+    void HostBroadcast(const std::vector<ecs::Entity>&      entities,
+                       const std::vector<AsteroidSnapshot>&  asteroids   = {},
+                       const std::vector<ProjectileSnapshot>& projectiles = {});
+
+    // Send world seed + system id to a specific peer so they generate the same map.
+    void HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed);
+
+    // Tell a specific client their player was killed (reliable, targeted).
+    void HostSendPlayerDead(uint32_t networkId);
+
+    // Broadcast to all clients that the server is shutting down, then flush.
+    void BroadcastServerClosing();
+
+    // Broadcast that a world station was destroyed (reliable).
+    void HostBroadcastStationDead(uint32_t stationId);
+
+    // ── Client -> host ────────────────────────────────────────────────────────
+    void ClientSendInput(const InputCommand& cmd);
+
+    // ── I/O buffers consumed by the game loop ────────────────────────────────
+    std::vector<InputCommand>          pendingInputs;              // host side
+    std::vector<ecs::NetworkSnapshot>  latestSnapshots;            // client side
+    std::vector<AsteroidSnapshot>      latestAsteroidSnapshots;    // client side
+    std::vector<ProjectileSnapshot>    latestProjectileSnapshots;  // client side
+    bool                               snapshotDirty    = false;   // client: true when a new snapshot arrived
+    bool                               pendingPlayerDead = false;  // client: server killed this player
+    bool                               pendingServerClosing = false; // client: host shut down
+    std::vector<uint32_t>              newPeerIds;          // host: ids of peers that just joined
+    std::optional<WorldSyncData>       pendingWorldSync;    // client: set on WorldSync receipt
+    std::vector<uint32_t>              pendingStationDeadIds; // client: station ids destroyed on server
+
+private:
+    void handlePacket(ENetPeer* from, const uint8_t* data, size_t len);
+
+    NetRole   _role           = NetRole::Offline;
+    ENetHost* _host           = nullptr;   // ENet host object (both roles)
+    ENetPeer* _serverPeer     = nullptr;   // client: the host we connected to
+    uint32_t  _localNetworkId = 0;
+    uint32_t  _nextNetworkId  = 2;         // host: ids handed to joining clients (1 = host)
+    bool      _connected      = false;
+};
+
+} // namespace net

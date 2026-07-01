@@ -1,0 +1,427 @@
+[
+  {
+    "id": "pulse_cannon_i",
+    "displayName": "Pulse Cannon I",
+    "description": "Standard kinetic repeater. Reliable but unspectacular.",
+    "type": "Weapon",
+    "grade": "Common",
+    "weapon": {
+      "damageType": "Kinetic",
+      "fireMode": "Standard",
+      "projType": "Standard",
+      "damage": 15.0,
+      "fireRate": 1.0,
+      "projSpeed": 700.0,
+      "projRange": 1000.0
+    }
+  },
+  {
+    "id": "arc_cannon_i",
+    "displayName": "Arc Cannon I",
+    "description": "Charged energy weapon that releases a spread burst on discharge.",
+    "type": "Weapon",
+    "grade": "Uncommon",
+    "weapon": {
+      "damageType": "Energy",
+      "fireMode": "Charge",
+      "projType": "Spread",
+      "damage": 22.0,
+      "fireRate": 1.4,
+      "projSpeed": 750.0,
+      "projRange": 1100.0,
+      "chargeTime": 1.5,
+      "burstCount": 5,
+      "spreadAngle": 40.0
+    }
+  },
+  {
+    "id": "scatter_rifle_i",
+    "displayName": "Scatter Rifle I",
+    "description": "Fires a burst of kinetic slugs in a tight cone. High close-range output.",
+    "type": "Weapon",
+    "grade": "Unique",
+    "weapon": {
+      "damageType": "Kinetic",
+      "fireMode": "Standard",
+      "projType": "Burst",
+      "damage": 30.0,
+      "fireRate": 1.2,
+      "projSpeed": 680.0,
+      "projRange": 950.0,
+      "burstCount": 3,
+      "spreadAngle": 30.0
+    }
+  },
+  {
+    "id": "seeker_i",
+    "displayName": "Seeker I",
+    "description": "Lock-on missile system. Tracks targets through evasive maneuvers.",
+    "type": "Weapon",
+    "grade": "Remarkable",
+    "weapon": {
+      "damageType": "Kinetic",
+      "fireMode": "LockOn",
+      "projType": "Seeking",
+      "damage": 48.0,
+      "fireRate": 2.5,
+      "projSpeed": 580.0,
+      "projRange": 1600.0
+    }
+  },
+  {
+    "id": "plasma_cannon_i",
+    "displayName": "Plasma Cannon I",
+    "description": "High-output plasma accelerator. Devastating against energy shields.",
+    "type": "Weapon",
+    "grade": "Epic",
+    "weapon": {
+      "damageType": "Energy",
+      "fireMode": "Charge",
+      "projType": "Standard",
+      "damage": 90.0,
+      "fireRate": 2.0,
+      "projSpeed": 850.0,
+      "projRange": 1400.0,
+      "chargeTime": 0.8
+    }
+  },
+  {
+    "id": "void_lancer_i",
+    "displayName": "Void Lancer I",
+    "description": "Experimental kinetic rail accelerated to near-relativistic velocity.",
+    "type": "Weapon",
+    "grade": "Legendary",
+    "weapon": {
+      "damageType": "Kinetic",
+      "fireMode": "LockOn",
+      "projType": "Seeking",
+      "damage": 200.0,
+      "fireRate": 1.8,
+      "projSpeed": 1100.0,
+      "projRange": 2400.0
+    }
+  },
+  {
+    "id": "singularity_driver",
+    "displayName": "Singularity Driver",
+    "description": "Theoretical weapon. Fires a collapsed energy point. Origin unknown.",
+    "type": "Weapon",
+    "grade": "Mythic",
+    "weapon": {
+      "damageType": "Energy",
+      "fireMode": "LockOn",
+      "projType": "Seeking",
+      "damage": 500.0,
+      "fireRate": 1.4,
+      "projSpeed": 1600.0,
+      "projRange": 3200.0
+    }
+  },
+  {
+    "id": "chaingun",
+    "displayName": "Chaingun",
+    "description": "Rapid firing kinetic weapon. Spray and pray!",
+    "type": "Weapon",
+    "grade": "Common",
+    "weapon": {
+      "damageType": "Kinetic",
+      "fireMode": "Standard",
+      "projType": "Standard",
+      "damage": 1.0,
+      "fireRate": 0.05,
+      "projSpeed": 1000.0,
+      "projRange": 2000.0
+    }
+  },
+
+  {
+    "id": "armor_hull_patch",
+    "displayName": "Hull Patch",
+    "description": "Emergency hull plating. Provides minimal structural protection.",
+    "type": "Armor",
+    "grade": "Common",
+    "armor": { "hullBonus": 25.0 }
+  },
+  {
+    "id": "armor_steel_plating",
+    "displayName": "Steel Plating",
+    "description": "Reinforced alloy plating. A significant upgrade over salvaged material.",
+    "type": "Armor",
+    "grade": "Uncommon",
+    "armor": { "hullBonus": 70.0 }
+  },
+  {
+    "id": "armor_composite_shell",
+    "displayName": "Composite Shell",
+    "description": "Multi-layer composite hull bonded with impact-absorbing polymer.",
+    "type": "Armor",
+    "grade": "Unique",
+    "armor": { "hullBonus": 160.0 }
+  },
+  {
+    "id": "armor_reactive_hull",
+    "displayName": "Reactive Hull",
+    "description": "Reactive plating that hardens on impact. Military specification.",
+    "type": "Armor",
+    "grade": "Remarkable",
+    "armor": { "hullBonus": 340.0 }
+  },
+  {
+    "id": "armor_phase",
+    "displayName": "Phase Armor",
+    "description": "Partially phase-shifted hull lattice. Extreme structural integrity.",
+    "type": "Armor",
+    "grade": "Epic",
+    "armor": { "hullBonus": 700.0 }
+  },
+  {
+    "id": "armor_void_plate",
+    "displayName": "Void Plate",
+    "description": "Harvested from collapsed star material. Effectively indestructible.",
+    "type": "Armor",
+    "grade": "Legendary",
+    "armor": { "hullBonus": 1500.0 }
+  },
+  {
+    "id": "armor_singularity_skin",
+    "displayName": "Singularity Skin",
+    "description": "Hull coated with a layer of compressed spacetime. Classified origin.",
+    "type": "Armor",
+    "grade": "Mythic",
+    "armor": { "hullBonus": 5000.0 }
+  },
+
+  {
+    "id": "shield_kinetic_barrier_i",
+    "displayName": "Kinetic Barrier I",
+    "description": "Basic kinetic shield emitter. Absorbs physical impact.",
+    "type": "Shield",
+    "grade": "Common",
+    "shield": { "shieldType": "Kinetic", "capacity": 80.0, "rechargeRate": 8.0, "rechargeDelay": 4.0 }
+  },
+  {
+    "id": "shield_energy_veil_i",
+    "displayName": "Energy Veil I",
+    "description": "Low-power energy field that deflects directed energy weapons.",
+    "type": "Shield",
+    "grade": "Uncommon",
+    "shield": { "shieldType": "Energy", "capacity": 65.0, "rechargeRate": 7.0, "rechargeDelay": 3.5 }
+  },
+  {
+    "id": "shield_hardened_barrier",
+    "displayName": "Hardened Barrier",
+    "description": "Dense kinetic projector with reinforced emitter coils.",
+    "type": "Shield",
+    "grade": "Unique",
+    "shield": { "shieldType": "Kinetic", "capacity": 200.0, "rechargeRate": 18.0, "rechargeDelay": 3.0 }
+  },
+  {
+    "id": "shield_phase_veil",
+    "displayName": "Phase Veil",
+    "description": "Resonant energy field tuned to deflect high-frequency weapon fire.",
+    "type": "Shield",
+    "grade": "Remarkable",
+    "shield": { "shieldType": "Energy", "capacity": 170.0, "rechargeRate": 15.0, "rechargeDelay": 2.5 }
+  },
+  {
+    "id": "shield_titan",
+    "displayName": "Titan Shield",
+    "description": "Heavy-grade kinetic barrier rated for capital ship engagements.",
+    "type": "Shield",
+    "grade": "Epic",
+    "shield": { "shieldType": "Kinetic", "capacity": 450.0, "rechargeRate": 35.0, "rechargeDelay": 2.0 }
+  },
+  {
+    "id": "shield_nova_shroud",
+    "displayName": "Nova Shroud",
+    "description": "Adaptive energy field draws power from incoming fire to recharge.",
+    "type": "Shield",
+    "grade": "Legendary",
+    "shield": { "shieldType": "Energy", "capacity": 380.0, "rechargeRate": 30.0, "rechargeDelay": 1.8 }
+  },
+  {
+    "id": "shield_aegis_core",
+    "displayName": "Aegis Core",
+    "description": "Collapsed-field emitter of unknown manufacture. Nearly impenetrable.",
+    "type": "Shield",
+    "grade": "Mythic",
+    "shield": { "shieldType": "Kinetic", "capacity": 1000.0, "rechargeRate": 80.0, "rechargeDelay": 1.2 }
+  },
+
+  {
+    "id": "engine_thruster_i",
+    "displayName": "Thruster Mk.I",
+    "description": "Salvaged thruster unit. Barely functional but gets you moving.",
+    "type": "Engine",
+    "grade": "Common",
+    "engine": { "thrustBonus": 220.0, "turnSpeedBonus": 90.0 }
+  },
+  {
+    "id": "engine_impulse_drive",
+    "displayName": "Impulse Drive",
+    "description": "Compact ion drive with improved throttle response.",
+    "type": "Engine",
+    "grade": "Uncommon",
+    "engine": { "thrustBonus": 340.0, "turnSpeedBonus": 135.0 }
+  },
+  {
+    "id": "engine_overdrive_core",
+    "displayName": "Overdrive Core",
+    "description": "Pushes thrust output well beyond rated safety margins.",
+    "type": "Engine",
+    "grade": "Unique",
+    "engine": { "thrustBonus": 500.0, "turnSpeedBonus": 190.0 }
+  },
+  {
+    "id": "engine_ion_thruster",
+    "displayName": "Ion Thruster",
+    "description": "Military-grade ion thruster with precision vectored nozzles.",
+    "type": "Engine",
+    "grade": "Remarkable",
+    "engine": { "thrustBonus": 720.0, "turnSpeedBonus": 260.0 }
+  },
+  {
+    "id": "engine_gravitic",
+    "displayName": "Gravitic Engine",
+    "description": "Bends local gravity to generate thrust. Near-instant direction change.",
+    "type": "Engine",
+    "grade": "Epic",
+    "engine": { "thrustBonus": 1050.0, "turnSpeedBonus": 370.0 }
+  },
+  {
+    "id": "engine_quantum_drive",
+    "displayName": "Quantum Drive",
+    "description": "Exploits quantum tunneling to achieve extraordinary acceleration.",
+    "type": "Engine",
+    "grade": "Legendary",
+    "engine": { "thrustBonus": 1550.0, "turnSpeedBonus": 520.0 }
+  },
+  {
+    "id": "engine_void",
+    "displayName": "Void Engine",
+    "description": "Draws propulsion from the fabric of space itself. Origin unknown.",
+    "type": "Engine",
+    "grade": "Mythic",
+    "engine": { "thrustBonus": 3000.0, "turnSpeedBonus": 750.0 }
+  },
+
+  {
+    "id": "hyperdrive_short_jump",
+    "displayName": "Short-Jump Drive",
+    "description": "Rudimentary warp coil. Barely reaches nearby stations.",
+    "type": "Hyperdrive",
+    "grade": "Common",
+    "hyperdrive": { "range": 3000.0 }
+  },
+  {
+    "id": "hyperdrive_sector",
+    "displayName": "Sector Drive",
+    "description": "Standard hyperdrive. Reliable mid-range jump capability.",
+    "type": "Hyperdrive",
+    "grade": "Uncommon",
+    "hyperdrive": { "range": 7500.0 }
+  },
+  {
+    "id": "hyperdrive_warp_core",
+    "displayName": "Warp Core",
+    "description": "Folded-space drive capable of reaching most stellar objects.",
+    "type": "Hyperdrive",
+    "grade": "Unique",
+    "hyperdrive": { "range": 15000.0 }
+  },
+  {
+    "id": "hyperdrive_fold_engine",
+    "displayName": "Fold Engine",
+    "description": "Military-grade spatial fold drive. Near-instantaneous sector crossing.",
+    "type": "Hyperdrive",
+    "grade": "Remarkable",
+    "hyperdrive": { "range": 30000.0 }
+  },
+  {
+    "id": "hyperdrive_quantum_leap",
+    "displayName": "Quantum Leap Drive",
+    "description": "Quantum tunneling matrix. Traverses extreme distances effortlessly.",
+    "type": "Hyperdrive",
+    "grade": "Epic",
+    "hyperdrive": { "range": 60000.0 }
+  },
+  {
+    "id": "hyperdrive_void_piercer",
+    "displayName": "Void Piercer",
+    "description": "Tears through the void itself. No known range limit.",
+    "type": "Hyperdrive",
+    "grade": "Legendary",
+    "hyperdrive": { "range": 100000.0 }
+  },
+  {
+    "id": "hyperdrive_singularity",
+    "displayName": "Singularity Core",
+    "description": "Reality is a suggestion. Instantaneous travel to any location.",
+    "type": "Hyperdrive",
+    "grade": "Mythic",
+    "hyperdrive": { "range": 1000000.0 }
+  },
+
+  {
+    "id": "aux_basic_scanner",
+    "displayName": "Basic Scanner",
+    "description": "Short-range sensor suite. Detects nearby contacts and deposits.",
+    "type": "Auxiliary",
+    "grade": "Common",
+    "aux": { "hasSensors": true, "sensorRange": 600.0 }
+  },
+  {
+    "id": "aux_material_probe",
+    "displayName": "Material Probe",
+    "description": "Resonance scanner tuned to identify valuable asteroid compositions.",
+    "type": "Auxiliary",
+    "grade": "Uncommon",
+    "aux": { "materialFindBonus": 0.30 }
+  },
+  {
+    "id": "aux_enhanced_scanner",
+    "displayName": "Enhanced Scanner",
+    "description": "Long-range array with deep-scan mineral analysis capability.",
+    "type": "Auxiliary",
+    "grade": "Unique",
+    "aux": { "hasSensors": true, "sensorRange": 1500.0, "materialFindBonus": 0.15 }
+  },
+  {
+    "id": "aux_ecm_jammer",
+    "displayName": "ECM Jammer",
+    "description": "Broadband electronic countermeasure. Disrupts incoming lock-on systems.",
+    "type": "Auxiliary",
+    "grade": "Remarkable",
+    "aux": { "hasLockOnJammer": true }
+  },
+  {
+    "id": "aux_stealth_core",
+    "displayName": "Stealth Core",
+    "description": "Active emission suppressor. Renders the ship nearly undetectable.",
+    "type": "Auxiliary",
+    "grade": "Epic",
+    "aux": { "hasCloaking": true }
+  },
+  {
+    "id": "aux_recon_suite",
+    "displayName": "Recon Suite",
+    "description": "Full-spectrum sensor and countermeasure package. Military black budget.",
+    "type": "Auxiliary",
+    "grade": "Legendary",
+    "aux": { "hasSensors": true, "sensorRange": 2500.0, "materialFindBonus": 0.50, "hasLockOnJammer": true }
+  },
+  {
+    "id": "aux_omnisystem",
+    "displayName": "Omnisystem",
+    "description": "Integrated intelligence module of pre-collapse manufacture. All systems nominal.",
+    "type": "Auxiliary",
+    "grade": "Mythic",
+    "aux": {
+      "hasSensors": true,
+      "sensorRange": 5000.0,
+      "materialFindBonus": 1.00,
+      "hasLockOnJammer": true,
+      "hasCloaking": true
+    }
+  }
+]

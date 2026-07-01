@@ -1,0 +1,86 @@
+[
+  {
+    "id": "O",
+    "displayName": "Class O (Blue)",
+    "minRadius": 2100.0,
+    "maxRadius": 2700.0,
+    "gravStrength": 900.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 200, "g": 215, "b": 255, "a": 255 },
+    "innerGlowColor": { "r": 140, "g": 165, "b": 255, "a": 255 },
+    "outerGlowColor": { "r":  80, "g": 100, "b": 220, "a": 255 },
+    "spawnWeight": 1
+  },
+  {
+    "id": "B",
+    "displayName": "Class B (Blue-White)",
+    "minRadius": 1650.0,
+    "maxRadius": 2250.0,
+    "gravStrength": 700.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 210, "g": 225, "b": 255, "a": 255 },
+    "innerGlowColor": { "r": 170, "g": 195, "b": 255, "a": 255 },
+    "outerGlowColor": { "r": 120, "g": 150, "b": 240, "a": 255 },
+    "spawnWeight": 2
+  },
+  {
+    "id": "A",
+    "displayName": "Class A (White)",
+    "minRadius": 1290.0,
+    "maxRadius": 1740.0,
+    "gravStrength": 550.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 240, "g": 245, "b": 255, "a": 255 },
+    "innerGlowColor": { "r": 210, "g": 225, "b": 255, "a": 255 },
+    "outerGlowColor": { "r": 160, "g": 185, "b": 240, "a": 255 },
+    "spawnWeight": 4
+  },
+  {
+    "id": "F",
+    "displayName": "Class F (Yellowish-White)",
+    "minRadius": 1020.0,
+    "maxRadius": 1410.0,
+    "gravStrength": 420.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 255, "g": 250, "b": 210, "a": 255 },
+    "innerGlowColor": { "r": 255, "g": 235, "b": 160, "a": 255 },
+    "outerGlowColor": { "r": 255, "g": 210, "b": 100, "a": 255 },
+    "spawnWeight": 8
+  },
+  {
+    "id": "G",
+    "displayName": "Class G (Yellow)",
+    "minRadius": 780.0,
+    "maxRadius": 1080.0,
+    "gravStrength": 330.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 255, "g": 240, "b": 120, "a": 255 },
+    "innerGlowColor": { "r": 255, "g": 200, "b":  60, "a": 255 },
+    "outerGlowColor": { "r": 255, "g": 160, "b":  20, "a": 255 },
+    "spawnWeight": 15
+  },
+  {
+    "id": "K",
+    "displayName": "Class K (Orange)",
+    "minRadius": 600.0,
+    "maxRadius": 900.0,
+    "gravStrength": 260.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 255, "g": 190, "b":  90, "a": 255 },
+    "innerGlowColor": { "r": 255, "g": 150, "b":  40, "a": 255 },
+    "outerGlowColor": { "r": 255, "g": 100, "b":  10, "a": 255 },
+    "spawnWeight": 25
+  },
+  {
+    "id": "M",
+    "displayName": "Class M (Red)",
+    "minRadius": 450.0,
+    "maxRadius": 750.0,
+    "gravStrength": 200.0,
+    "gravRangeMult": 2.5,
+    "coreColor":      { "r": 255, "g": 120, "b":  60, "a": 255 },
+    "innerGlowColor": { "r": 255, "g":  70, "b":  20, "a": 255 },
+    "outerGlowColor": { "r": 220, "g":  30, "b":   5, "a": 255 },
+    "spawnWeight": 45
+  }
+]

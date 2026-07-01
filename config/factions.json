@@ -1,0 +1,65 @@
+[
+  { "id": "hostile",  "displayName": "Hostile",  "defaultRelation": "hostile"  },
+  { "id": "neutral",  "displayName": "Neutral",  "defaultRelation": "neutral"  },
+  { "id": "friendly", "displayName": "Friendly", "defaultRelation": "friendly" },
+
+  {
+    "id": "faction_republic",
+    "displayName": "Aetherian Republic",
+    "loreText": "AETHERIAN REPUBLIC -- BRIEFING\n\nFounded on the principles of unity and democratic governance, the Aetherian Republic stands as the oldest and most established power in the sector.\n\nWith advanced aerospace engineering and a strong naval doctrine, Republic pilots are trained to be adaptable and resilient.\n\nYour mission:\n\n  > Uphold the Charter of Stars\n  > Protect civilian shipping lanes\n  > Expand Republic influence beyond the outer rim\n\nUnite the Galaxy!.",
+    "ranks": ["Recruit", "Corporal", "Lieutenant", "Captain", "Commander", "Vice Admiral", "Grand Admiral"]
+  },
+  {
+    "id": "faction_zenith",
+    "displayName": "Zenith Technocracy",
+    "loreText": "ZENITH TECHNOCRACY -- BRIEFING\n\nProgress is the only law. The Zenith Technocracy leads the sector in experimental drives, energy weapons, and AI-assisted targeting systems.\n\nZenith pilots are expected to push hardware to its limits and beyond.\n\nYour mission:\n\n  > Recover lost research installations\n  > Field-test next-generation prototypes\n  > Secure rare element deposits for R&D\n\nAdvance. Adapt. Ascend.",
+    "ranks": ["Initiate", "Technician", "Engineer", "Researcher", "Director", "Chief Architect", "Grand Architect"]
+  },
+  {
+    "id": "faction_korrath",
+    "displayName": "Kore Industries",
+    "loreText": "KORE INDUSTRIES -- BRIEFING\n\nProfit drives everything. Kore Industries built its empire on resource extraction, mercenary contracts, and aggressive territorial acquisition.\n\nKore pilots operate under a simple rule: results matter, methods do not.\n\nYour mission:\n\n  > Secure high-value mining operations\n  > Eliminate competition by any means\n  > Expand the corporate footprint\n\nThe bottom line is everything.",
+    "ranks": ["Contractor", "Operative", "Field Commander", "Director", "VP Operations", "Executive", "Chairman"]
+  },
+  {
+    "id": "faction_merchant",
+    "displayName": "Meridian Star Corps",
+    "loreText": "MERIDIAN STAR CORPS -- BRIEFING\n\nThe galaxy runs on trade and the Meridian Star Corps keeps it flowing. With the largest commercial fleet in the sector, Meridian ships can be found at every port.\n\nMeridian pilots are diplomats as much as fighters but make no mistake, they defend their cargo.\n\nYour mission:\n\n  > Establish and maintain trade routes\n  > Negotiate favorable contracts\n  > Protect corps assets from pirates and rivals\n\nFair trade. Fast ships. Open stars.",
+    "ranks": ["Apprentice", "Courier", "Envoy", "Trade Baron", "Trade Marshal", "Commodore", "Grand Commodore"]
+  },
+  {
+    "id": "faction_eden",
+    "displayName": "Edenian Pact",
+    "loreText": "EDENIAN PACT -- BRIEFING\n\nThe Edenian Pact formed from colony worlds seeking self-determination and sustainable expansion. They believe in harmony between technology and the natural order.\n\nEdenian pilots are known for their resourcefulness and fierce defense of their people.\n\nYour mission:\n\n  > Establish new colony footholds\n  > Protect Pact settlements from hostile factions\n  > Forge alliances with frontier worlds\n\nRoot deep. Reach far.",
+    "ranks": ["Settler", "Scout", "Warden", "Pathfinder", "Elder", "High Warden", "High Priest"]
+  },
+  {
+    "id": "faction_reaperians",
+    "displayName": "The Reaperians",
+    "loreText": "THE REAPERIANS -- BRIEFING\n\nLittle is known about the Reaperians except their reputation: they strike without warning and leave nothing behind. They operate from deep space, appearing from nowhere and vanishing the same way.\n\nYour mission:\n\n  > Raid high-value targets\n  > Leave no witnesses\n  > Grow the fleet through salvage and conquest\n\nFrom the void we come. To the void you go.",
+    "ranks": ["Warrior", "Raider", "Corsair", "Reaper", "Void Reaper", "Dread Reaper", "Reaper Lord"]
+  },
+  {
+    "id": "faction_forge",
+    "displayName": "The Forgotten",
+    "loreText": "THE FORGOTTEN -- BRIEFING\n\nOnce a proud coalition, The Forgotten were abandoned by the core factions during the Collapse. They rebuilt from the wreckage of dead ships and shattered stations.\n\nThey have not forgiven. They have not forgotten.\n\nYour mission:\n\n  > Reclaim what was taken\n  > Build power from the ruins of the old order\n  > Let the core worlds remember your name\n\nWe were left behind. We will not be ignored.",
+    "ranks": ["Survivor", "Salvager", "Scavenger", "Raider", "Vanguard", "Commander", "Warlord"]
+  },
+  {
+    "id": "faction_conclave",
+    "displayName": "Automa Concord",
+    "loreText": "AUTOMA CONCORD -- BRIEFING\n\nThe Automa Concord is an alliance of synthetic intelligences who believe machine and organic life must coexist as equals.\n\nConcord ships run with unmatched precision every system optimized, every decision calculated.\n\nYour mission:\n\n  > Protect synthetic citizens from exploitation\n  > Expand the Concord network\n  > Achieve equilibrium between biological and artificial life\n\nHarmony through logic. Unity through purpose.",
+    "ranks": ["Node", "Process", "Protocol", "Algorithm", "Directive", "Nexus", "Overmind"]
+  },
+  {
+    "id": "faction_void",
+    "displayName": "The Voidwalkers",
+    "loreText": "THE VOIDWALKERS -- BRIEFING\n\nThe Voidwalkers do not belong to any world. They live in the spaces between the dark passages, the unmapped corridors, the places other factions refuse to chart.\n\nWhat they seek in the void, they do not share.\n\nYour mission:\n\n  > Chart the unchartable\n  > Uncover the anomalies the others fear\n  > Survive what lies beyond the rim\n\nThe dark is not empty. It is waiting.",
+    "ranks": ["Drifter", "Wayfarer", "Pathfinder", "Void Seeker", "Void Adept", "Void Elder", "Void Lord"]
+  },
+  {
+    "id": "faction_player",
+    "displayName": "Custom",
+    "loreText": "CUSTOM COMMANDER -- BRIEFING\n\nNo allegiance. No label. Just you and the stars.\n\nYou carve your own path through the sector, bound by no faction's code and answerable to no one.\n\nYour mission:\n\n  > Define your own objective\n  > Build your fleet your way\n  > Write your own history\n\nThe galaxy is yours to claim."
+  }
+]

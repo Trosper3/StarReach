@@ -1,0 +1,91 @@
+[
+  {
+    "id": "mining_station",
+    "displayName": "Mining Station",
+    "description": "Automated ore extraction platform with defensive capability.",
+    "radius": 140.0,
+    "hardpoints": [
+      {
+        "id": "mining_drill",  "displayName": "Mining Drill",    "isCore": false, "maxHull": 120.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 1,
+        "modules": ["armor_hull_patch", "aux_material_probe"]
+      },
+      {
+        "id": "def_battery",   "displayName": "Defense Battery", "isCore": false, "maxHull":  80.0,
+        "wSlots": 1, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core",  "displayName": "Station Core",    "isCore": true,  "maxHull": 200.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_hull_patch"]
+      }
+    ],
+    "buildCost": [
+      { "itemId": "hull_frame",     "amount": 8 },
+      { "itemId": "circuit_board",  "amount": 4 },
+      { "itemId": "titanium_alloy", "amount": 3 }
+    ]
+  },
+  {
+    "id": "defense_platform",
+    "displayName": "Defense Platform",
+    "description": "Heavily armed autonomous defense structure.",
+    "radius": 100.0,
+    "hardpoints": [
+      {
+        "id": "main_battery",  "displayName": "Main Battery",  "isCore": false, "maxHull": 100.0,
+        "wSlots": 2, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "pulse_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "shield_array",  "displayName": "Shield Array",  "isCore": false, "maxHull":  80.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 2, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_hull_patch", "shield_kinetic_barrier_i", "shield_kinetic_barrier_i"]
+      },
+      {
+        "id": "station_core",  "displayName": "Station Core",  "isCore": true,  "maxHull": 150.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_hull_patch"]
+      }
+    ],
+    "buildCost": [
+      { "itemId": "hull_frame",    "amount": 6 },
+      { "itemId": "weapons_rack",  "amount": 3 },
+      { "itemId": "circuit_board", "amount": 3 }
+    ]
+  },
+  {
+    "id": "space_station",
+    "displayName": "Space Station",
+    "description": "Multi-purpose orbital facility with docking and trade capabilities.",
+    "radius": 200.0,
+    "hardpoints": [
+      {
+        "id": "docking_bay",  "displayName": "Docking Bay",    "isCore": false, "maxHull": 140.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 2,
+        "modules": ["armor_hull_patch", "aux_basic_scanner", "aux_basic_scanner"]
+      },
+      {
+        "id": "trade_hub",    "displayName": "Trade Hub",       "isCore": false, "maxHull": 120.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 2,
+        "modules": ["armor_hull_patch", "aux_basic_scanner", "aux_basic_scanner"]
+      },
+      {
+        "id": "def_battery",  "displayName": "Defense Battery", "isCore": false, "maxHull": 100.0,
+        "wSlots": 2, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["pulse_cannon_i", "arc_cannon_i", "armor_hull_patch"]
+      },
+      {
+        "id": "station_core", "displayName": "Station Core",    "isCore": true,  "maxHull": 250.0,
+        "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0,
+        "modules": ["armor_steel_plating"]
+      }
+    ],
+    "buildCost": [
+      { "itemId": "hull_frame",    "amount": 15 },
+      { "itemId": "circuit_board", "amount":  8 },
+      { "itemId": "power_cell",    "amount":  5 }
+    ]
+  }
+]

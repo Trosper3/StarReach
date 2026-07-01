@@ -1,0 +1,68 @@
+[
+  {
+    "id": "build_mining_station",
+    "displayName": "Mining Station",
+    "description": "Automated ore extraction platform.",
+    "type": "Station",
+    "stationDefId": "mining_station",
+    "itemCost": [
+      { "itemId": "hull_frame",     "amount": 8 },
+      { "itemId": "circuit_board",  "amount": 4 },
+      { "itemId": "titanium_alloy", "amount": 3 }
+    ]
+  },
+  {
+    "id": "build_defense_platform",
+    "displayName": "Defense Platform",
+    "description": "Heavily armed autonomous defense structure.",
+    "type": "Station",
+    "stationDefId": "defense_platform",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 6 },
+      { "itemId": "weapons_rack",  "amount": 3 },
+      { "itemId": "circuit_board", "amount": 3 }
+    ]
+  },
+  {
+    "id": "build_space_station",
+    "displayName": "Space Station",
+    "description": "Multi-purpose orbital facility.",
+    "type": "Station",
+    "stationDefId": "space_station",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 15 },
+      { "itemId": "circuit_board", "amount":  8 },
+      { "itemId": "power_cell",    "amount":  5 }
+    ]
+  },
+  {
+    "id": "craft_basic_armor",
+    "displayName": "Basic Armor Mk.I",
+    "description": "Reinforced hull plating (+50 hull).",
+    "type": "Module",
+    "moduleDefId": "armor_basic",
+    "itemCost": [ { "itemId": "steel_plate", "amount": 2 } ]
+  },
+  {
+    "id": "craft_basic_engine",
+    "displayName": "Basic Engine Mk.I",
+    "description": "Standard sublight drive.",
+    "type": "Module",
+    "moduleDefId": "engine_basic",
+    "itemCost": [
+      { "itemId": "thruster_core", "amount": 1 },
+      { "itemId": "steel_plate",   "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_sensor_aux",
+    "displayName": "Sensor Suite",
+    "description": "Extends detection range significantly.",
+    "type": "Module",
+    "moduleDefId": "aux_sensors",
+    "itemCost": [
+      { "itemId": "sensor_array",  "amount": 1 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  }
+]

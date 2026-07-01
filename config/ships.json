@@ -1,0 +1,335 @@
+[
+  {
+    "id": "ar3_saber",
+    "displayName": "AR-3 Saber",
+    "assetPath": "assets/ships/republicFighter.png",
+    "maxHull": 100.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_republic",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 1,
+      "armor": 1,
+      "shield": 1,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "sr-4_seeker",
+    "displayName": "SR-4 Seeker",
+    "assetPath": "assets/ships/zenithFighter.png",
+    "maxHull": 100.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_zenith",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 1,
+      "armor": 1,
+      "shield": 1,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "ps-6_tasins_vice",
+    "displayName": "PS-6 Tasin's Vice",
+    "assetPath": "assets/ships/koreFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_korrath",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "ambassador",
+    "displayName": "Ambassador",
+    "assetPath": "assets/ships/meridianFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_merchant",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "synthesian",
+    "displayName": "Synthesian",
+    "assetPath": "assets/ships/edenFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_eden",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "harvester",
+    "displayName": "Harvester",
+    "assetPath": "assets/ships/reaperFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_reaperians",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "vulture",
+    "displayName": "Vulture",
+    "assetPath": "assets/ships/forgottenFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_forge",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "csf-1",
+    "displayName": "CSF-1",
+    "assetPath": "assets/ships/AIFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_conclave",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "chaingun"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "fashjedi",
+    "displayName": "Fash-Je-Di",
+    "assetPath": "assets/ships/voidFighter.png",
+    "maxHull": 50.0,
+    "thrust": 0.0,
+    "turnSpeed": 0.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 50.0,
+    "paletteId": "faction_void",
+    "shipType": "fighter",
+    "flipSprite": false,
+    "pixelScale": 0.05,
+    "slots": {
+      "weapon": 3,
+      "armor": 1,
+      "shield": 2,
+      "engine": 1,
+      "auxiliary": 1
+    },
+    "loadout": [
+      {
+        "slot": "weapon",
+        "moduleId": "pulse_cannon_i"
+      },
+      {
+        "slot": "armor",
+        "moduleId": "armor_hull_patch"
+      },
+      {
+        "slot": "engine",
+        "moduleId": "engine_thruster_i"
+      }
+    ]
+  }
+]

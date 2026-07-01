@@ -1,0 +1,28 @@
+# Build output and CMake cache
+build/
+cmake-build-*/
+out/
+
+# FetchContent downloaded dependencies (regenerated on configure)
+_deps/
+
+# IDE artifacts
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Compiled objects and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# OS junk
+.DS_Store
+Thumbs.db

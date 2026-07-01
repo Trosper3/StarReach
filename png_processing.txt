@@ -1,0 +1,5 @@
+# Step 1 — paint the watermark region black
+.\tools\bgremove\paintblack.ps1 -InputPath logo.png -OutputPath logo.png -X1 1870 -Y1 1870 -X2 2010 -Y2 2010
+
+# Step 2 — remove all black background (including the now-black watermark)
+python tools\bgremove\bgremove.py logo.png logo.png
