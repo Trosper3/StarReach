@@ -31,6 +31,12 @@
 
 static constexpr float kCoronaReach = 5.0f;
 
+// Shortest-path angle interpolation in degrees.
+static float LerpAngleDeg(float from, float to, float t) {
+    float diff = fmodf(to - from + 540.0f, 360.0f) - 180.0f;
+    return from + diff * t;
+}
+
 
 // Row 1: MODULES | STORAGE | ESCORTS
 // Row 2: ENTER   | BUILD   | COMMS
@@ -3253,6 +3259,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     gs.discoveredIds        = _discoveredIds;
     gs.currentSystemId      = _currentSystemId;
     gs.discoveredSystemIds  = _discoveredSystemIds;
+    gs.gameSeed             = _gameSeed;
     gs.hasWorldState = true;
     return gs;
 }
@@ -3490,6 +3497,18 @@ void SpaceFlight::OnEnter() {
     _currentSystemId = 1;
     _discoveredSystemIds.clear();
 
+    // ── Galaxy seed: derive (New Game) or restore (Load) before anything
+    // touches StarSystemRegistry — every system's position/seed is derived
+    // from this single master seed.
+    if (didLoad) {
+        _gameSeed = gs.gameSeed != 0 ? gs.gameSeed : 1u;
+    } else {
+        _gameSeed = cfg.GalaxySeedInput.empty()
+            ? (uint32_t)GetRandomValue(1, 2147483647)
+            : StarSystemRegistry::HashSeedString(cfg.GalaxySeedInput);
+    }
+    StarSystemRegistry::Init(_gameSeed);
+
     // ── Loadout: restore from save, or fall back to default starter kit ───────
     if (didLoad && gs.hasWorldState && !gs.engineId.empty()) {
         for (int i = 0; i < _playerMeta.weaponSlots && i < (int)gs.weaponIds.size(); ++i)
@@ -3639,13 +3658,214 @@ void SpaceFlight::OnEnter() {
     _lighting.Init();
 }
 
+// ── Warp cinematic ───────────────────────────────────────────────────────────
+// Phases: TurnToFace (rotate to travel direction) -> FlyOut (accelerate off
+// screen, trailing particles) -> FadeOut (screen to black; the actual system
+// switch happens the instant the screen is fully black) -> FlyIn (ship dashes
+// from just behind the spawn point into position while the screen fades back
+// in). SpaceFlight::Update() short-circuits into UpdateWarpSequence() for the
+// whole duration, so none of the normal input/AI/combat logic runs.
+static constexpr float kWarpTurnTime      = 0.45f;
+static constexpr float kWarpFlyOutTime    = 0.55f;
+static constexpr float kWarpFadeOutTime   = 0.35f;
+static constexpr float kWarpFlyInTime     = 0.60f;
+static constexpr float kWarpFadeInRamp    = 0.30f;  // portion of FlyIn spent fading back in
+static constexpr float kWarpFlySpeed      = 3200.0f; // u/s — well beyond normal thrust top speed
+static constexpr float kWarpArriveOffset  = 1400.0f; // how far "behind" spawn the FlyIn dash starts
+static constexpr float kLocalWarpFlyTime  = 0.50f;   // in-system dash: turn then zoom straight there
+
+void SpaceFlight::SpawnWarpParticle(Vector2 pos, Vector2 dir) {
+    float spread = ((float)GetRandomValue(-100, 100) / 100.0f);
+    Vector2 perp = { -dir.y, dir.x };
+    WarpParticle p;
+    p.pos     = Vector2Add(pos, Vector2Scale(perp, spread * 14.0f));
+    p.vel     = Vector2Scale(dir, -(kWarpFlySpeed * 0.9f + (float)GetRandomValue(0, 400)));
+    p.maxLife = 0.35f + (float)GetRandomValue(0, 20) / 100.0f;
+    p.life    = p.maxLife;
+    _warpParticles.push_back(p);
+}
+
+void SpaceFlight::BeginWarpSequence(unsigned int targetSystemId) {
+    auto curSys = StarSystemRegistry::ById(_currentSystemId);
+    auto tgtSys = StarSystemRegistry::ById(targetSystemId);
+    Vector2 dir = { 0.0f, -1.0f };
+    if (curSys && tgtSys) {
+        Vector2 delta = Vector2Subtract(tgtSys->galacticPos, curSys->galacticPos);
+        float   len   = Vector2Length(delta);
+        if (len > 0.01f) dir = Vector2Scale(delta, 1.0f / len);
+    }
+
+    _warpTargetSystemId  = targetSystemId;
+    _warpDir             = dir;
+    _warpStartRot        = _playerEntity.transform.rotation;
+    _warpTargetRot       = atan2f(dir.y, dir.x) * RAD2DEG + 90.0f;
+    _warpFadeAlpha       = 0.0f;
+    _warpParticles.clear();
+    _warpPhaseTimer       = 0.0f;
+    _warpPhaseAfterTurn   = WarpPhase::FlyOut;
+    _warpPhase            = WarpPhase::TurnToFace;
+    _playerMeta.thrusting = false;
+}
+
+void SpaceFlight::BeginLocalWarp(Vector2 targetPos) {
+    Vector2 delta = Vector2Subtract(targetPos, _playerEntity.transform.position);
+    float   len   = Vector2Length(delta);
+    Vector2 dir   = (len > 0.01f) ? Vector2Scale(delta, 1.0f / len) : Vector2{ 0.0f, -1.0f };
+
+    _warpLocalTarget      = targetPos;
+    _warpDir              = dir;
+    _warpStartRot         = _playerEntity.transform.rotation;
+    _warpTargetRot        = atan2f(dir.y, dir.x) * RAD2DEG + 90.0f;
+    _warpFadeAlpha        = 0.0f;
+    _warpParticles.clear();
+    _warpPhaseTimer       = 0.0f;
+    _warpPhaseAfterTurn   = WarpPhase::LocalFly;
+    _warpPhase            = WarpPhase::TurnToFace;
+    _playerMeta.thrusting = false;
+}
+
+void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId) {
+    auto sys = StarSystemRegistry::ById(targetSystemId);
+    if (!sys) return;
+
+    _currentSystemId = targetSystemId;
+    if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), targetSystemId)
+            == _discoveredSystemIds.end())
+        _discoveredSystemIds.push_back(targetSystemId);
+    _discoveredIds.clear();
+    _projectiles.clear();
+    _asteroids.clear();
+    _entities.clear();
+    _npcMeta.clear();
+    _lootDrops.clear();
+    _materialDrops.clear();
+    _sun = SpaceSun{};
+    SpawnPlanetsAndStations(sys->seed);  // sets _sun and _playerSpawnPos
+    SpawnInitialAsteroids();
+    SpawnNpcShips();
+}
+
+void SpaceFlight::UpdateWarpSequence(float dt) {
+    _warpPhaseTimer += dt;
+
+    // Particles keep drifting/fading through every phase once spawned.
+    for (size_t i = 0; i < _warpParticles.size(); ) {
+        WarpParticle& p = _warpParticles[i];
+        p.life -= dt;
+        p.pos   = Vector2Add(p.pos, Vector2Scale(p.vel, dt));
+        if (p.life <= 0.0f) { _warpParticles[i] = _warpParticles.back(); _warpParticles.pop_back(); }
+        else ++i;
+    }
+
+    switch (_warpPhase) {
+    case WarpPhase::TurnToFace: {
+        float t = std::min(_warpPhaseTimer / kWarpTurnTime, 1.0f);
+        _playerEntity.transform.rotation = LerpAngleDeg(_warpStartRot, _warpTargetRot, t);
+        if (t >= 1.0f) {
+            if (_warpPhaseAfterTurn == WarpPhase::LocalFly) {
+                _warpFlyInStart = _playerEntity.transform.position;
+                _playerEntity.transform.velocity = Vector2Scale(_warpDir, kWarpFlySpeed);
+            }
+            _warpPhase      = _warpPhaseAfterTurn;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    case WarpPhase::FlyOut: {
+        float t     = std::min(_warpPhaseTimer / kWarpFlyOutTime, 1.0f);
+        float speed = Vector2Length(_playerEntity.transform.velocity) * (1.0f - t) + kWarpFlySpeed * t;
+        _playerEntity.transform.velocity = Vector2Scale(_warpDir, speed);
+        _playerEntity.transform.position = Vector2Add(_playerEntity.transform.position,
+            Vector2Scale(_playerEntity.transform.velocity, dt));
+        _camera.target = _playerEntity.transform.position;
+        for (int i = 0; i < 3; ++i)
+            SpawnWarpParticle(_playerEntity.transform.position, _warpDir);
+        if (t >= 1.0f) {
+            _warpPhase      = WarpPhase::FadeOut;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    case WarpPhase::FadeOut: {
+        float t = std::min(_warpPhaseTimer / kWarpFadeOutTime, 1.0f);
+        _warpFadeAlpha = t;
+        if (t >= 1.0f) {
+            CommitWarpWorldSwitch(_warpTargetSystemId);
+            _warpParticles.clear();
+            _warpFlyInStart = Vector2Subtract(_playerSpawnPos, Vector2Scale(_warpDir, kWarpArriveOffset));
+            _playerEntity.transform.position = _warpFlyInStart;
+            _playerEntity.transform.velocity = Vector2Scale(_warpDir, kWarpFlySpeed);
+            _playerEntity.transform.rotation = _warpTargetRot;
+            _camera.target = _playerEntity.transform.position;
+            _warpPhase      = WarpPhase::FlyIn;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    case WarpPhase::FlyIn: {
+        float t     = std::min(_warpPhaseTimer / kWarpFlyInTime, 1.0f);
+        float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); // ease-out cubic
+        _playerEntity.transform.position = Vector2Lerp(_warpFlyInStart, _playerSpawnPos, eased);
+        _warpFadeAlpha = 1.0f - std::min(_warpPhaseTimer / kWarpFadeInRamp, 1.0f);
+        _camera.target = _playerEntity.transform.position;
+        if (t < 0.6f)
+            for (int i = 0; i < 3; ++i)
+                SpawnWarpParticle(_playerEntity.transform.position, _warpDir);
+        if (t >= 1.0f) {
+            _playerEntity.transform.position = _playerSpawnPos;
+            _playerEntity.transform.velocity = { 0.0f, 0.0f };
+            _camera.target  = _playerEntity.transform.position;
+            _warpFadeAlpha  = 0.0f;
+            _warpParticles.clear();
+            _warpPhase      = WarpPhase::None;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    case WarpPhase::LocalFly: {
+        float t     = std::min(_warpPhaseTimer / kLocalWarpFlyTime, 1.0f);
+        float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); // ease-out cubic
+        _playerEntity.transform.position = Vector2Lerp(_warpFlyInStart, _warpLocalTarget, eased);
+        _camera.target = _playerEntity.transform.position;
+        for (int i = 0; i < 3; ++i)
+            SpawnWarpParticle(_playerEntity.transform.position, _warpDir);
+        if (t >= 1.0f) {
+            _playerEntity.transform.position = _warpLocalTarget;
+            _playerEntity.transform.velocity = { 0.0f, 0.0f };
+            _camera.target  = _playerEntity.transform.position;
+            _warpParticles.clear();
+            _warpPhase      = WarpPhase::None;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    default: break;
+    }
+}
+
+// World-space warp particle trail — must be drawn inside BeginMode2D/EndMode2D.
+void SpaceFlight::DrawWarpParticles() const {
+    for (const WarpParticle& p : _warpParticles) {
+        float a = std::clamp(p.life / p.maxLife, 0.0f, 1.0f);
+        Vector2 tail = Vector2Subtract(p.pos, Vector2Scale(p.vel, 0.03f));
+        Color   col  = { 160, 220, 255, (unsigned char)(a * 230.0f) };
+        DrawLineEx(tail, p.pos, 2.0f, col);
+    }
+}
+
 void SpaceFlight::Update(float dt) {
     net::Game().Poll(dt);   // pump ENet every frame (no-op when Offline)
+
+    // ── Warp cinematic: fully blocks player interaction until it completes ────
+    if (_warpPhase != WarpPhase::None) {
+        UpdateWarpSequence(dt);
+        return;
+    }
 
     // ── Host: send WorldSync to newly joined peers ─────────────────────────────
     if (net::Game().IsHost()) {
         for (uint32_t peerId : net::Game().newPeerIds)
-            net::Game().HostSendWorldSync(peerId, _currentSystemId, _worldSeed);
+            net::Game().HostSendWorldSync(peerId, _currentSystemId, _worldSeed, _gameSeed);
         net::Game().newPeerIds.clear();
 
         // Apply client input commands → update _remoteEntities and spawn server-side projectiles.
@@ -3767,6 +3987,8 @@ void SpaceFlight::Update(float dt) {
             net::Game().pendingWorldSync.reset();
             _currentSystemId = ws.systemId;
             _worldSeed       = ws.worldSeed;
+            _gameSeed        = ws.gameSeed;
+            StarSystemRegistry::Init(_gameSeed);
             SpawnPlanetsAndStations(_worldSeed);
             SpawnInitialAsteroids();
             // NPC positions come from server snapshots; don't simulate them locally.
@@ -4003,15 +4225,11 @@ void SpaceFlight::Update(float dt) {
     if (_galacticMap.isOpen) {
         {
             GalacticMapData mapData;
-            mapData.hyperdriveRange = _hyperdriveRange;
-            mapData.currentSystemId = _currentSystemId;
-            const StarSystem* curSys = StarSystemRegistry::ById(_currentSystemId);
+            mapData.hyperdriveRange     = _hyperdriveRange;
+            mapData.currentSystemId     = _currentSystemId;
+            mapData.discoveredSystemIds = _discoveredSystemIds;
+            auto curSys = StarSystemRegistry::ById(_currentSystemId);
             mapData.currentSystemPos = curSys ? curSys->galacticPos : Vector2{};
-            for (const StarSystem& sys : StarSystemRegistry::All()) {
-                bool disc = std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), sys.id)
-                            != _discoveredSystemIds.end();
-                mapData.systems.push_back({ sys.id, sys.name, sys.galacticPos, disc, sys.id == _currentSystemId });
-            }
             _galacticMap.SetMapData(mapData);
         }
 
@@ -4019,28 +4237,12 @@ void SpaceFlight::Update(float dt) {
 
         if (gAction == GalacticMapAction::WarpToSystem) {
             unsigned int targetId = _galacticMap.WarpTargetId();
-            const StarSystem* sys = StarSystemRegistry::ById(targetId);
-            if (sys) {
-                _currentSystemId = targetId;
-                if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), targetId)
-                        == _discoveredSystemIds.end())
-                    _discoveredSystemIds.push_back(targetId);
-                _discoveredIds.clear();
-                _projectiles.clear();
-                _asteroids.clear();
-                _entities.clear();
-                _npcMeta.clear();
-                _lootDrops.clear();
-                _materialDrops.clear();
-                _playerEntity.transform.velocity = { 0.0f, 0.0f };
-                _sun = SpaceSun{};
-                SpawnPlanetsAndStations(sys->seed);  // sets _sun and _playerSpawnPos
-                SpawnInitialAsteroids();
-                SpawnNpcShips();
-                _playerEntity.transform.position = _playerSpawnPos;
-                _camera.target = _playerEntity.transform.position;
+            if (StarSystemRegistry::ById(targetId)) {
+                _galacticMap.Close();
+                BeginWarpSequence(targetId);   // cinematic; actual system switch happens mid-sequence
+            } else {
+                _galacticMap.Close();
             }
-            _galacticMap.Close();
             return;
         }
         if (gAction == GalacticMapAction::OpenSystemMap) {
@@ -4078,10 +4280,8 @@ void SpaceFlight::Update(float dt) {
         MapAction action = _systemMap.Update(dt);
 
         if (action == MapAction::WarpTo) {
-            _playerEntity.transform.position = _systemMap.WarpTarget();
-            _playerEntity.transform.velocity = { 0.0f, 0.0f };
-            _camera.target = _playerEntity.transform.position;
             _systemMap.Close();
+            BeginLocalWarp(_systemMap.WarpTarget());
             return;
         }
         if (action == MapAction::OpenGalacticMap) {
@@ -4139,6 +4339,8 @@ void SpaceFlight::Update(float dt) {
                 _discoveredIds.clear();
                 _discoveredSystemIds.clear();
                 _currentSystemId = 1;
+                _gameSeed        = gs.gameSeed != 0 ? gs.gameSeed : 1u;
+                StarSystemRegistry::Init(_gameSeed);
                 if (gs.hasWorldState && !gs.engineId.empty()) {
                     for (int i = 0; i < _playerMeta.weaponSlots && i < (int)gs.weaponIds.size(); ++i)
                         _loadout.weapons[i] = ModuleById(gs.weaponIds[i]);
@@ -5380,7 +5582,15 @@ void SpaceFlight::Draw() {
         }
     }
 
+    DrawWarpParticles();
+
     EndMode2D();
+
+    if (_warpFadeAlpha > 0.0f) {
+        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
+        DrawRectangle(0, 0, sw2, sh2,
+            Color{ 0, 0, 0, (unsigned char)(std::clamp(_warpFadeAlpha, 0.0f, 1.0f) * 255.0f) });
+    }
 
     if (_lockTargetId != 0 && !menuOpen) {
         Vector2 sp = GetWorldToScreen2D(_lockTargetPos, _camera);

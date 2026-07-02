@@ -27,10 +27,14 @@ enum class MsgType : uint8_t {
 };
 
 // Payload for WorldSync — the client calls SpawnPlanetsAndStations(worldSeed)
-// and switches to system systemId on receipt.
+// and switches to system systemId on receipt. gameSeed is the galaxy master
+// seed (StarSystemRegistry::Init) so the client's galactic map matches the
+// host's; it's independent of worldSeed, which only seeds the current
+// system's planets/stations.
 struct WorldSyncData {
     uint32_t systemId  = 1;
     uint32_t worldSeed = 0;
+    uint32_t gameSeed  = 0;
 };
 
 // Reason codes for a Reject message.
@@ -210,6 +214,7 @@ inline std::vector<uint8_t> EncodeWorldSync(const WorldSyncData& ws) {
     w.put(uint8_t(MsgType::WorldSync));
     w.put(ws.systemId);
     w.put(ws.worldSeed);
+    w.put(ws.gameSeed);
     return std::move(w.data);
 }
 
@@ -238,6 +243,7 @@ inline bool DecodeReject(ByteReader& r, RejectReason& outReason) {
 inline bool DecodeWorldSync(ByteReader& r, WorldSyncData& out) {
     out.systemId  = r.get<uint32_t>();
     out.worldSeed = r.get<uint32_t>();
+    out.gameSeed  = r.get<uint32_t>();
     return r.ok;
 }
 
