@@ -3647,7 +3647,11 @@ void SpaceFlight::OnEnter() {
         _playerEntity.network.isLocalPlayer = true;
     }
     else {
-        SpawnPlanetsAndStations();  // offline — sets _sun and _playerSpawnPos
+        // Offline — derive the home system's content seed from the galaxy
+        // seed (same rule warp targets use) so a given galaxy seed always
+        // reproduces the same starting system, not a random one each launch.
+        auto homeSys = StarSystemRegistry::ById(_currentSystemId);
+        SpawnPlanetsAndStations(homeSys ? homeSys->seed : 0);  // sets _sun and _playerSpawnPos
         SpawnInitialAsteroids();
         SpawnNpcShips();
         _playerEntity.transform.position = _playerSpawnPos;
@@ -4407,7 +4411,8 @@ void SpaceFlight::Update(float dt) {
                     _npcMeta.clear();
                     _lootDrops.clear();
                     _materialDrops.clear();
-                    SpawnPlanetsAndStations();
+                    auto homeSys = StarSystemRegistry::ById(_currentSystemId);
+                    SpawnPlanetsAndStations(homeSys ? homeSys->seed : 0);
                     SpawnInitialAsteroids();
                     SpawnNpcShips();
                     _playerEntity.transform.position = _playerSpawnPos;
