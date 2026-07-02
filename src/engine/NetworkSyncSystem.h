@@ -5,10 +5,11 @@
 namespace ecs {
 
 struct NetworkSnapshot {
-    uint32_t networkId = 0;
-    Vector2  position  = { 0.0f, 0.0f };
-    Vector2  velocity  = { 0.0f, 0.0f };
-    float    rotation  = 0.0f;
+    uint32_t networkId    = 0;
+    Vector2  position     = { 0.0f, 0.0f };
+    Vector2  velocity     = { 0.0f, 0.0f };
+    float    rotation     = 0.0f;
+    uint32_t shipNameHash = 0;   // fnv32(shipTypeId); 0 for player entities
 };
 
 // Reconciles remote entity transforms against server-provided snapshots.

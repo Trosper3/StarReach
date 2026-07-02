@@ -8,7 +8,7 @@ namespace net {
 
 // Bump whenever the wire format in Protocol.h changes. Host rejects clients
 // whose protocol version does not match.
-inline constexpr uint16_t kProtocolVersion = 1;
+inline constexpr uint16_t kProtocolVersion = 3;
 
 inline constexpr uint16_t kDefaultPort  = 7777;
 inline constexpr int      kMaxPlayers   = 8;   // peers a host will accept

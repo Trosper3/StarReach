@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <core/WorldManager.h>
 
 static constexpr float kCoronaReach = 5.0f;
 
@@ -37,6 +38,55 @@ static float LerpAngleDeg(float from, float to, float t) {
     return from + diff * t;
 }
 
+// Identifies an NPC's ship type across the wire without sending strings: the
+// host hashes NpcMeta::shipTypeId into the snapshot, the client matches it
+// against ShipRegistry (both sides load the same ships.json) to pick a texture.
+static uint32_t Fnv1a32(const std::string& s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s) { h ^= c; h *= 16777619u; }
+    return h;
+}
+static const uint32_t kGargosShipHash = Fnv1a32("gargos");
+
+static Faction kPlayerFaction = Faction::Republic;
+
+// Minimum distance a fresh player spawn must keep from anything hostile.
+static constexpr float kEnemySpawnMargin = 700.0f;
+
+static bool SpawnPosSafeFromStations(Vector2 pos, const std::vector<SpaceStation>& stations, float margin) {
+    for (const SpaceStation& s : stations) {
+        if (!s.alive) continue;
+        if (DiplomaticRegistry::Get(s.faction, kPlayerFaction) != Relation::Hostile) continue;
+        if (Vector2Distance(pos, s.position) < s.radius + margin) return false;
+    }
+    return true;
+}
+
+static bool SpawnPosSafeFromNpcs(Vector2 pos, const std::vector<NpcMeta>& npcMeta,
+                                  const std::vector<ecs::Entity>& entities, float margin) {
+    for (size_t i = 0; i < npcMeta.size(); ++i) {
+        if (!npcMeta[i].alive || npcMeta[i].faction != NpcFaction::Hostile) continue;
+        if (Vector2Distance(pos, entities[i].transform.position) < margin) return false;
+    }
+    return true;
+}
+
+static Vector2 GetSafeSpawnPosition(SystemWorld* w, float baseDistance, float margin) {
+    Vector2 safeSpawn = { 0.0f, 0.0f };
+
+    // 100-attempt retry loop to find a safe location
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        float spawnAngle = (float)GetRandomValue(0, 359) * DEG2RAD;
+        safeSpawn = { cosf(spawnAngle) * baseDistance, sinf(spawnAngle) * baseDistance };
+
+        // Validate against both static stations AND currently active NPCs
+        if (SpawnPosSafeFromStations(safeSpawn, w->stations, margin) &&
+            SpawnPosSafeFromNpcs(safeSpawn, w->npcMeta, w->entities, margin)) {
+            return safeSpawn; // Found a safe spot!
+        }
+    }
+    return safeSpawn; // Fallback to the last attempt if the map is completely swamped
+}
 
 // Row 1: MODULES | STORAGE | ESCORTS
 // Row 2: ENTER   | BUILD   | COMMS
@@ -239,7 +289,7 @@ void SpaceFlight::DrawPlanets() const {
     float size = PlanetDrawRadius * 2.0f;
     Rectangle src = { 0.0f, 0.0f, (float)_planetBaseTex.width, (float)_planetBaseTex.height };
     Vector2   origin = { size * 0.5f, size * 0.5f };
-    for (const SpacePlanet& p : _planets) {
+    for (const SpacePlanet& p : _w->planets) {
         DrawCircleV(p.position, p.radius * 1.10f, Color{ 80, 120, 210, 18 });
         DrawCircleV(p.position, p.radius * 1.05f, Color{ 90, 130, 220, 12 });
         Rectangle dst = { p.position.x, p.position.y, size, size };
@@ -252,7 +302,7 @@ void SpaceFlight::DrawStations() const {
     float size = StationDrawRadius * 2.0f;
     Rectangle src = { 0.0f, 0.0f, (float)_stationBaseTex.width, (float)_stationBaseTex.height };
     Vector2   origin = { size * 0.5f, size * 0.5f };
-    for (const SpaceStation& s : _stations) {
+    for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         DrawCircleV(s.position, s.radius * 1.25f, Color{ 60, 120, 200, 14 });
         Rectangle dst = { s.position.x, s.position.y, size, size };
@@ -369,13 +419,13 @@ void SpaceFlight::BakeSunCorona() {
 
     static constexpr int kTexSize = 1024;
     const float halfSize  = kTexSize * 0.5f;
-    const float r         = _sun.radius;
+    const float r         = _w->sun.radius;
     const float outerDist = r * kCoronaReach;
     const float scale     = halfSize / outerDist;  // world units → texture pixels
 
-    const Color& c  = _sun.coreColor;
-    const Color& ig = _sun.innerGlow;
-    const Color& og = _sun.outerGlow;
+    const Color& c  = _w->sun.coreColor;
+    const Color& ig = _w->sun.innerGlow;
+    const Color& og = _w->sun.outerGlow;
 
     // 1.5 texture-pixel blend zone at the core/corona boundary eliminates the staircase ring
     const float aaWidth = 1.5f / scale;
@@ -446,11 +496,11 @@ void SpaceFlight::BakeSunCorona() {
 }
 
 void SpaceFlight::DrawSun() const {
-    if (!_sun.active) return;
+    if (!_w->sun.active) return;
     Vector2 pos = { 0.0f, 0.0f };
-    float   r = _sun.radius;
+    float   r = _w->sun.radius;
     float   t = (float)GetTime();
-    const Color& c = _sun.coreColor;
+    const Color& c = _w->sun.coreColor;
 
     // ── Corona + core: single draw from per-pixel baked texture (no polygon edges)
     if (_sunCorona.id != 0) {
@@ -508,14 +558,14 @@ void SpaceFlight::DrawSun() const {
 
 bool SpaceFlight::IsNearPlanet() const {
     const Vector2& pos = _playerEntity.transform.position;
-    for (const SpacePlanet& p : _planets)
+    for (const SpacePlanet& p : _w->planets)
         if (Vector2Distance(pos, p.position) < p.radius + 50.0f) return true;
     return false;
 }
 
 bool SpaceFlight::IsNearStation() const {
     const Vector2& pos = _playerEntity.transform.position;
-    for (const SpaceStation& s : _stations) {
+    for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         if (Vector2Distance(pos, s.position) < s.radius + 50.0f) return true;
     }
@@ -530,39 +580,34 @@ bool SpaceFlight::IsNearStation() const {
 
 void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
     if (seed != 0) SetRandomSeed(seed);
-    _planets.clear();
-    _stations.clear();
+    _w->planets.clear();
+    _w->stations.clear();
     unsigned int nextId = 100;
 
     // ── Spawn sun ──────────────────────────────────────────────────────────────
     const StarTypeDef* starDef = StarRegistry::Pick(seed != 0 ? seed : (unsigned int)GetRandomValue(1, 99999));
     if (!starDef) starDef = StarRegistry::ById("G");
-    _sun.typeId      = starDef->id;
-    _sun.radius      = starDef->minRadius + (float)GetRandomValue(0, (int)(starDef->maxRadius - starDef->minRadius));
-    _sun.gravRange   = _sun.radius * starDef->gravRangeMult;
-    _sun.gravStrength= starDef->gravStrength;
-    _sun.coreColor   = starDef->coreColor;
-    _sun.innerGlow   = starDef->innerGlowColor;
-    _sun.outerGlow   = starDef->outerGlowColor;
-    _sun.active      = true;
+    _w->sun.typeId      = starDef->id;
+    _w->sun.radius      = starDef->minRadius + (float)GetRandomValue(0, (int)(starDef->maxRadius - starDef->minRadius));
+    _w->sun.gravRange   = _w->sun.radius * starDef->gravRangeMult;
+    _w->sun.gravStrength= starDef->gravStrength;
+    _w->sun.coreColor   = starDef->coreColor;
+    _w->sun.innerGlow   = starDef->innerGlowColor;
+    _w->sun.outerGlow   = starDef->outerGlowColor;
+    _w->sun.active      = true;
     BakeSunCorona();
 
-    // Safe player spawn: outside gravity range, at a random angle
-    float spawnAngle = (float)GetRandomValue(0, 359) * DEG2RAD;
-    float spawnDist  = _sun.gravRange + 800.0f;
-    _playerSpawnPos  = { cosf(spawnAngle) * spawnDist, sinf(spawnAngle) * spawnDist };
-
     // Planet orbits must start outside gravity zone
-    float minOrbit = std::max(2500.0f, _sun.gravRange * 1.4f);
+    float minOrbit = std::max(2500.0f, _w->sun.gravRange * 1.4f);
     float maxOrbit = minOrbit + 3000.0f;
 
     int planetCount = GetRandomValue(0, 10);
-    for (int attempt = 0; attempt < 300 && (int)_planets.size() < planetCount; ++attempt) {
+    for (int attempt = 0; attempt < 300 && (int)_w->planets.size() < planetCount; ++attempt) {
         float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
         float dist = minOrbit + (float)GetRandomValue(0, (int)(maxOrbit - minOrbit));
         Vector2 pos = { cosf(ang) * dist, sinf(ang) * dist };
         bool tooClose = false;
-        for (const SpacePlanet& p : _planets)
+        for (const SpacePlanet& p : _w->planets)
             if (Vector2Distance(p.position, pos) < PlanetDrawRadius * 3.0f) { tooClose = true; break; }
         if (!tooClose) {
             SpacePlanet planet;
@@ -572,21 +617,21 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
             planet.orbitRadius = dist;
             planet.orbitAngle  = ang;
             planet.orbitSpeed  = 0.1f / sqrtf(dist);  // Kepler-style: closer = faster
-            _planets.push_back(planet);
+            _w->planets.push_back(planet);
         }
     }
 
     // Stations also pushed outside gravity zone
-    float minStation = std::max(1500.0f, _sun.gravRange + 600.0f);
-    float maxStation = std::max(3500.0f, _sun.gravRange + 2500.0f);
+    float minStation = std::max(1500.0f, _w->sun.gravRange + 600.0f);
+    float maxStation = std::max(3500.0f, _w->sun.gravRange + 2500.0f);
 
     int stationCount = GetRandomValue(1, 10);
-    for (int attempt = 0; attempt < 300 && (int)_stations.size() < stationCount; ++attempt) {
+    for (int attempt = 0; attempt < 300 && (int)_w->stations.size() < stationCount; ++attempt) {
         float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
         float dist = minStation + (float)GetRandomValue(0, (int)(maxStation - minStation));
         Vector2 pos = { cosf(ang) * dist, sinf(ang) * dist };
         bool tooClose = false;
-        for (const SpaceStation& s : _stations)
+        for (const SpaceStation& s : _w->stations)
             if (Vector2Distance(s.position, pos) < StationDrawRadius * 4.0f) { tooClose = true; break; }
         if (!tooClose) {
             SpaceStation st;
@@ -598,13 +643,65 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
             const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
             st.stationTypeId = typeDef.id;
             BuildNpcStationHardpoints(st);
-            _stations.push_back(std::move(st));
+            _w->stations.push_back(std::move(st));
         }
     }
+    float spawnDist = _w->sun.gravRange + 800.0f;
+    _w->playerSpawnPos = GetSafeSpawnPosition(_w, spawnDist, kEnemySpawnMargin);
+}
+
+SystemWorld& SpaceFlight::GetOrCreateWorld(unsigned int systemId) {
+    auto it = _worlds.find(systemId);
+    if (it == _worlds.end()) {
+        auto w = std::make_unique<SystemWorld>();
+        w->systemId = systemId;
+        it = _worlds.emplace(systemId, std::move(w)).first;
+    }
+    return *it->second;
+}
+
+// Returns the world for systemId, generating its content from the registry
+// seed on first visit. Generation runs with `_w` temporarily pointed at the
+// new world (every spawn helper operates through `_w`); afterwards `_w` is
+// restored and the displayed sun corona re-baked, since SpawnPlanetsAndStations
+// overwrote the shared _sunCorona texture with the new world's sun.
+SystemWorld& SpaceFlight::EnsureWorldGenerated(unsigned int systemId) {
+    bool existed = _worlds.find(systemId) != _worlds.end();
+    SystemWorld& world = GetOrCreateWorld(systemId);
+    if (!existed) {
+        auto sys = StarSystemRegistry::ById(systemId);
+        SystemWorld* prev = _w;
+        _w = &world;
+        world.seed = sys ? sys->seed : 0;
+        SpawnPlanetsAndStations(world.seed);
+        SpawnInitialAsteroids();
+        SpawnNpcShips();
+        _w = prev;
+        if (_w && _w != &world) BakeSunCorona();
+    }
+    return world;
+}
+
+bool SpaceFlight::PeerInCurrentWorld(uint32_t networkId) const {
+    if (!net::Game().IsHost()) return true;  // clients only ever hold their own system
+    auto it = _peerSystem.find(networkId);
+    return it != _peerSystem.end() && _w && it->second == _w->systemId;
+}
+
+net::WorldSyncData SpaceFlight::BuildWorldSync(const SystemWorld& world) const {
+    net::WorldSyncData ws;
+    ws.systemId  = world.systemId;
+    ws.worldSeed = world.seed;
+    ws.gameSeed  = _gameSeed;
+    ws.worldAge  = world.age;
+    for (const SpaceStation& st : world.stations)
+        if (!st.alive || st.hull < st.maxHull)
+            ws.stations.push_back({ st.id, st.hull, uint8_t(st.alive ? 1 : 0) });
+    return ws;
 }
 
 void SpaceFlight::UpdateOrbits(float dt) {
-    for (SpacePlanet& p : _planets) {
+    for (SpacePlanet& p : _w->planets) {
         p.orbitAngle += p.orbitSpeed * dt;
         p.position = {
             cosf(p.orbitAngle) * p.orbitRadius,
@@ -614,52 +711,52 @@ void SpaceFlight::UpdateOrbits(float dt) {
 }
 
 void SpaceFlight::ApplySunGravity(float dt) {
-    if (!_sun.active) return;
+    if (!_w->sun.active) return;
 
     // Player
     Vector2& pPos = _playerEntity.transform.position;
     Vector2& pVel = _playerEntity.transform.velocity;
     float playerDist = Vector2Length(pPos);
-    if (playerDist < _sun.radius * 0.6f) {
+    if (playerDist < _w->sun.radius * 0.6f) {
         _playerEntity.health.currentHull = 0.0f;
     }
-    else if (playerDist < _sun.gravRange && playerDist > 0.01f) {
-        float t     = 1.0f - (playerDist / _sun.gravRange);
-        float accel = _sun.gravStrength * t * t;
+    else if (playerDist < _w->sun.gravRange && playerDist > 0.01f) {
+        float t     = 1.0f - (playerDist / _w->sun.gravRange);
+        float accel = _w->sun.gravStrength * t * t;
         pVel.x += (-pPos.x / playerDist) * accel * dt;
         pVel.y += (-pPos.y / playerDist) * accel * dt;
     }
 
     // NPC ships
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        NpcMeta& m = _npcMeta[i];
-        ecs::Entity& e = _entities[i];
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta& m = _w->npcMeta[i];
+        ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
         float dist = Vector2Length(e.transform.position);
-        if (dist < _sun.radius * 0.6f) {
+        if (dist < _w->sun.radius * 0.6f) {
             m.alive = false;
-            _npcFreeSlots.push_back(i);
+            _w->npcFreeSlots.push_back(i);
             if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
             AddCommsMessage(m.wingman ? "WINGMAN lost to stellar gravity." : "Ship destroyed by stellar gravity.");
         }
-        else if (dist < _sun.gravRange && dist > 0.01f) {
-            float t     = 1.0f - (dist / _sun.gravRange);
-            float accel = _sun.gravStrength * t * t;
+        else if (dist < _w->sun.gravRange && dist > 0.01f) {
+            float t     = 1.0f - (dist / _w->sun.gravRange);
+            float accel = _w->sun.gravStrength * t * t;
             e.transform.velocity.x += (-e.transform.position.x / dist) * accel * dt;
             e.transform.velocity.y += (-e.transform.position.y / dist) * accel * dt;
         }
     }
 
     // Asteroids — silently consumed, no splits or drops
-    for (Asteroid& a : _asteroids) {
+    for (Asteroid& a : _w->asteroids) {
         if (!a.alive) continue;
         float dist = Vector2Length(a.position);
-        if (dist < _sun.radius * 0.6f) {
+        if (dist < _w->sun.radius * 0.6f) {
             a.alive = false;
         }
-        else if (dist < _sun.gravRange && dist > 0.01f) {
-            float t     = 1.0f - (dist / _sun.gravRange);
-            float accel = _sun.gravStrength * t * t;
+        else if (dist < _w->sun.gravRange && dist > 0.01f) {
+            float t     = 1.0f - (dist / _w->sun.gravRange);
+            float accel = _w->sun.gravStrength * t * t;
             a.velocity.x += (-a.position.x / dist) * accel * dt;
             a.velocity.y += (-a.position.y / dist) * accel * dt;
         }
@@ -715,14 +812,13 @@ static const char* HostileRefusalLines[] = {
 };
 
 void SpaceFlight::AddCommsMessage(const std::string& text, bool fromPlayer) {
+    if (_bgTick) return;  // chatter from systems the player isn't in
     CommsEntry e;  e.text = text;  e.fromPlayer = fromPlayer;
     _commsLog.push_back(e);
     if ((int)_commsLog.size() > 5) _commsLog.erase(_commsLog.begin());
 }
 
 static uint32_t s_npcEntityIdCounter = 10000;
-
-static Faction kPlayerFaction = Faction::Republic;
 
 static Faction FactionFromPaletteId(const std::string& pid) {
     if (pid == "faction_republic")                            return Faction::Republic;
@@ -748,7 +844,7 @@ static NpcFaction RelationToNpcFaction(Relation r) {
 // Player-owned stations are always enterable regardless of faction data.
 bool SpaceFlight::IsNearEnterableStation() const {
     const Vector2& pos = _playerEntity.transform.position;
-    for (const SpaceStation& s : _stations) {
+    for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         if (Vector2Distance(pos, s.position) >= s.radius + 50.0f) continue;
         if (DiplomaticRegistry::Get(s.faction, kPlayerFaction) == Relation::Hostile) continue;
@@ -811,49 +907,69 @@ static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2
 }
 
 void SpaceFlight::SpawnNpcShips() {
-    _entities.clear();
-    _npcMeta.clear();
-    _npcFreeSlots.clear();
-    _nextNpcId = 1000;
+    _w->entities.clear();
+    _w->npcMeta.clear();
+    _w->npcFreeSlots.clear();
+    _w->nextNpcId = 1000;
+
     int count = GetRandomValue(3, 5);
-    float minDist = std::max(700.0f,  _sun.active ? _sun.gravRange + 500.0f  : 700.0f);
-    float maxDist = std::max(1400.0f, _sun.active ? _sun.gravRange + 1500.0f : 1400.0f);
+    float minDist = std::max(700.0f, _w->sun.active ? _w->sun.gravRange + 500.0f : 700.0f);
+    float maxDist = std::max(1400.0f, _w->sun.active ? _w->sun.gravRange + 1500.0f : 1400.0f);
+
     for (int i = 0; i < count; ++i) {
-        float ang = (float)GetRandomValue(0, 359) * DEG2RAD;
-        float dist = minDist + (float)GetRandomValue(0, (int)(maxDist - minDist));
-        Vector2 pos = { cosf(ang) * dist, sinf(ang) * dist };
-        auto [entity, meta] = MakeNpcEntity(_nextNpcId++, pos);
+        Vector2 pos = { 0.0f, 0.0f };
+
+        // 50-attempt retry loop to find a safe distance from the player
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            float ang = (float)GetRandomValue(0, 359) * DEG2RAD;
+            float dist = minDist + (float)GetRandomValue(0, (int)(maxDist - minDist));
+            pos = { cosf(ang) * dist, sinf(ang) * dist };
+
+            // Check if this NPC spawn is too close to the player's chosen spawn position
+            if (Vector2Distance(pos, _w->playerSpawnPos) >= kEnemySpawnMargin) {
+                break;
+            }
+        }
+
+        auto [entity, meta] = MakeNpcEntity(_w->nextNpcId++, pos);
         ApplyNpcLoadout(entity, meta);
         meta.preferredRange = meta.attackRange * 0.75f;
         entity.health.currentHull = entity.health.maxStats.hull;
         entity.network.networkId = entity.id;   // expose NPC to HostBroadcast
-        _entities.push_back(std::move(entity));
-        _npcMeta.push_back(std::move(meta));
+
+        _w->entities.push_back(std::move(entity));
+        _w->npcMeta.push_back(std::move(meta));
     }
 }
 
 void SpaceFlight::UpdateNpcShips(float dt) {
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        NpcMeta&    m = _npcMeta[i];
-        ecs::Entity& e = _entities[i];
+    // Player-built stations (FleetManager) aren't tagged with a system and
+    // belong to the player's world — hide them from AI in background worlds.
+    static const std::vector<PlayerStation> kNoPlayerStations;
+    const auto& playerStations = _bgTick ? kNoPlayerStations
+                                         : FleetManager::Get().PlayerStations;
+
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta&    m = _w->npcMeta[i];
+        ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
 
         float distToPlayer = Vector2Distance(e.transform.position, _playerEntity.transform.position);
 
         if (m.faction == NpcFaction::Hostile && !m.wingman) {
             float distToClosestTarget = distToPlayer;
-            for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                if (!_npcMeta[j].alive || _npcMeta[j].id == m.id) continue;
-                if (DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
+                if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
                 if (d < distToClosestTarget) distToClosestTarget = d;
             }
-            for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+            for (const PlayerStation& ps : playerStations) {
                 if (!ps.alive) continue;
                 float d = Vector2Distance(e.transform.position, ps.position);
                 if (d < distToClosestTarget) distToClosestTarget = d;
             }
-            for (const SpaceStation& st : _stations) {
+            for (const SpaceStation& st : _w->stations) {
                 if (!st.alive) continue;
                 if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                 float d = Vector2Distance(e.transform.position, st.position);
@@ -913,12 +1029,12 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     m.hasGreeted = true;
                 }
                 float closestHostileDist = FLT_MAX;
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
                     if (d < closestHostileDist) closestHostileDist = d;
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -929,9 +1045,9 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (d < closestHostileDist) closestHostileDist = d;
                 }
                 if (m.retaliationTargetId != 0) {
-                    for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                        if (_npcMeta[j].id == m.retaliationTargetId && _npcMeta[j].alive) {
-                            float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
+                    for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                        if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
+                            float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
                             if (d < closestHostileDist) closestHostileDist = d;
                             break;
                         }
@@ -979,13 +1095,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             Vector2 chaseTarget = _playerEntity.transform.position;
             if (m.faction == NpcFaction::Hostile) {
                 float best = Vector2Distance(e.transform.position, _playerEntity.transform.position);
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || _npcMeta[j].id == m.id) continue;
-                    if (DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; chaseTarget = _entities[j].transform.position; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
+                    if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
                 }
-                for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
                     const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
                     float rad = def ? def->radius : 120.0f;
@@ -993,7 +1109,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     float d = Vector2Distance(e.transform.position, aimPos);
                     if (d < best) { best = d; chaseTarget = aimPos; }
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -1002,12 +1118,12 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             }
             else {
                 float best = FLT_MAX;
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; chaseTarget = _entities[j].transform.position; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -1018,10 +1134,10 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (d < best) { best = d; chaseTarget = _playerEntity.transform.position; }
                 }
                 if (m.retaliationTargetId != 0) {
-                    for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                        if (_npcMeta[j].id == m.retaliationTargetId && _npcMeta[j].alive) {
-                            float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                            if (d < best) { best = d; chaseTarget = _entities[j].transform.position; }
+                    for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                        if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
+                            float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                            if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
                             break;
                         }
                     }
@@ -1039,13 +1155,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             if (DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction) == Relation::Hostile) {
                 float best = Vector2Distance(e.transform.position, _playerEntity.transform.position);
                 hasTarget  = true;
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || _npcMeta[j].id == m.id) continue;
-                    if (DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; attackTarget = _entities[j].transform.position; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
+                    if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; }
                 }
-                for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
                     const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
                     float rad = def ? def->radius : 120.0f;
@@ -1053,7 +1169,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     float d = Vector2Distance(e.transform.position, aimPos);
                     if (d < best) { best = d; attackTarget = aimPos; }
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -1061,13 +1177,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 }
             } else {
                 float best = FLT_MAX;
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || _npcMeta[j].id == m.id) continue;
-                    if (DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; attackTarget = _entities[j].transform.position; hasTarget = true; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
+                    if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; hasTarget = true; }
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -1078,10 +1194,10 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (d < best) { best = d; attackTarget = _playerEntity.transform.position; hasTarget = true; }
                 }
                 if (m.retaliationTargetId != 0) {
-                    for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                        if (_npcMeta[j].id == m.retaliationTargetId && _npcMeta[j].alive) {
-                            float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                            if (d < best) { best = d; attackTarget = _entities[j].transform.position; hasTarget = true; }
+                    for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                        if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
+                            float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                            if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; hasTarget = true; }
                             break;
                         }
                     }
@@ -1115,10 +1231,10 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             Vector2 threatPos = _playerEntity.transform.position;
             if (DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction) != Relation::Hostile) {
                 float best = FLT_MAX;
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; threatPos = _entities[j].transform.position; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; threatPos = _w->entities[j].transform.position; }
                 }
             }
             Vector2 away = Vector2Subtract(e.transform.position, threatPos);
@@ -1130,15 +1246,15 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         case NpcAiState::Escort: {
             m.escortTargetId = 0;
             float closestEnemy = 900.0f;
-            for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                if (!_npcMeta[j].alive || _npcMeta[j].wingman || DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                if (d < closestEnemy) { closestEnemy = d; m.escortTargetId = _npcMeta[j].id; }
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                if (!_w->npcMeta[j].alive || _w->npcMeta[j].wingman || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                if (d < closestEnemy) { closestEnemy = d; m.escortTargetId = _w->npcMeta[j].id; }
             }
             if (m.escortTargetId != 0) {
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (_npcMeta[j].id != m.escortTargetId) continue;
-                    Vector2 toE = Vector2Subtract(_entities[j].transform.position, e.transform.position);
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (_w->npcMeta[j].id != m.escortTargetId) continue;
+                    Vector2 toE = Vector2Subtract(_w->entities[j].transform.position, e.transform.position);
                     desiredRot = atan2f(toE.x, -toE.y) * RAD2DEG;
                     thrustMult = 1.0f;
                     break;
@@ -1176,9 +1292,9 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         }
         }
 
-        if (_sun.active) {
+        if (_w->sun.active) {
             float distToSun = Vector2Length(e.transform.position);
-            float avoidZone = _sun.gravRange * 1.4f;
+            float avoidZone = _w->sun.gravRange * 1.4f;
             if (distToSun < avoidZone && distToSun > 0.01f) {
                 float urgency = 1.0f - (distToSun / avoidZone);
                 urgency = urgency * urgency;
@@ -1227,13 +1343,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             bool         fireTargetIsStation = false;
             {
                 float best = Vector2Distance(e.transform.position, _playerEntity.transform.position);
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (!_npcMeta[j].alive || _npcMeta[j].id == m.id) continue;
-                    if (DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                    float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                    if (d < best) { best = d; fireTarget = _entities[j].transform.position; fireNpcId = _npcMeta[j].id; fireTargetIsStation = false; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
+                    if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                    float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                    if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = _w->npcMeta[j].id; fireTargetIsStation = false; }
                 }
-                for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
                     const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
                     float rad = def ? def->radius : 120.0f;
@@ -1241,7 +1357,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     float d = Vector2Distance(e.transform.position, aimPos);
                     if (d < best) { best = d; fireTarget = aimPos; fireNpcId = 0; fireTargetIsStation = true; }
                 }
-                for (const SpaceStation& st : _stations) {
+                for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
@@ -1267,7 +1383,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     p.damage = m.npcDamage;
                     p.fromPlayer = false;
                     p.ownerId = m.id;
-                    _projectiles.push_back(p);
+                    _w->projectiles.push_back(p);
                     m.fireCooldown = m.npcFireRate;
                 }
                 break;
@@ -1290,7 +1406,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                         p.damage = m.npcDamage;
                         p.fromPlayer = false;
                         p.ownerId = m.id;
-                        _projectiles.push_back(p);
+                        _w->projectiles.push_back(p);
                     }
                     m.npcChargeTimer = 0.0f;
                     m.fireCooldown = m.npcFireRate;
@@ -1313,7 +1429,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (fireNpcId != 0) { p.targetId = fireNpcId; }
                     else if (!fireTargetIsStation) { p.targetIsPlayer = true; }
                     else { p.isHoming = false; }
-                    _projectiles.push_back(p);
+                    _w->projectiles.push_back(p);
                     m.fireCooldown = m.npcFireRate;
                 }
                 break;
@@ -1323,9 +1439,9 @@ void SpaceFlight::UpdateNpcShips(float dt) {
 
         if (m.wingman && m.escortTargetId != 0 && m.npcHasWeapon) {
             m.fireCooldown -= dt;
-            for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                if (_npcMeta[j].id != m.escortTargetId || !_npcMeta[j].alive) continue;
-                Vector2 toE = Vector2Subtract(_entities[j].transform.position, e.transform.position);
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                if (_w->npcMeta[j].id != m.escortTargetId || !_w->npcMeta[j].alive) continue;
+                Vector2 toE = Vector2Subtract(_w->entities[j].transform.position, e.transform.position);
                 float   aimAng = atan2f(toE.x, -toE.y) * RAD2DEG;
                 float   delta2 = aimAng - e.transform.rotation;
                 while (delta2 > 180.0f) delta2 -= 360.0f;
@@ -1343,7 +1459,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                         ep.damage = m.npcDamage;
                         ep.fromPlayer = false;
                         ep.ownerId = m.id;
-                        _projectiles.push_back(ep);
+                        _w->projectiles.push_back(ep);
                         m.fireCooldown = m.npcFireRate;
                     }
                     break;
@@ -1366,7 +1482,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                             ep.damage = m.npcDamage;
                             ep.fromPlayer = false;
                             ep.ownerId = m.id;
-                            _projectiles.push_back(ep);
+                            _w->projectiles.push_back(ep);
                         }
                         m.npcChargeTimer = 0.0f;
                         m.fireCooldown = m.npcFireRate;
@@ -1385,9 +1501,9 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                         ep.fromPlayer = false;
                         ep.ownerId = m.id;
                         ep.isHoming = true;
-                        ep.targetId = _npcMeta[j].id;
+                        ep.targetId = _w->npcMeta[j].id;
                         ep.turnRate = 3.0f;
-                        _projectiles.push_back(ep);
+                        _w->projectiles.push_back(ep);
                         m.fireCooldown = m.npcFireRate;
                     }
                     break;
@@ -1401,20 +1517,20 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             m.aiState == NpcAiState::Attack && m.npcHasWeapon) {
 
             Vector2 fireTarget = {}; unsigned int fireNpcId = 0; bool fireTargetIsPlayer = false; float best = FLT_MAX;
-            for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                if (!_npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-                float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                if (d < best) { best = d; fireTarget = _entities[j].transform.position; fireNpcId = _npcMeta[j].id; fireTargetIsPlayer = false; }
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+                float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = _w->npcMeta[j].id; fireTargetIsPlayer = false; }
             }
             if (m.retaliatingVsPlayer) {
                 float d = Vector2Distance(e.transform.position, _playerEntity.transform.position);
                 if (d < best) { best = d; fireTarget = _playerEntity.transform.position; fireNpcId = 0; fireTargetIsPlayer = true; }
             }
             if (m.retaliationTargetId != 0) {
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (_npcMeta[j].id == m.retaliationTargetId && _npcMeta[j].alive) {
-                        float d = Vector2Distance(e.transform.position, _entities[j].transform.position);
-                        if (d < best) { best = d; fireTarget = _entities[j].transform.position; fireNpcId = m.retaliationTargetId; fireTargetIsPlayer = false; }
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
+                        float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
+                        if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = m.retaliationTargetId; fireTargetIsPlayer = false; }
                         break;
                     }
                 }
@@ -1436,7 +1552,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                         p.velocity = { dir.x * m.npcProjSpeed, dir.y * m.npcProjSpeed };
                         p.maxLife = m.npcProjRange / m.npcProjSpeed;
                         p.damage = m.npcDamage; p.fromPlayer = false; p.ownerId = m.id;
-                        _projectiles.push_back(p); m.fireCooldown = m.npcFireRate;
+                        _w->projectiles.push_back(p); m.fireCooldown = m.npcFireRate;
                     }
                     break;
                 case WeaponFireMode::Charge:
@@ -1452,7 +1568,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                             p.velocity = { dir.x * m.npcProjSpeed, dir.y * m.npcProjSpeed };
                             p.maxLife = m.npcProjRange / m.npcProjSpeed;
                             p.damage = m.npcDamage; p.fromPlayer = false; p.ownerId = m.id;
-                            _projectiles.push_back(p);
+                            _w->projectiles.push_back(p);
                         }
                         m.npcChargeTimer = 0.0f; m.fireCooldown = m.npcFireRate;
                     }
@@ -1468,7 +1584,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                         p.isHoming = true; p.turnRate = 3.0f;
                         if (fireTargetIsPlayer) p.targetIsPlayer = true;
                         else                    p.targetId = fireNpcId;
-                        _projectiles.push_back(p); m.fireCooldown = m.npcFireRate;
+                        _w->projectiles.push_back(p); m.fireCooldown = m.npcFireRate;
                     }
                     break;
                 }
@@ -1476,34 +1592,34 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         }
     }
 
-    for (LootDrop& ld : _lootDrops) {
+    for (LootDrop& ld : _w->lootDrops) {
         if (ld.collected) continue;
         ld.lifetime -= dt;
         ld.pulseTimer += dt;
         if (ld.lifetime <= 0.0f) ld.collected = true;
     }
     auto isGone = [](const LootDrop& ld) { return ld.collected; };
-    _lootDrops.erase(std::remove_if(_lootDrops.begin(), _lootDrops.end(), isGone),
-        _lootDrops.end());
+    _w->lootDrops.erase(std::remove_if(_w->lootDrops.begin(), _w->lootDrops.end(), isGone),
+        _w->lootDrops.end());
 
-    for (MaterialDrop& md : _materialDrops) {
+    for (MaterialDrop& md : _w->materialDrops) {
         if (md.collected) continue;
         md.lifetime -= dt;
         md.pulseTimer += dt;
         if (md.lifetime <= 0.0f) md.collected = true;
     }
     auto matGone = [](const MaterialDrop& md) { return md.collected; };
-    _materialDrops.erase(std::remove_if(_materialDrops.begin(), _materialDrops.end(), matGone),
-        _materialDrops.end());
+    _w->materialDrops.erase(std::remove_if(_w->materialDrops.begin(), _w->materialDrops.end(), matGone),
+        _w->materialDrops.end());
 }
 
 void SpaceFlight::UpdateNpcCollisions() {
     // Block 1: player projectiles hit any non-escort NPC
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive || !p.fromPlayer) continue;
-        for (size_t i = 0; i < _npcMeta.size(); ++i) {
-            NpcMeta&     m = _npcMeta[i];
-            ecs::Entity& e = _entities[i];
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
             if (!m.alive || m.wingman) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
@@ -1528,15 +1644,15 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 2: hostile NPC projectiles hit non-self NPCs
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer || p.ownerId == 0) continue;
         bool fromHostile = false;
-        for (size_t j = 0; j < _npcMeta.size(); ++j)
-            if (_npcMeta[j].id == p.ownerId && _npcMeta[j].faction == NpcFaction::Hostile) { fromHostile = true; break; }
+        for (size_t j = 0; j < _w->npcMeta.size(); ++j)
+            if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction == NpcFaction::Hostile) { fromHostile = true; break; }
         if (!fromHostile) continue;
-        for (size_t i = 0; i < _npcMeta.size(); ++i) {
-            NpcMeta&     m = _npcMeta[i];
-            ecs::Entity& e = _entities[i];
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
             if (!m.alive || m.id == p.ownerId) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
@@ -1552,7 +1668,7 @@ void SpaceFlight::UpdateNpcCollisions() {
                 if (!m.wingman && m.aiState == NpcAiState::Patrol) m.aiState = NpcAiState::Chase;
                 if (e.health.currentHull <= 0.0f) {
                     m.alive = false;
-                    _npcFreeSlots.push_back(i);
+                    _w->npcFreeSlots.push_back(i);
                     if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
                     SpawnLootDrop(e.transform.position, m.faction);
                     AddCommsMessage(m.wingman ? "WINGMAN destroyed." : m.shipTypeName + " destroyed.");
@@ -1563,15 +1679,15 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 3: friendly/neutral NPC projectiles hit hostile NPCs
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer || p.ownerId == 0) continue;
         bool shooterIsNonHostile = false;
-        for (size_t j = 0; j < _npcMeta.size(); ++j)
-            if (_npcMeta[j].id == p.ownerId && _npcMeta[j].faction != NpcFaction::Hostile) { shooterIsNonHostile = true; break; }
+        for (size_t j = 0; j < _w->npcMeta.size(); ++j)
+            if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction != NpcFaction::Hostile) { shooterIsNonHostile = true; break; }
         if (!shooterIsNonHostile) continue;
-        for (size_t i = 0; i < _npcMeta.size(); ++i) {
-            NpcMeta&     m = _npcMeta[i];
-            ecs::Entity& e = _entities[i];
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
             if (!m.alive || m.faction != NpcFaction::Hostile) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
@@ -1579,7 +1695,7 @@ void SpaceFlight::UpdateNpcCollisions() {
                 if (m.aiState == NpcAiState::Patrol) m.aiState = NpcAiState::Chase;
                 if (e.health.currentHull <= 0.0f) {
                     m.alive = false;
-                    _npcFreeSlots.push_back(i);
+                    _w->npcFreeSlots.push_back(i);
                     if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
                     SpawnLootDrop(e.transform.position, m.faction);
                     AddCommsMessage(m.shipTypeName + " destroyed.");
@@ -1590,18 +1706,18 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 4: hostile/retaliating NPC projectiles hit player — skip non-hostile non-retaliating NPC shots and station shots
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer) continue;
         if (p.ownerId != 0) {
             bool skip = false;
-            for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                if (_npcMeta[j].id == p.ownerId && _npcMeta[j].faction != NpcFaction::Hostile) {
-                    if (!_npcMeta[j].retaliatingVsPlayer) skip = true;
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction != NpcFaction::Hostile) {
+                    if (!_w->npcMeta[j].retaliatingVsPlayer) skip = true;
                     break;
                 }
             }
             if (!skip) {
-                for (const SpaceStation& st : _stations)
+                for (const SpaceStation& st : _w->stations)
                     if (st.id == p.ownerId) { skip = true; break; }
             }
             if (skip) continue;
@@ -1620,7 +1736,9 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 5: Hostile NPC projectiles hitting Player Station Hardpoints
-    for (Projectile& p : _projectiles) {
+    // (player-built stations belong to the player's world — skip in background)
+    for (Projectile& p : _w->projectiles) {
+        if (_bgTick) break;
         if (!p.alive || p.fromPlayer) continue;
 
         for (PlayerStation& ps : FleetManager::Get().PlayerStations) {
@@ -1675,15 +1793,15 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 6: in-world station projectiles hit NPCs and player
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer) continue;
         SpaceStation* stShooter = nullptr;
-        for (SpaceStation& st : _stations)
+        for (SpaceStation& st : _w->stations)
             if (st.id == p.ownerId) { stShooter = &st; break; }
         if (!stShooter) continue;
-        for (size_t i = 0; i < _npcMeta.size(); ++i) {
-            NpcMeta&     m = _npcMeta[i];
-            ecs::Entity& e = _entities[i];
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
             if (!m.alive) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
@@ -1697,7 +1815,7 @@ void SpaceFlight::UpdateNpcCollisions() {
                 if (!m.wingman && m.aiState == NpcAiState::Patrol) m.aiState = NpcAiState::Chase;
                 if (e.health.currentHull <= 0.0f) {
                     m.alive = false;
-                    _npcFreeSlots.push_back(i);
+                    _w->npcFreeSlots.push_back(i);
                     if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
                     SpawnLootDrop(e.transform.position, m.faction);
                     AddCommsMessage(m.shipTypeName + " destroyed.");
@@ -1719,9 +1837,9 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     // Block 7: any projectile hits in-world NPC station hardpoints
-    for (Projectile& p : _projectiles) {
+    for (Projectile& p : _w->projectiles) {
         if (!p.alive) continue;
-        for (SpaceStation& st : _stations) {
+        for (SpaceStation& st : _w->stations) {
             if (!st.alive || st.id == p.ownerId) continue;
             // Quick broad-phase: skip if not near the station at all
             if (Vector2Distance(p.position, st.position) > st.radius + 20.0f) continue;
@@ -1769,7 +1887,7 @@ void SpaceFlight::UpdateNpcCollisions() {
                     if (hp.isCore && hp.alive) { coreAlive = true; break; }
                 if (!coreAlive && st.alive) {
                     st.alive = false;
-                    net::Game().HostBroadcastStationDead(st.id);
+                    net::Game().HostBroadcastStationDead(_w->systemId, st.id);
                 }
                 break; // projectile consumed
             }
@@ -1779,14 +1897,15 @@ void SpaceFlight::UpdateNpcCollisions() {
     // Block 8: Hostile NPC projectiles hit remote client entities (host-authoritative).
     if (net::Game().IsHost() && !_remoteEntities.empty()) {
         std::vector<uint32_t> deadClients;
-        for (Projectile& p : _projectiles) {
+        for (Projectile& p : _w->projectiles) {
             if (!p.alive || p.fromPlayer || p.ownerId == 0) continue;
             bool fromHostile = false;
-            for (size_t j = 0; j < _npcMeta.size(); ++j)
-                if (_npcMeta[j].id == p.ownerId && _npcMeta[j].faction == NpcFaction::Hostile) { fromHostile = true; break; }
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j)
+                if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction == NpcFaction::Hostile) { fromHostile = true; break; }
             if (!fromHostile) continue;
             for (auto& [netId, re] : _remoteEntities) {
                 if (re.id == 0) continue;
+                if (!PeerInCurrentWorld(netId)) continue;  // peer is in another system
                 if (Vector2Distance(p.position, re.transform.position) < 18.0f + 3.5f) {
                     p.alive = false;
                     float dmg = p.damage;
@@ -1813,7 +1932,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    for (LootDrop& ld : _lootDrops) {
+    for (LootDrop& ld : _w->lootDrops) {
         if (ld.collected) continue;
         if (Vector2Distance(_playerEntity.transform.position, ld.position) < 32.0f) {
             bool itemAdded = false;
@@ -1837,7 +1956,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    for (MaterialDrop& md : _materialDrops) {
+    for (MaterialDrop& md : _w->materialDrops) {
         if (md.collected) continue;
         if (Vector2Distance(_playerEntity.transform.position, md.position) >= 32.0f) continue;
         bool added = false;
@@ -1882,28 +2001,35 @@ void SpaceFlight::SpawnLootDrop(Vector2 pos, NpcFaction) {
     LootDrop ld;
     ld.position = pos;
     ld.module = ModuleRegistry::RandomDrop();
-    _lootDrops.push_back(ld);
+    _w->lootDrops.push_back(ld);
 }
 
 void SpaceFlight::SpawnMaterialDrop(Vector2 pos, const std::string& materialId) {
     MaterialDrop md;
     md.position   = pos;
     md.materialId = materialId;
-    _materialDrops.push_back(md);
+    _w->materialDrops.push_back(md);
+}
+
+const ecs::ShipDef* SpaceFlight::ResolveShipDefByHash(uint32_t shipNameHash) const {
+    if (shipNameHash == 0) return nullptr;
+    for (const ecs::ShipDef& def : ecs::ShipRegistry::AllShips())
+        if (Fnv1a32(def.id) == shipNameHash) return &def;
+    return nullptr;
 }
 
 void SpaceFlight::DrawRemotePlayers() const {
     for (const auto& [id, re] : _remoteEntities) {
         if (re.id == 0) continue;
+        if (!PeerInCurrentWorld(id)) continue;  // host: peer is in another system
         const Vector2& pos = re.transform.position;
         const float    rot = re.transform.rotation;
         Texture2D* tex = re.sprite.texture;
         if (tex && tex->id > 0) {
             float tw = (float)tex->width, th = (float)tex->height;
-            // Use the same pixel scale as the local player's ship def if available.
-            const ecs::ShipDef* def = ecs::ShipRegistry::ShipById(_playerMeta.defId);
-            float ps = def ? def->pixelScale : 1.0f;
-            Rectangle src    = { 0.0f, 0.0f, tw, th };
+            float ps = re.sprite.scale;   // set per-entity when the snapshot was first seen
+            bool  flip = (tex == &_gargosTex);
+            Rectangle src    = { 0.0f, 0.0f, tw, flip ? -th : th };
             Rectangle dst    = { pos.x, pos.y, tw * ps, th * ps };
             Vector2   origin = { tw * ps * 0.5f, th * ps * 0.5f };
             DrawTexturePro(*tex, src, dst, origin, rot, re.sprite.tint);
@@ -1919,9 +2045,9 @@ void SpaceFlight::DrawRemotePlayers() const {
 }
 
 void SpaceFlight::DrawNpcShips() const {
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        const NpcMeta&    m = _npcMeta[i];
-        const ecs::Entity& e = _entities[i];
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        const NpcMeta&    m = _w->npcMeta[i];
+        const ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
 
         const ecs::ShipDef* shipDef = ecs::ShipRegistry::ShipById(m.shipTypeId);
@@ -1951,7 +2077,7 @@ void SpaceFlight::DrawNpcShips() const {
             Rectangle src = { 0, 0, tw, flip ? -th : th };
             Rectangle dst = { e.transform.position.x, e.transform.position.y, tw * ps, th * ps };
             Vector2   origin = { tw * ps * 0.5f, th * ps * 0.5f };
-            float     lightRange = _sun.active ? _sun.gravRange * 5.0f : 0.0f;
+            float     lightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
             Color     lit = _lighting.BeginLit(e.transform.position, { 0.0f, 0.0f }, lightRange);
             DrawTexturePro(*texPtr, src, dst, origin, e.transform.rotation, lit);
             _lighting.EndLit();
@@ -1971,7 +2097,7 @@ void SpaceFlight::DrawNpcShips() const {
         }
     }
 
-    for (const LootDrop& ld : _lootDrops) {
+    for (const LootDrop& ld : _w->lootDrops) {
         if (ld.collected) continue;
         float pulse = sinf(ld.pulseTimer * 4.0f) * 0.5f + 0.5f;
         auto  alpha8 = [](float p, int lo, int hi) -> unsigned char {
@@ -1987,7 +2113,7 @@ void SpaceFlight::DrawNpcShips() const {
         DrawCircleLines((int)ld.position.x, (int)ld.position.y, 18, gc);
     }
 
-    for (const MaterialDrop& md : _materialDrops) {
+    for (const MaterialDrop& md : _w->materialDrops) {
         if (md.collected) continue;
         float pulse = sinf(md.pulseTimer * 4.0f) * 0.5f + 0.5f;
         auto alpha8 = [](float p, int lo, int hi) -> unsigned char {
@@ -2021,21 +2147,23 @@ static Asteroid MakeAsteroid(Vector2 pos, int tier) {
     return a;
 }
 
-static void AssignAsteroidMaterials(Asteroid& a) {
-    struct Entry { const char* id; int minPct, maxPct, weight; };
-    static const Entry kPool[] = {
-        { "iron",      40, 80, 35 },
-        { "carbon",    35, 70, 30 },
-        { "silica",    30, 65, 25 },
-        { "titanium",  20, 45, 20 },
-        { "cobalt",    15, 40, 15 },
-        { "tungsten",  10, 28, 10 },
-        { "crystite",   8, 22,  7 },
-        { "xenonite",   4, 14,  4 },
-        { "voidstone",  2,  8,  1 },
-    };
-    static constexpr int kPoolSize = 9;
+// Shared material rarity weighting: used both for asteroid composition rolls
+// and for mining-station auto-collection.
+struct MaterialPoolEntry { const char* id; int minPct, maxPct, weight; };
+static const MaterialPoolEntry kMaterialPool[] = {
+    { "iron",      40, 80, 35 },
+    { "carbon",    35, 70, 30 },
+    { "silica",    30, 65, 25 },
+    { "titanium",  20, 45, 20 },
+    { "cobalt",    15, 40, 15 },
+    { "tungsten",  10, 28, 10 },
+    { "crystite",   8, 22,  7 },
+    { "xenonite",   4, 14,  4 },
+    { "voidstone",  2,  8,  1 },
+};
+static constexpr int kMaterialPoolSize = 9;
 
+static void AssignAsteroidMaterials(Asteroid& a) {
     // Tier 2: 30% 1-mat, 45% 2-mat, 25% 3-mat
     // Tier 1: 60% 1-mat, 33% 2-mat,  7% 3-mat
     // Tier 0: 85% 1-mat, 15% 2-mat,  0% 3-mat
@@ -2045,21 +2173,33 @@ static void AssignAsteroidMaterials(Asteroid& a) {
     else if (a.tier == 1) matCount = (r < 60) ? 1 : (r < 93) ? 2 : 3;
     else                  matCount = (r < 85) ? 1 : 2;
 
-    bool used[kPoolSize] = {};
+    bool used[kMaterialPoolSize] = {};
     for (int m = 0; m < matCount; ++m) {
         int totalW = 0;
-        for (int i = 0; i < kPoolSize; ++i) if (!used[i]) totalW += kPool[i].weight;
+        for (int i = 0; i < kMaterialPoolSize; ++i) if (!used[i]) totalW += kMaterialPool[i].weight;
         int pick = GetRandomValue(0, totalW - 1), cumW = 0;
-        for (int i = 0; i < kPoolSize; ++i) {
+        for (int i = 0; i < kMaterialPoolSize; ++i) {
             if (used[i]) continue;
-            cumW += kPool[i].weight;
+            cumW += kMaterialPool[i].weight;
             if (pick < cumW) {
                 used[i] = true;
-                a.materials.push_back({ kPool[i].id, GetRandomValue(kPool[i].minPct, kPool[i].maxPct) });
+                a.materials.push_back({ kMaterialPool[i].id, GetRandomValue(kMaterialPool[i].minPct, kMaterialPool[i].maxPct) });
                 break;
             }
         }
     }
+}
+
+// Picks a single material id by the same rarity weighting as asteroids.
+static std::string RollMiningMaterialId() {
+    int totalW = 0;
+    for (int i = 0; i < kMaterialPoolSize; ++i) totalW += kMaterialPool[i].weight;
+    int pick = GetRandomValue(0, totalW - 1), cumW = 0;
+    for (int i = 0; i < kMaterialPoolSize; ++i) {
+        cumW += kMaterialPool[i].weight;
+        if (pick < cumW) return kMaterialPool[i].id;
+    }
+    return kMaterialPool[kMaterialPoolSize - 1].id;
 }
 
 void SpaceFlight::SpawnInitialAsteroids() {
@@ -2068,7 +2208,7 @@ void SpaceFlight::SpawnInitialAsteroids() {
         float dist = (float)GetRandomValue(500, 1200);
         Asteroid a = MakeAsteroid({ cosf(ang) * dist, sinf(ang) * dist }, 2);
         AssignAsteroidMaterials(a);
-        _asteroids.push_back(std::move(a));
+        _w->asteroids.push_back(std::move(a));
     }
 }
 
@@ -2115,34 +2255,34 @@ static void DestroyAsteroid(Asteroid& a, std::vector<Asteroid>& spawns) {
 void SpaceFlight::UpdateCollisions() {
     std::vector<Asteroid> spawns;
 
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        if (!_npcMeta[i].alive) continue;
-        for (size_t j = i + 1; j < _npcMeta.size(); ++j) {
-            if (!_npcMeta[j].alive) continue;
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        if (!_w->npcMeta[i].alive) continue;
+        for (size_t j = i + 1; j < _w->npcMeta.size(); ++j) {
+            if (!_w->npcMeta[j].alive) continue;
 
-            float dist = Vector2Distance(_entities[i].transform.position, _entities[j].transform.position);
-            float minDist = _npcMeta[i].radius + _npcMeta[j].radius;
+            float dist = Vector2Distance(_w->entities[i].transform.position, _w->entities[j].transform.position);
+            float minDist = _w->npcMeta[i].radius + _w->npcMeta[j].radius;
 
             if (dist < minDist && dist > 0.01f) {
-                Vector2 norm = Vector2Scale(Vector2Subtract(_entities[i].transform.position, _entities[j].transform.position), 1.0f / dist);
+                Vector2 norm = Vector2Scale(Vector2Subtract(_w->entities[i].transform.position, _w->entities[j].transform.position), 1.0f / dist);
                 float overlap = minDist - dist;
 
-                _entities[i].transform.position = Vector2Add(_entities[i].transform.position, Vector2Scale(norm, overlap * 0.5f));
-                _entities[j].transform.position = Vector2Subtract(_entities[j].transform.position, Vector2Scale(norm, overlap * 0.5f));
+                _w->entities[i].transform.position = Vector2Add(_w->entities[i].transform.position, Vector2Scale(norm, overlap * 0.5f));
+                _w->entities[j].transform.position = Vector2Subtract(_w->entities[j].transform.position, Vector2Scale(norm, overlap * 0.5f));
 
-                float vRelN = Vector2DotProduct(Vector2Subtract(_entities[i].transform.velocity, _entities[j].transform.velocity), norm);
+                float vRelN = Vector2DotProduct(Vector2Subtract(_w->entities[i].transform.velocity, _w->entities[j].transform.velocity), norm);
                 if (vRelN < 0.0f) {
                     float bounceImpulse = -1.25f * vRelN;
-                    _entities[i].transform.velocity = Vector2Add(_entities[i].transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
-                    _entities[j].transform.velocity = Vector2Subtract(_entities[j].transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
+                    _w->entities[i].transform.velocity = Vector2Add(_w->entities[i].transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
+                    _w->entities[j].transform.velocity = Vector2Subtract(_w->entities[j].transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
                 }
             }
         }
     }
 
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        NpcMeta&     m = _npcMeta[i];
-        ecs::Entity& e = _entities[i];
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta&     m = _w->npcMeta[i];
+        ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
 
         float dist = Vector2Distance(_playerEntity.transform.position, e.transform.position);
@@ -2167,9 +2307,9 @@ void SpaceFlight::UpdateCollisions() {
     // Only the host (or offline player) resolves hits; clients receive asteroid
     // state via server snapshots so local hit-detection would desync health.
     if (!net::Game().IsClient()) {
-        for (Projectile& p : _projectiles) {
+        for (Projectile& p : _w->projectiles) {
             if (!p.alive || !p.fromPlayer) continue;
-            for (Asteroid& a : _asteroids) {
+            for (Asteroid& a : _w->asteroids) {
                 if (!a.alive) continue;
                 if (Vector2Distance(p.position, a.position) < a.radius + 3.5f) {
                     p.alive = false;
@@ -2186,12 +2326,12 @@ void SpaceFlight::UpdateCollisions() {
         }
     }
 
-    int n = (int)_asteroids.size();
+    int n = (int)_w->asteroids.size();
     for (int i = 0; i < n; ++i) {
-        Asteroid& a = _asteroids[i];
+        Asteroid& a = _w->asteroids[i];
         if (!a.alive) continue;
         for (int j = i + 1; j < n; ++j) {
-            Asteroid& b = _asteroids[j];
+            Asteroid& b = _w->asteroids[j];
             if (!b.alive) continue;
 
             float dist = Vector2Distance(a.position, b.position);
@@ -2236,7 +2376,7 @@ void SpaceFlight::UpdateCollisions() {
     }
 
     if (_hitCooldown <= 0.0f) {
-        for (Asteroid& a : _asteroids) {
+        for (Asteroid& a : _w->asteroids) {
             if (!a.alive) continue;
             if (Vector2Distance(_playerEntity.transform.position, a.position) < _playerMeta.radius + a.radius) {
                 float dmg = AsteroidDamage(a.tier);
@@ -2277,11 +2417,11 @@ void SpaceFlight::UpdateCollisions() {
     }
 
     // Asteroid → NPC ship damage
-    for (Asteroid& a : _asteroids) {
+    for (Asteroid& a : _w->asteroids) {
         if (!a.alive) continue;
-        for (size_t i = 0; i < _npcMeta.size(); ++i) {
-            NpcMeta&     m = _npcMeta[i];
-            ecs::Entity& e = _entities[i];
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
             if (!m.alive) continue;
             if (m.asteroidHitCooldown > 0.0f) continue;
             if (Vector2Distance(e.transform.position, a.position) < m.radius + a.radius) {
@@ -2299,7 +2439,7 @@ void SpaceFlight::UpdateCollisions() {
                     e.transform.velocity = Vector2Add(e.transform.velocity, Vector2Scale(away, 160.0f / len));
                 if (e.health.currentHull <= 0.0f) {
                     m.alive = false;
-                    _npcFreeSlots.push_back(i);
+                    _w->npcFreeSlots.push_back(i);
                     if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
                     SpawnLootDrop(e.transform.position, m.faction);
                     AddCommsMessage(m.wingman ? "WINGMAN destroyed by asteroid." : "Ship destroyed by asteroid.");
@@ -2311,11 +2451,12 @@ void SpaceFlight::UpdateCollisions() {
     // Remote client entities hit by any fromPlayer projectile (host-authoritative).
     if (net::Game().IsHost() && !_remoteEntities.empty()) {
         std::vector<uint32_t> deadClients;
-        for (Projectile& p : _projectiles) {
+        for (Projectile& p : _w->projectiles) {
             if (!p.alive || !p.fromPlayer) continue;
             for (auto& [netId, re] : _remoteEntities) {
                 if (re.id == 0) continue;
                 if (p.ownerId == netId) continue;  // don't let a client's projectile hit themselves
+                if (!PeerInCurrentWorld(netId)) continue;  // peer is in another system
                 if (Vector2Distance(p.position, re.transform.position) < 18.0f + 3.5f) {
                     p.alive = false;
                     re.health.currentHull = std::max(0.0f, re.health.currentHull - p.damage);
@@ -2336,7 +2477,7 @@ void SpaceFlight::UpdateCollisions() {
         }
     }
 
-    for (auto& a : spawns) _asteroids.push_back(std::move(a));
+    for (auto& a : spawns) _w->asteroids.push_back(std::move(a));
 }
 
 static constexpr int HudH = 158;
@@ -2350,9 +2491,9 @@ void SpaceFlight::UpdateTarget() {
     Vector2 mouse = GetMousePosition();
     Vector2 mw = GetScreenToWorld2D(mouse, _camera);
 
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        const NpcMeta&    m = _npcMeta[i];
-        const ecs::Entity& e = _entities[i];
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        const NpcMeta&    m = _w->npcMeta[i];
+        const ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
         if (CheckCollisionPointCircle(mw, e.transform.position, m.radius)) {
             _npcTargetId = m.id;
@@ -2387,7 +2528,7 @@ void SpaceFlight::UpdateTarget() {
         }
     }
 
-    for (const Asteroid& a : _asteroids) {
+    for (const Asteroid& a : _w->asteroids) {
         if (!a.alive) continue;
         if (Vector2Distance(mw, a.position) < a.radius) {
             _targetId = a.id;
@@ -2410,7 +2551,7 @@ void SpaceFlight::UpdateTarget() {
         }
     }
 
-    for (const SpaceStation& s : _stations) {
+    for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         if (Vector2Distance(mw, s.position) < s.radius + 8.0f) {
             _targetId = s.id;
@@ -2436,7 +2577,7 @@ void SpaceFlight::UpdateTarget() {
         }
     }
 
-    for (const SpacePlanet& p : _planets) {
+    for (const SpacePlanet& p : _w->planets) {
         if (Vector2Distance(mw, p.position) < p.radius + 8.0f) {
             _targetId = p.id;
             _npcTargetId = 0;
@@ -2458,9 +2599,9 @@ void SpaceFlight::UpdateTarget() {
     if (_target.valid) {
         if (_target.isNpc) {
             bool found = false;
-            for (size_t i = 0; i < _npcMeta.size(); ++i) {
-                const NpcMeta&    m = _npcMeta[i];
-                const ecs::Entity& e = _entities[i];
+            for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+                const NpcMeta&    m = _w->npcMeta[i];
+                const ecs::Entity& e = _w->entities[i];
                 if (m.id == _npcTargetId && m.alive) {
                     _target.health = e.health.currentHull;
                     _target.worldPos = e.transform.position;
@@ -2475,7 +2616,7 @@ void SpaceFlight::UpdateTarget() {
         }
         else if (!_target.isStellar) {
             bool found = false;
-            for (const Asteroid& a : _asteroids) {
+            for (const Asteroid& a : _w->asteroids) {
                 if (a.id == _targetId && a.alive) {
                     _target.health = (float)a.health;
                     _target.worldPos = a.position;
@@ -2597,13 +2738,13 @@ void SpaceFlight::DrawHUD() const {
                 : isNeutralNpc ? Color{ 100,90,20,180 } : Color{ 30,80,30,180 };
             DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, tgtRing);
             Texture2D* npcTexPtr = nullptr;
-            for (size_t ni = 0; ni < _npcMeta.size(); ++ni) {
-                if (_npcMeta[ni].id == _npcTargetId && _npcMeta[ni].alive) {
-                    if (_npcMeta[ni].shipTypeId == "gargos")
+            for (size_t ni = 0; ni < _w->npcMeta.size(); ++ni) {
+                if (_w->npcMeta[ni].id == _npcTargetId && _w->npcMeta[ni].alive) {
+                    if (_w->npcMeta[ni].shipTypeId == "gargos")
                         npcTexPtr = const_cast<Texture2D*>(&_gargosTex);
-                    else if (_entities[ni].sprite.texture && _entities[ni].sprite.texture->id > 0)
-                        npcTexPtr = _entities[ni].sprite.texture;
-                    else if (const auto* sd = ecs::ShipRegistry::ShipById(_npcMeta[ni].shipTypeId))
+                    else if (_w->entities[ni].sprite.texture && _w->entities[ni].sprite.texture->id > 0)
+                        npcTexPtr = _w->entities[ni].sprite.texture;
+                    else if (const auto* sd = ecs::ShipRegistry::ShipById(_w->npcMeta[ni].shipTypeId))
                         npcTexPtr = ResourceManager::Load(sd->assetPath);
                     break;
                 }
@@ -2819,7 +2960,7 @@ void SpaceFlight::DrawHUD() const {
     // Row 1 — ESCORTS
     {
         int wingCount = 0;
-        for (const NpcMeta& n : _npcMeta) if (n.alive && n.wingman) wingCount++;
+        for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
         bool escActive = (wingCount > 0);
         bool hovEsc = escActive && CheckCollisionPointRec(mouse, escBtn);
         Color escBg = escActive ? (hovEsc ? Color{ 20,70,40,230 } : Color{ 10,28,18,200 })
@@ -2893,7 +3034,7 @@ void SpaceFlight::DrawHUD() const {
 
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
-        _buildMenu.isOpen || _stationModMenu.isOpen || _placementConfirmOpen);
+        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     if (!menuOpen && mouse.y < hy) {
         int cs = 8;
         DrawLine((int)mouse.x - cs, (int)mouse.y, (int)mouse.x + cs, (int)mouse.y, Color{ 255,255,255,155 });
@@ -2934,11 +3075,11 @@ void SpaceFlight::DrawLocalMap() const {
     DrawCircleV(mc, mapR, Color{ 0, 5, 0, 55 });
 
     // Sun on local map
-    if (_sun.active) {
+    if (_w->sun.active) {
         Vector2 sunMapPos = W2M({ 0.0f, 0.0f });
-        float   sunMapR   = std::max(6.0f, _sun.radius * scale);
-        float   gravMapR  = _sun.gravRange * scale;
-        const Color& sc = _sun.coreColor;
+        float   sunMapR   = std::max(6.0f, _w->sun.radius * scale);
+        float   gravMapR  = _w->sun.gravRange * scale;
+        const Color& sc = _w->sun.coreColor;
         // Gravity zone ring
         if (gravMapR < mapR + 1.0f)
             DrawCircleLines((int)sunMapPos.x, (int)sunMapPos.y, gravMapR,
@@ -2950,13 +3091,13 @@ void SpaceFlight::DrawLocalMap() const {
         DrawCircleV(sunMapPos, sunMapR * 0.45f, { 255, 255, 255, 220 });
         // Label if sun is within map bounds
         if (sunMapPos.x > 0 && sunMapPos.x < sw && sunMapPos.y > 0 && sunMapPos.y < sh) {
-            const char* slbl = _sun.typeId.c_str();
+            const char* slbl = _w->sun.typeId.c_str();
             DrawText(slbl, (int)(sunMapPos.x - MeasureText(slbl, 10) / 2),
                 (int)(sunMapPos.y + sunMapR + 3), 10, { sc.r, sc.g, sc.b, 200 });
         }
     }
 
-    for (const Asteroid& a : _asteroids) {
+    for (const Asteroid& a : _w->asteroids) {
         if (!a.alive) continue;
         Vector2 mapPos = W2M(a.position);
         float   distPx = Vector2Distance(mapPos, mc);
@@ -3214,7 +3355,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // Asteroids
-    for (const auto& a : _asteroids) {
+    for (const auto& a : _w->asteroids) {
         SM::AsteroidSave as;
         as.id       = a.id;
         as.posX     = a.position.x; as.posY    = a.position.y;
@@ -3232,10 +3373,10 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // NPCs
-    gs.nextNpcId = _nextNpcId;
-    for (size_t i = 0; i < _npcMeta.size(); ++i) {
-        const NpcMeta&    nm = _npcMeta[i];
-        const ecs::Entity& ne = _entities[i];
+    gs.nextNpcId = _w->nextNpcId;
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        const NpcMeta&    nm = _w->npcMeta[i];
+        const ecs::Entity& ne = _w->entities[i];
         SM::NpcSave ns;
         ns.id             = nm.id;
         ns.posX           = ne.transform.position.x; ns.posY = ne.transform.position.y;
@@ -3264,11 +3405,11 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // Sun
-    gs.sunTypeId = _sun.typeId;
-    gs.sunRadius = _sun.radius;
+    gs.sunTypeId = _w->sun.typeId;
+    gs.sunRadius = _w->sun.radius;
 
     // Planets (with orbital state)
-    for (const auto& p : _planets) {
+    for (const auto& p : _w->planets) {
         SM::PlanetSave ps;
         ps.posX        = p.position.x; ps.posY        = p.position.y;
         ps.radius      = p.radius;     ps.id          = p.id;
@@ -3278,7 +3419,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // Stations
-    for (const auto& s : _stations) {
+    for (const auto& s : _w->stations) {
         SM::StationSave ss;
         ss.posX = s.position.x; ss.posY = s.position.y;
         ss.radius = s.radius;   ss.id   = s.id;
@@ -3286,7 +3427,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // Loot drops
-    for (const auto& l : _lootDrops) {
+    for (const auto& l : _w->lootDrops) {
         SM::LootSave ls;
         ls.posX      = l.position.x; ls.posY      = l.position.y;
         ls.lifetime  = l.lifetime;   ls.pulseTimer = l.pulseTimer;
@@ -3295,7 +3436,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     }
 
     // Material drops
-    for (const auto& m : _materialDrops) {
+    for (const auto& m : _w->materialDrops) {
         SM::MatDropSave ms;
         ms.posX       = m.position.x; ms.posY       = m.position.y;
         ms.lifetime   = m.lifetime;   ms.pulseTimer  = m.pulseTimer;
@@ -3313,7 +3454,7 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
 
 void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
     // Asteroids
-    _asteroids.clear();
+    _w->asteroids.clear();
     for (const auto& as : gs.asteroids) {
         Asteroid a;
         a.id       = as.id;
@@ -3331,14 +3472,14 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
             mc.percent    = m.percent;
             a.materials.push_back(std::move(mc));
         }
-        _asteroids.push_back(std::move(a));
+        _w->asteroids.push_back(std::move(a));
     }
 
     // NPCs
-    _entities.clear();
-    _npcMeta.clear();
-    _npcFreeSlots.clear();
-    _nextNpcId = gs.nextNpcId;
+    _w->entities.clear();
+    _w->npcMeta.clear();
+    _w->npcFreeSlots.clear();
+    _w->nextNpcId = gs.nextNpcId;
     for (const auto& ns : gs.npcs) {
         ecs::Entity ne;
         NpcMeta     nm;
@@ -3383,12 +3524,12 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         ApplyNpcLoadout(ne, nm);
         ne.health.currentHull     = savedHull;
         ne.health.maxStats.hull   = savedMaxHull;
-        _entities.push_back(std::move(ne));
-        _npcMeta.push_back(std::move(nm));
+        _w->entities.push_back(std::move(ne));
+        _w->npcMeta.push_back(std::move(nm));
     }
 
     // Planets (restore orbital state)
-    _planets.clear();
+    _w->planets.clear();
     for (const auto& ps : gs.planets) {
         SpacePlanet p;
         p.position    = { ps.posX, ps.posY };
@@ -3397,23 +3538,23 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         p.orbitRadius = ps.orbitRadius;
         p.orbitAngle  = ps.orbitAngle;
         p.orbitSpeed  = ps.orbitSpeed;
-        _planets.push_back(p);
+        _w->planets.push_back(p);
     }
 
     // Rebuild sun physics from saved data
     if (!gs.sunTypeId.empty()) {
         const StarTypeDef* def = StarRegistry::ById(gs.sunTypeId);
-        if (def && _sun.active) {
+        if (def && _w->sun.active) {
             float savedR     = (gs.sunRadius > 0.f) ? gs.sunRadius
                                                      : (def->minRadius + def->maxRadius) * 0.5f;
-            _sun.radius      = savedR;
-            _sun.gravRange   = savedR * def->gravRangeMult;
-            _sun.gravStrength= def->gravStrength;
+            _w->sun.radius      = savedR;
+            _w->sun.gravRange   = savedR * def->gravRangeMult;
+            _w->sun.gravStrength= def->gravStrength;
         }
     }
 
     // Stations
-    _stations.clear();
+    _w->stations.clear();
     for (const auto& ss : gs.stations) {
         SpaceStation st;
         st.position = { ss.posX, ss.posY };
@@ -3424,11 +3565,11 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
         st.stationTypeId = typeDef.id;
         BuildNpcStationHardpoints(st);
-        _stations.push_back(std::move(st));
+        _w->stations.push_back(std::move(st));
     }
 
     // Loot drops
-    _lootDrops.clear();
+    _w->lootDrops.clear();
     for (const auto& ls : gs.lootDrops) {
         auto mod = ModuleById(ls.moduleId);
         if (!mod) continue;
@@ -3438,11 +3579,11 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         l.pulseTimer= ls.pulseTimer;
         l.collected = ls.collected;
         l.module    = *mod;
-        _lootDrops.push_back(std::move(l));
+        _w->lootDrops.push_back(std::move(l));
     }
 
     // Material drops
-    _materialDrops.clear();
+    _w->materialDrops.clear();
     for (const auto& ms : gs.matDrops) {
         MaterialDrop m;
         m.position  = { ms.posX, ms.posY };
@@ -3450,7 +3591,7 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         m.pulseTimer= ms.pulseTimer;
         m.collected = ms.collected;
         m.materialId= ms.materialId;
-        _materialDrops.push_back(std::move(m));
+        _w->materialDrops.push_back(std::move(m));
     }
 
     // Clear transient targeting/UI state that no longer maps to saved world
@@ -3461,6 +3602,14 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
 
 void SpaceFlight::OnEnter() {
     ModuleRegistry::Init();
+
+    // Fresh session: drop any prior worlds and start pointed at system 1. If a
+    // save load changes _currentSystemId below, the world map is re-keyed there.
+    _worlds.clear();
+    _currentSystemId = 1;
+    _w = &GetOrCreateWorld(_currentSystemId);
+    _peerSystem.clear();
+    _bgTick = false;
 
     auto& cfg = FleetManager::Get().PlayerShip;
     kPlayerFaction = cfg.PlayerFaction;
@@ -3509,8 +3658,8 @@ void SpaceFlight::OnEnter() {
     _cameraZoom = 1.0f;
     _camera.zoom = _cameraZoom;
 
-    _projectiles.clear();
-    _asteroids.clear();
+    _w->projectiles.clear();
+    _w->asteroids.clear();
     _hitCooldown = 0.0f;
     _target = TargetInfo{};
     _targetId = 0;
@@ -3523,11 +3672,11 @@ void SpaceFlight::OnEnter() {
     _placementConfirmOpen= false;
     _placingStationDefId.clear();
     _npcTargetId = 0;
-    _respawnTimer = 20.0f;
-    _entities.clear();
-    _npcMeta.clear();
-    _lootDrops.clear();
-    _materialDrops.clear();
+    _w->respawnTimer = 20.0f;
+    _w->entities.clear();
+    _w->npcMeta.clear();
+    _w->lootDrops.clear();
+    _w->materialDrops.clear();
     _playerDead = false;
     _deathTimer = 0.0f;
     _commsLog.clear();
@@ -3574,6 +3723,8 @@ void SpaceFlight::OnEnter() {
     else {
         _loadout.engine = Engine_Thruster_I();
         _loadout.armor  = Armor_HullPatch();
+		_loadout.weapons[0] = Weapon_PulseCannon_I();
+		_loadout.shields[0] = Shield_KineticBarrier_I();
     }
     // Reset hull before ApplyLoadout so a dead-state from a prior session doesn't
     // carry over via its min(currentHull, maxHull) clamp.
@@ -3594,6 +3745,12 @@ void SpaceFlight::OnEnter() {
     if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), _currentSystemId)
             == _discoveredSystemIds.end())
         _discoveredSystemIds.push_back(_currentSystemId);
+
+    // A loaded save may have moved us to another system — re-key the world map.
+    if (_w->systemId != _currentSystemId) {
+        _worlds.clear();
+        _w = &GetOrCreateWorld(_currentSystemId);
+    }
 
     // ── Storage: restore from save, or seed with default starter modules ──────
     _storageMenu.Open(8);
@@ -3621,9 +3778,7 @@ void SpaceFlight::OnEnter() {
             slot.module = m;
             slot.displayName = m.displayName;
         };
-        PutInStorage(0, Weapon_Chaingun());
-        PutInStorage(1, Shield_KineticBarrier_I());
-        PutInStorage(2, Hyperdrive_ShortJump());
+        PutInStorage(0, Hyperdrive_ShortJump());
     }
 
     if (_planetBaseTex.id > 0)     { UnloadTexture(_planetBaseTex);     _planetBaseTex     = {}; }
@@ -3649,7 +3804,7 @@ void SpaceFlight::OnEnter() {
     if (_asteroidTexSmall.id > 0) SetTextureFilter(_asteroidTexSmall, TEXTURE_FILTER_BILINEAR);
 
     // ── World entities: restore or spawn fresh ────────────────────────────────
-    _sun = SpaceSun{};
+    _w->sun = SpaceSun{};
     if (didLoad && gs.hasWorldState) {
         ApplyWorldState(gs);
         // Re-derive sun visuals/physics from saved data
@@ -3658,29 +3813,32 @@ void SpaceFlight::OnEnter() {
             if (def) {
                 float savedR     = (gs.sunRadius > 0.f) ? gs.sunRadius
                                                          : (def->minRadius + def->maxRadius) * 0.5f;
-                _sun.typeId      = def->id;
-                _sun.radius      = savedR;
-                _sun.gravRange   = savedR * def->gravRangeMult;
-                _sun.gravStrength= def->gravStrength;
-                _sun.coreColor   = def->coreColor;
-                _sun.innerGlow   = def->innerGlowColor;
-                _sun.outerGlow   = def->outerGlowColor;
-                _sun.active      = true;
+                _w->sun.typeId      = def->id;
+                _w->sun.radius      = savedR;
+                _w->sun.gravRange   = savedR * def->gravRangeMult;
+                _w->sun.gravStrength= def->gravStrength;
+                _w->sun.coreColor   = def->coreColor;
+                _w->sun.innerGlow   = def->innerGlowColor;
+                _w->sun.outerGlow   = def->outerGlowColor;
+                _w->sun.active      = true;
                 BakeSunCorona();
             }
         }
     }
     else if (net::Game().IsHost()) {
-        // Host generates a deterministic seed and broadcasts it to joining clients.
-        _worldSeed   = (uint32_t)GetRandomValue(100000, 999999);
+        // Same seed rule as offline (derived from the galaxy master seed) so a
+        // given galaxy always reproduces the same home system; joining clients
+        // still receive the seed explicitly via WorldSync.
+        auto homeSys = StarSystemRegistry::ById(_currentSystemId);
+        _w->seed     = homeSys ? homeSys->seed : (uint32_t)GetRandomValue(100000, 999999);
         _worldSynced = true;
-        _playerEntity.id                 = 1;   // non-zero so HostBroadcast includes it
+        _playerEntity.id                 = 1;   // non-zero so snapshots include it
         _playerEntity.network.networkId  = 1;
         _playerEntity.network.isLocalPlayer = true;
-        SpawnPlanetsAndStations(_worldSeed);
+        SpawnPlanetsAndStations(_w->seed);
         SpawnInitialAsteroids();
         SpawnNpcShips();
-        _playerEntity.transform.position = _playerSpawnPos;
+        _playerEntity.transform.position = _w->playerSpawnPos;
         _camera.target = _playerEntity.transform.position;
     }
     else if (net::Game().IsClient()) {
@@ -3698,10 +3856,11 @@ void SpaceFlight::OnEnter() {
         // seed (same rule warp targets use) so a given galaxy seed always
         // reproduces the same starting system, not a random one each launch.
         auto homeSys = StarSystemRegistry::ById(_currentSystemId);
-        SpawnPlanetsAndStations(homeSys ? homeSys->seed : 0);  // sets _sun and _playerSpawnPos
+        _w->seed = homeSys ? homeSys->seed : 0;
+        SpawnPlanetsAndStations(_w->seed);  // sets _w->sun and _w->playerSpawnPos
         SpawnInitialAsteroids();
         SpawnNpcShips();
-        _playerEntity.transform.position = _playerSpawnPos;
+        _playerEntity.transform.position = _w->playerSpawnPos;
         _camera.target = _playerEntity.transform.position;
     }
     PrewarmSpriteCache();
@@ -3779,21 +3938,79 @@ void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId) {
     auto sys = StarSystemRegistry::ById(targetSystemId);
     if (!sys) return;
 
+    // Wingmen don't follow across systems: demote them to regular patrol in the
+    // world being left behind (it persists now, so they'd otherwise chase a
+    // player position in a different system's coordinate space forever).
+    for (NpcMeta& m : _w->npcMeta) {
+        if (m.alive && m.wingman) {
+            m.wingman     = false;
+            m.wingmanSlot = -1;
+            m.aiState     = NpcAiState::Patrol;
+            m.waypointSet = false;
+        }
+    }
+
     _currentSystemId = targetSystemId;
     if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), targetSystemId)
             == _discoveredSystemIds.end())
         _discoveredSystemIds.push_back(targetSystemId);
     _discoveredIds.clear();
-    _projectiles.clear();
-    _asteroids.clear();
-    _entities.clear();
-    _npcMeta.clear();
-    _lootDrops.clear();
-    _materialDrops.clear();
-    _sun = SpaceSun{};
-    SpawnPlanetsAndStations(sys->seed);  // sets _sun and _playerSpawnPos
+
+    // Targeting state points at the old world's NPCs; ids restart per world.
+    _target       = TargetInfo{};
+    _targetId     = 0;
+    _npcTargetId  = 0;
+    _lockTargetId = 0;
+
+    // Attach to the destination world: freshly generated on first visit,
+    // resumed exactly as left (dead stations, mined asteroids...) on a revisit.
+    _w = &EnsureWorldGenerated(targetSystemId);
+    BakeSunCorona();  // EnsureWorldGenerated restores the previous world's corona
+}
+
+// Client: build (or rebuild) the local world for the system the host says
+// we're in. Regenerates content from the seed, fast-forwards planet orbits to
+// the host's simulation age, and applies the station diff so damage/deaths
+// that predate our arrival are visible. NPCs, asteroid state and projectiles
+// need nothing here — they reconcile from the first Snapshot that follows.
+void SpaceFlight::ApplyWorldSyncClient(const net::WorldSyncData& ws) {
+    _currentSystemId = ws.systemId;
+    _gameSeed        = ws.gameSeed;
+    StarSystemRegistry::Init(_gameSeed);
+
+    // Clients only ever track the system they're in — start it clean.
+    _worlds.clear();
+    _w = &GetOrCreateWorld(ws.systemId);
+    _w->seed = ws.worldSeed;
+    SpawnPlanetsAndStations(ws.worldSeed);
     SpawnInitialAsteroids();
-    SpawnNpcShips();
+    UpdateOrbits(ws.worldAge);   // fast-forward to the host's orbit phase
+    _w->age = ws.worldAge;
+    for (const net::StationStateSync& ss : ws.stations) {
+        for (SpaceStation& st : _w->stations) {
+            if (st.id != ss.id) continue;
+            st.hull  = ss.hull;
+            st.alive = ss.alive != 0;
+            break;
+        }
+    }
+    // Offset the spawn so players arriving at the same system don't overlap.
+    _w->playerSpawnPos.x += 200.0f;
+
+    if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), _currentSystemId)
+            == _discoveredSystemIds.end())
+        _discoveredSystemIds.push_back(_currentSystemId);
+
+    // Cross-system leftovers: remote ships/projectiles and target locks.
+    _remoteEntities.clear();
+    _remoteProjectiles.clear();
+    _target       = TargetInfo{};
+    _targetId     = 0;
+    _npcTargetId  = 0;
+    _lockTargetId = 0;
+    _discoveredIds.clear();
+
+    _worldSynced = true;
 }
 
 void SpaceFlight::UpdateWarpSequence(float dt) {
@@ -3841,9 +4058,47 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
         float t = std::min(_warpPhaseTimer / kWarpFadeOutTime, 1.0f);
         _warpFadeAlpha = t;
         if (t >= 1.0f) {
+            if (net::Game().IsClient()) {
+                // The host owns the destination's live state — announce the
+                // warp and hold on black until its WorldSync arrives.
+                net::Game().ClientSendWarpNotify(_warpTargetSystemId);
+                _remoteEntities.clear();
+                _remoteProjectiles.clear();
+                _worldSynced    = false;   // also stops Input sends while in limbo
+                _warpPhase      = WarpPhase::AwaitSync;
+                _warpPhaseTimer = 0.0f;
+                break;
+            }
             CommitWarpWorldSwitch(_warpTargetSystemId);
             _warpParticles.clear();
-            _warpFlyInStart = Vector2Subtract(_playerSpawnPos, Vector2Scale(_warpDir, kWarpArriveOffset));
+            _warpFlyInStart = Vector2Subtract(_w->playerSpawnPos, Vector2Scale(_warpDir, kWarpArriveOffset));
+            _playerEntity.transform.position = _warpFlyInStart;
+            _playerEntity.transform.velocity = Vector2Scale(_warpDir, kWarpFlySpeed);
+            _playerEntity.transform.rotation = _warpTargetRot;
+            _camera.target = _playerEntity.transform.position;
+            _warpPhase      = WarpPhase::FlyIn;
+            _warpPhaseTimer = 0.0f;
+        }
+        break;
+    }
+    case WarpPhase::AwaitSync: {
+        // Client-only: black screen until the host's WorldSync for the
+        // destination arrives (net::Game().Poll() runs at the top of Update).
+        _warpFadeAlpha = 1.0f;
+        if (net::Game().pendingServerClosing || !net::Game().IsConnected()) {
+            // Host vanished mid-warp — bail out the same way the main loop does.
+            net::Game().pendingServerClosing = false;
+            net::Game().Shutdown();
+            GameManager::Get().TransitionTo(GameMode::MainMenu);
+            _warpPhase = WarpPhase::None;
+            break;
+        }
+        if (net::Game().pendingWorldSync.has_value()) {
+            net::WorldSyncData ws = *net::Game().pendingWorldSync;
+            net::Game().pendingWorldSync.reset();
+            ApplyWorldSyncClient(ws);
+            _warpParticles.clear();
+            _warpFlyInStart = Vector2Subtract(_w->playerSpawnPos, Vector2Scale(_warpDir, kWarpArriveOffset));
             _playerEntity.transform.position = _warpFlyInStart;
             _playerEntity.transform.velocity = Vector2Scale(_warpDir, kWarpFlySpeed);
             _playerEntity.transform.rotation = _warpTargetRot;
@@ -3856,14 +4111,14 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
     case WarpPhase::FlyIn: {
         float t     = std::min(_warpPhaseTimer / kWarpFlyInTime, 1.0f);
         float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); // ease-out cubic
-        _playerEntity.transform.position = Vector2Lerp(_warpFlyInStart, _playerSpawnPos, eased);
+        _playerEntity.transform.position = Vector2Lerp(_warpFlyInStart, _w->playerSpawnPos, eased);
         _warpFadeAlpha = 1.0f - std::min(_warpPhaseTimer / kWarpFadeInRamp, 1.0f);
         _camera.target = _playerEntity.transform.position;
         if (t < 0.6f)
             for (int i = 0; i < 3; ++i)
                 SpawnWarpParticle(_playerEntity.transform.position, _warpDir);
         if (t >= 1.0f) {
-            _playerEntity.transform.position = _playerSpawnPos;
+            _playerEntity.transform.position = _w->playerSpawnPos;
             _playerEntity.transform.velocity = { 0.0f, 0.0f };
             _camera.target  = _playerEntity.transform.position;
             _warpFadeAlpha  = 0.0f;
@@ -3913,13 +4168,38 @@ void SpaceFlight::Update(float dt) {
         return;
     }
 
-    // ── Host: send WorldSync to newly joined peers ─────────────────────────────
+    // ── Host: peer lifecycle (joins, disconnects, warps) ──────────────────────
     if (net::Game().IsHost()) {
-        for (uint32_t peerId : net::Game().newPeerIds)
-            net::Game().HostSendWorldSync(peerId, _currentSystemId, _worldSeed, _gameSeed);
+        // New peers join into the host's current system.
+        for (uint32_t peerId : net::Game().newPeerIds) {
+            _peerSystem[peerId] = _currentSystemId;
+            net::Game().HostSendWorldSync(peerId, BuildWorldSync(*_w));
+        }
         net::Game().newPeerIds.clear();
 
-        // Apply client input commands → update _remoteEntities and spawn server-side projectiles.
+        // Disconnected peers: drop their state so their system can freeze.
+        for (uint32_t peerId : net::Game().disconnectedPeerIds) {
+            _remoteEntities.erase(peerId);
+            _remoteFireCooldown.erase(peerId);
+            _remoteJoinGrace.erase(peerId);
+            _peerSystem.erase(peerId);
+        }
+        net::Game().disconnectedPeerIds.clear();
+
+        // Peers that warped: attach them to the destination world (spinning it
+        // up from its seed on first visit) and send its live state.
+        for (const auto& [peerId, sysId] : net::Game().pendingWarpNotifies) {
+            if (!StarSystemRegistry::ById(sysId)) continue;
+            SystemWorld& world = EnsureWorldGenerated(sysId);
+            _peerSystem[peerId] = sysId;
+            _remoteEntities.erase(peerId);    // re-created at the arrival position
+            _remoteJoinGrace[peerId] = 5.0f;  // arrival grace, same as a fresh join
+            net::Game().HostSendWorldSync(peerId, BuildWorldSync(world));
+        }
+        net::Game().pendingWarpNotifies.clear();
+
+        // Apply client input commands → update _remoteEntities and spawn
+        // server-side projectiles into the sender's own system.
         for (auto& [id, fc] : _remoteFireCooldown) fc -= dt;
         for (auto& [id, g]  : _remoteJoinGrace)    g  -= dt;
 
@@ -3929,7 +4209,10 @@ void SpaceFlight::Update(float dt) {
             if (re.id == 0) {
                 re.id                   = cmd.networkId;
                 re.sprite.texture       = _playerShipTex;
-                re.sprite.scale         = 1.0f;
+                // Peer's real ship type isn't sent over the wire; render at the
+                // host's own ship scale (same texture is used, tinted blue).
+                const ecs::ShipDef* def = ecs::ShipRegistry::ShipById(_playerMeta.defId);
+                re.sprite.scale         = def ? def->pixelScale : 1.0f;
                 re.sprite.tint          = { 100, 200, 255, 255 };
                 re.health.currentHull   = 100.0f;
                 re.health.maxStats.hull = 100.0f;
@@ -3940,7 +4223,8 @@ void SpaceFlight::Update(float dt) {
             re.transform.rotation = cmd.aimRotation;
             re.network.networkId  = cmd.networkId;
 
-            // Spawn a server-side projectile when the client fires.
+            // Spawn a server-side projectile when the client fires — into the
+            // world the firing client is actually in.
             if (cmd.firing && _remoteFireCooldown[cmd.networkId] <= 0.0f) {
                 _remoteFireCooldown[cmd.networkId] = 0.25f;
                 float fRad = (cmd.aimRotation - 90.0f) * DEG2RAD;
@@ -3954,61 +4238,89 @@ void SpaceFlight::Update(float dt) {
                 p.alive      = true;
                 p.fromPlayer = true;
                 p.ownerId    = cmd.networkId;
-                _projectiles.push_back(p);
+                auto sysIt = _peerSystem.find(cmd.networkId);
+                SystemWorld& fireWorld = (sysIt != _peerSystem.end())
+                    ? GetOrCreateWorld(sysIt->second) : *_w;
+                fireWorld.projectiles.push_back(p);
             }
         }
         net::Game().pendingInputs.clear();
 
-        // Broadcast snapshots at ~20 Hz — alive NPCs, host player, alive asteroids.
+        // Simulate every other occupied system; unoccupied worlds stay frozen
+        // in memory (state preserved, no ticking) until someone returns.
+        for (auto& [sysId, worldPtr] : _worlds) {
+            if (worldPtr.get() == _w) continue;   // main Update path ticks this one
+            bool occupied = false;
+            for (const auto& [peerId, ps] : _peerSystem)
+                if (ps == sysId) { occupied = true; break; }
+            if (occupied) TickBackgroundWorld(dt, *worldPtr);
+        }
+
+        // ~20 Hz: send each occupied system's snapshot to exactly its occupants.
         _netTickAccum += dt;
         if (_netTickAccum >= 0.05f) {
             _netTickAccum = 0.0f;
 
-            std::vector<ecs::Entity> broadcastList;
-            broadcastList.reserve(_entities.size() + 1 + _remoteEntities.size());
-            for (size_t i = 0; i < _entities.size(); ++i) {
-                if (_npcMeta[i].alive)
-                    broadcastList.push_back(_entities[i]);
-            }
-            if (!_playerDead) {
-                ecs::Entity pCopy = _playerEntity;
-                pCopy.network.isLocalPlayer = false;
-                broadcastList.push_back(pCopy);
-            }
-            // Include remote client entities so all clients can see each other.
-            for (const auto& [netId, re] : _remoteEntities) {
-                if (re.id != 0) broadcastList.push_back(re);
-            }
+            for (auto& [sysId, worldPtr] : _worlds) {
+                SystemWorld& world = *worldPtr;
 
-            std::vector<net::AsteroidSnapshot> asteroidSnaps;
-            asteroidSnaps.reserve(_asteroids.size());
-            for (const auto& a : _asteroids) {
-                if (!a.alive) continue;
-                net::AsteroidSnapshot as;
-                as.id       = a.id;
-                as.posX     = a.position.x;
-                as.posY     = a.position.y;
-                as.velX     = a.velocity.x;
-                as.velY     = a.velocity.y;
-                as.rotation = a.rotation;
-                as.health   = static_cast<int8_t>(a.health);
-                as.tier     = static_cast<int8_t>(a.tier);
-                asteroidSnaps.push_back(as);
-            }
+                std::vector<uint32_t> occupants;
+                for (const auto& [peerId, ps] : _peerSystem)
+                    if (ps == sysId) occupants.push_back(peerId);
+                if (occupants.empty()) continue;
 
-            std::vector<net::ProjectileSnapshot> projSnaps;
-            projSnaps.reserve(_projectiles.size());
-            for (const Projectile& p : _projectiles) {
-                if (!p.alive) continue;
-                net::ProjectileSnapshot ps;
-                ps.posX = p.position.x;
-                ps.posY = p.position.y;
-                ps.velX = p.velocity.x;
-                ps.velY = p.velocity.y;
-                projSnaps.push_back(ps);
-            }
+                std::vector<ecs::Entity> broadcastList;
+                broadcastList.reserve(world.entities.size() + 1 + _remoteEntities.size());
+                for (size_t i = 0; i < world.entities.size(); ++i) {
+                    if (!world.npcMeta[i].alive) continue;
+                    ecs::Entity npcCopy = world.entities[i];
+                    npcCopy.network.shipNameHash = Fnv1a32(world.npcMeta[i].shipTypeId);
+                    broadcastList.push_back(npcCopy);
+                }
+                if (sysId == _currentSystemId && !_playerDead) {
+                    ecs::Entity pCopy = _playerEntity;
+                    pCopy.network.isLocalPlayer = false;
+                    broadcastList.push_back(pCopy);
+                }
+                // Remote entities in this system, so its occupants see each other.
+                for (const auto& [netId, re] : _remoteEntities) {
+                    if (re.id == 0) continue;
+                    auto it = _peerSystem.find(netId);
+                    if (it != _peerSystem.end() && it->second == sysId)
+                        broadcastList.push_back(re);
+                }
 
-            net::Game().HostBroadcast(broadcastList, asteroidSnaps, projSnaps);
+                std::vector<net::AsteroidSnapshot> asteroidSnaps;
+                asteroidSnaps.reserve(world.asteroids.size());
+                for (const auto& a : world.asteroids) {
+                    if (!a.alive) continue;
+                    net::AsteroidSnapshot as;
+                    as.id       = a.id;
+                    as.posX     = a.position.x;
+                    as.posY     = a.position.y;
+                    as.velX     = a.velocity.x;
+                    as.velY     = a.velocity.y;
+                    as.rotation = a.rotation;
+                    as.health   = static_cast<int8_t>(a.health);
+                    as.tier     = static_cast<int8_t>(a.tier);
+                    asteroidSnaps.push_back(as);
+                }
+
+                std::vector<net::ProjectileSnapshot> projSnaps;
+                projSnaps.reserve(world.projectiles.size());
+                for (const Projectile& p : world.projectiles) {
+                    if (!p.alive) continue;
+                    net::ProjectileSnapshot ps;
+                    ps.posX = p.position.x;
+                    ps.posY = p.position.y;
+                    ps.velX = p.velocity.x;
+                    ps.velY = p.velocity.y;
+                    projSnaps.push_back(ps);
+                }
+
+                net::Game().HostSendSnapshot(occupants, sysId,
+                                             broadcastList, asteroidSnaps, projSnaps);
+            }
         }
     }
 
@@ -4024,11 +4336,12 @@ void SpaceFlight::Update(float dt) {
             net::Game().pendingPlayerDead = false;
             _playerEntity.health.currentHull = 0.0f;
         }
-        for (uint32_t deadId : net::Game().pendingStationDeadIds) {
-            for (auto& st : _stations)
+        for (const auto& [sysId, deadId] : net::Game().pendingStationDeads) {
+            if (sysId != _currentSystemId) continue;  // other systems sync on arrival
+            for (auto& st : _w->stations)
                 if (st.id == deadId) { st.alive = false; break; }
         }
-        net::Game().pendingStationDeadIds.clear();
+        net::Game().pendingStationDeads.clear();
     }
 
     // ── Client: apply WorldSync then lerp remote snapshots ────────────────────
@@ -4036,22 +4349,20 @@ void SpaceFlight::Update(float dt) {
         if (net::Game().pendingWorldSync.has_value()) {
             auto ws = *net::Game().pendingWorldSync;
             net::Game().pendingWorldSync.reset();
-            _currentSystemId = ws.systemId;
-            _worldSeed       = ws.worldSeed;
-            _gameSeed        = ws.gameSeed;
-            StarSystemRegistry::Init(_gameSeed);
-            SpawnPlanetsAndStations(_worldSeed);
-            SpawnInitialAsteroids();
             // NPC positions come from server snapshots; don't simulate them locally.
-            // Give the client's player a slightly offset spawn so players don't overlap.
-            _playerSpawnPos.x += 200.0f;
-            _playerEntity.transform.position = _playerSpawnPos;
-            _camera.target = _playerSpawnPos;
-            _worldSynced = true;
+            ApplyWorldSyncClient(ws);
+            _playerEntity.transform.position = _w->playerSpawnPos;
+            _camera.target = _w->playerSpawnPos;
         }
 
         // On each new snapshot: correct entity positions, sync asteroids, evict stale.
         uint32_t localId = net::Game().LocalNetworkId();
+        // Drop snapshots that describe a system we're not in — packets for the
+        // previous system can still be in flight right after a warp.
+        if (net::Game().snapshotDirty &&
+            (!_worldSynced || net::Game().latestSnapshotSystemId != _currentSystemId)) {
+            net::Game().snapshotDirty = false;   // consume and discard
+        }
         if (net::Game().snapshotDirty) {
             net::Game().snapshotDirty = false;
 
@@ -4064,10 +4375,21 @@ void SpaceFlight::Update(float dt) {
                     re.sprite.scale = 1.0f;
                     if (snap.networkId < 1000) {
                         // Remote player — draw with local ship texture tinted blue.
+                        const ecs::ShipDef* def = ecs::ShipRegistry::ShipById(_playerMeta.defId);
                         re.sprite.texture = _playerShipTex;
                         re.sprite.tint    = { 100, 200, 255, 255 };
+                        re.sprite.scale   = def ? def->pixelScale : 1.0f;
+                    } else if (snap.shipNameHash == kGargosShipHash) {
+                        re.sprite.texture = const_cast<Texture2D*>(&_gargosTex);
+                        re.sprite.tint    = WHITE;
+                        re.sprite.scale   = 1.0f;
+                    } else if (const ecs::ShipDef* def = ResolveShipDefByHash(snap.shipNameHash)) {
+                        // NPC — resolve its real sprite from the type hash carried in the snapshot.
+                        re.sprite.texture = ResourceManager::Load(def->assetPath);
+                        re.sprite.tint    = WHITE;
+                        re.sprite.scale   = def->pixelScale;
                     } else {
-                        // NPC — no client-side ship data; draw as red circle.
+                        // Unknown/unmatched ship type — fall back to a red circle.
                         re.sprite.texture = nullptr;
                         re.sprite.tint    = { 230, 90, 70, 240 };
                     }
@@ -4084,7 +4406,7 @@ void SpaceFlight::Update(float dt) {
             // ── Asteroid sync: update existing, create new, evict destroyed ──────
             for (const auto& as : net::Game().latestAsteroidSnapshots) {
                 Asteroid* found = nullptr;
-                for (auto& a : _asteroids) { if (a.id == as.id) { found = &a; break; } }
+                for (auto& a : _w->asteroids) { if (a.id == as.id) { found = &a; break; } }
                 if (found) {
                     found->position = { as.posX, as.posY };
                     found->velocity = { as.velX, as.velY };
@@ -4101,11 +4423,11 @@ void SpaceFlight::Update(float dt) {
                     na.tier     = static_cast<int>(as.tier);
                     na.radius   = AsteroidRadius(na.tier);
                     na.alive    = true;
-                    _asteroids.push_back(na);
+                    _w->asteroids.push_back(na);
                 }
             }
             // Kill asteroids absent from this snapshot (destroyed on server).
-            for (auto& a : _asteroids) {
+            for (auto& a : _w->asteroids) {
                 if (!a.alive) continue;
                 bool inSnap = false;
                 for (const auto& as : net::Game().latestAsteroidSnapshots)
@@ -4163,9 +4485,9 @@ void SpaceFlight::Update(float dt) {
             };
 
         // Inject the exact recipe criteria required by BuildableRegistry
-        addDebugMaterial("hull_frame", "Hull Frame", 15);
-        addDebugMaterial("circuit_board", "Circuit Board", 8);
-        addDebugMaterial("power_cell", "Power Cell", 5);
+        addDebugMaterial("hull_frame", "Hull Frame", 8);
+        addDebugMaterial("circuit_board", "Circuit Board", 4);
+        addDebugMaterial("titanium_alloy", "Titanium Alloy", 3);
 
         // Flash a status verification onto the UI logging feed
         AddCommsMessage("DEBUG: Added Mining Station materials to storage.", true);
@@ -4192,10 +4514,18 @@ void SpaceFlight::Update(float dt) {
                 _loadout.engine     = Engine_Thruster_I();
                 _loadout.hyperdrive = std::nullopt;
                 ApplyLoadout();
+                // When the player dies and needs to respawn:
+                float spawnDist = _w->sun.gravRange + 800.0f;
+
+                // 1. Calculate a brand new safe coordinate based on the CURRENT world state
+                _w->playerSpawnPos = GetSafeSpawnPosition(_w, spawnDist, kEnemySpawnMargin);
+
+                // 2. Teleport the player to the newly secured location
+                _playerEntity.transform.position = _w->playerSpawnPos;
+
                 _playerEntity.health.currentHull = _playerEntity.health.maxStats.hull;
-                _playerEntity.transform.position = _playerSpawnPos;
                 _playerEntity.transform.velocity = { 0.0f, 0.0f };
-                _camera.target = _playerSpawnPos;
+                _camera.target = _w->playerSpawnPos;
                 HideCursor();
             } else if (CheckCollisionPointRec(GetMousePosition(), menuBtn)) {
                 if (net::Game().IsHost()) net::Game().BroadcastServerClosing();
@@ -4211,7 +4541,7 @@ void SpaceFlight::Update(float dt) {
 
     if (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _localMapOpen ||
-        _buildMenu.isOpen || _stationModMenu.isOpen || _placementConfirmOpen) {
+        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen) {
         blockFireUntilRelease = true;
     }
 
@@ -4232,6 +4562,9 @@ void SpaceFlight::Update(float dt) {
         }
         else if (_stationModMenu.isOpen) {
             _stationModMenu.Close();
+        }
+        else if (_miningMenu.isOpen) {
+            _miningMenu.Close();
         }
         else if (_inPlacementMode) {
             _inPlacementMode = false;
@@ -4316,11 +4649,11 @@ void SpaceFlight::Update(float dt) {
             SystemMapData mapData;
             mapData.playerPos       = _playerEntity.transform.position;
             mapData.hyperdriveRange = _hyperdriveRange;
-            for (const SpacePlanet& p : _planets) {
+            for (const SpacePlanet& p : _w->planets) {
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) != _discoveredIds.end();
                 mapData.blips.push_back({ p.id, p.position, p.radius, true, disc });
             }
-            for (const SpaceStation& s : _stations) {
+            for (const SpaceStation& s : _w->stations) {
                 if (!s.alive) continue;
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), s.id) != _discoveredIds.end();
                 mapData.blips.push_back({ s.id, s.position, s.radius, false, disc });
@@ -4376,7 +4709,7 @@ void SpaceFlight::Update(float dt) {
                 _playerEntity.transform.velocity = { gs.velX, gs.velY };
                 _playerEntity.transform.rotation = gs.rotation;
                 _camera.target = _playerEntity.transform.position;
-                _projectiles.clear();
+                _w->projectiles.clear();
                 _hitCooldown = 0.0f;
                 _target = TargetInfo{};
                 _targetId = 0;
@@ -4409,6 +4742,9 @@ void SpaceFlight::Update(float dt) {
                 if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), _currentSystemId)
                         == _discoveredSystemIds.end())
                     _discoveredSystemIds.push_back(_currentSystemId);
+                // Loading replaces the whole world set; re-key to the saved system.
+                _worlds.clear();
+                _w = &GetOrCreateWorld(_currentSystemId);
                 ApplyLoadout();
                 // Re-apply saved hull values (ApplyLoadout resets maxHull from def+armor)
                 _playerEntity.health.currentHull   = gs.hull;
@@ -4432,7 +4768,7 @@ void SpaceFlight::Update(float dt) {
                 }
 
                 // Restore or spawn world entities
-                _sun = SpaceSun{};
+                _w->sun = SpaceSun{};
                 if (gs.hasWorldState) {
                     ApplyWorldState(gs);
                     if (!gs.sunTypeId.empty()) {
@@ -4440,29 +4776,29 @@ void SpaceFlight::Update(float dt) {
                         if (def) {
                             float savedR     = (gs.sunRadius > 0.f) ? gs.sunRadius
                                                                      : (def->minRadius + def->maxRadius) * 0.5f;
-                            _sun.typeId      = def->id;
-                            _sun.radius      = savedR;
-                            _sun.gravRange   = savedR * def->gravRangeMult;
-                            _sun.gravStrength= def->gravStrength;
-                            _sun.coreColor   = def->coreColor;
-                            _sun.innerGlow   = def->innerGlowColor;
-                            _sun.outerGlow   = def->outerGlowColor;
-                            _sun.active      = true;
+                            _w->sun.typeId      = def->id;
+                            _w->sun.radius      = savedR;
+                            _w->sun.gravRange   = savedR * def->gravRangeMult;
+                            _w->sun.gravStrength= def->gravStrength;
+                            _w->sun.coreColor   = def->coreColor;
+                            _w->sun.innerGlow   = def->innerGlowColor;
+                            _w->sun.outerGlow   = def->outerGlowColor;
+                            _w->sun.active      = true;
                             BakeSunCorona();
                         }
                     }
                 }
                 else {
-                    _asteroids.clear();
-                    _entities.clear();
-                    _npcMeta.clear();
-                    _lootDrops.clear();
-                    _materialDrops.clear();
+                    _w->asteroids.clear();
+                    _w->entities.clear();
+                    _w->npcMeta.clear();
+                    _w->lootDrops.clear();
+                    _w->materialDrops.clear();
                     auto homeSys = StarSystemRegistry::ById(_currentSystemId);
                     SpawnPlanetsAndStations(homeSys ? homeSys->seed : 0);
                     SpawnInitialAsteroids();
                     SpawnNpcShips();
-                    _playerEntity.transform.position = _playerSpawnPos;
+                    _playerEntity.transform.position = _w->playerSpawnPos;
                     _camera.target = _playerEntity.transform.position;
                 }
                 InitStars();
@@ -4537,6 +4873,21 @@ void SpaceFlight::Update(float dt) {
         return;
     }
 
+    if (_miningMenu.isOpen) {
+        bool stillOpen = _miningMenu.Update();
+        if (!stillOpen && _miningMenu.openModulesRequested) {
+            _miningMenu.openModulesRequested = false;
+            for (PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                if (ps.id == _miningMenuId) {
+                    _stationModMenuId = ps.id;
+                    _stationModMenu.Open(&ps, &_storageMenu.slots);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
     if (_shipPlacementConfirmOpen) {
         int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
         static constexpr int PopW = 340, PopH = 150;
@@ -4548,7 +4899,7 @@ void SpaceFlight::Update(float dt) {
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
             if (CheckCollisionPointRec(m2, yesBtn)) {
                 // Spawn Friendly NPC Ship
-                auto [alliedE, alliedM] = MakeNpcEntity(_nextNpcId++, _shipPlacementPos);
+                auto [alliedE, alliedM] = MakeNpcEntity(_w->nextNpcId++, _shipPlacementPos);
                 alliedM.faction = NpcFaction::Friendly;
                 alliedM.shipTypeId = _placingShipDefId;
 
@@ -4564,11 +4915,11 @@ void SpaceFlight::Update(float dt) {
                 alliedE.health.maxStats.hull = mHull;
                 alliedE.health.currentHull   = mHull;
                 ApplyNpcLoadout(alliedE, alliedM); // Assign generic NPC loadout to fight with
-                if (!_npcFreeSlots.empty()) {
-                    size_t slot = _npcFreeSlots.back(); _npcFreeSlots.pop_back();
-                    _entities[slot] = std::move(alliedE); _npcMeta[slot] = std::move(alliedM);
+                if (!_w->npcFreeSlots.empty()) {
+                    size_t slot = _w->npcFreeSlots.back(); _w->npcFreeSlots.pop_back();
+                    _w->entities[slot] = std::move(alliedE); _w->npcMeta[slot] = std::move(alliedM);
                 } else {
-                    _entities.push_back(std::move(alliedE)); _npcMeta.push_back(std::move(alliedM));
+                    _w->entities.push_back(std::move(alliedE)); _w->npcMeta.push_back(std::move(alliedM));
                 }
 
                 _shipPlacementConfirmOpen = false;
@@ -4717,8 +5068,13 @@ void SpaceFlight::Update(float dt) {
             const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
             float rad = def ? def->radius : 120.0f;
             if (Vector2Distance(worldMouse, ps.position) < rad) {
-                _stationModMenuId = ps.id;
-                _stationModMenu.Open(&ps, &_storageMenu.slots);
+                if (ps.stationDefId == "mining_station") {
+                    _miningMenuId = ps.id;
+                    _miningMenu.Open(&ps, &_storageMenu.slots);
+                } else {
+                    _stationModMenuId = ps.id;
+                    _stationModMenu.Open(&ps, &_storageMenu.slots);
+                }
                 return;
             }
         }
@@ -4726,7 +5082,7 @@ void SpaceFlight::Update(float dt) {
 
     if (_commsMenuOpen) {
         bool npcAlive = false;
-        for (const NpcMeta& n : _npcMeta)
+        for (const NpcMeta& n : _w->npcMeta)
             if (n.id == _commsMenuNpcId && n.alive) { npcAlive = true; break; }
         if (!npcAlive) { _commsMenuOpen = false; return; }
 
@@ -4742,8 +5098,8 @@ void SpaceFlight::Update(float dt) {
             }
             else if (_commsMenuPhase == 0 && CheckCollisionPointRec(m2, joinBtn)) {
                 int roll = GetRandomValue(0, 99);
-                for (size_t ci = 0; ci < _npcMeta.size(); ++ci) {
-                    NpcMeta& npc = _npcMeta[ci];
+                for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci) {
+                    NpcMeta& npc = _w->npcMeta[ci];
                     if (npc.id != _commsMenuNpcId || !npc.alive) continue;
                     bool isFriendly = (npc.faction == NpcFaction::Friendly);
                     bool isNeutral  = (npc.faction == NpcFaction::Neutral);
@@ -4751,14 +5107,14 @@ void SpaceFlight::Update(float dt) {
                     bool accepted = (roll < acceptChance);
                     if (accepted) {
                         int wingCount = 0;
-                        for (const NpcMeta& w : _npcMeta)
+                        for (const NpcMeta& w : _w->npcMeta)
                             if (w.alive && w.wingman) wingCount++;
                         if (wingCount >= 4) {
                             _commsMenuNpcText = "Wing is full. Dismiss an escort first.";
                         }
                         else {
                             bool usedSlots[4] = {};
-                            for (const NpcMeta& w : _npcMeta)
+                            for (const NpcMeta& w : _w->npcMeta)
                                 if (w.alive && w.wingman && w.wingmanSlot >= 0 && w.wingmanSlot < 4)
                                     usedSlots[w.wingmanSlot] = true;
                             int newSlot = 0;
@@ -4795,9 +5151,9 @@ void SpaceFlight::Update(float dt) {
         bool changed = _modulesMenu.Update();
         if (changed) {
             if (_escortModuleNpcId != 0) {
-                for (size_t ci = 0; ci < _npcMeta.size(); ++ci)
-                    if (_npcMeta[ci].id == _escortModuleNpcId) {
-                        ApplyNpcLoadout(_entities[ci], _npcMeta[ci]);
+                for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci)
+                    if (_w->npcMeta[ci].id == _escortModuleNpcId) {
+                        ApplyNpcLoadout(_w->entities[ci], _w->npcMeta[ci]);
                         break;
                     }
             }
@@ -4811,18 +5167,18 @@ void SpaceFlight::Update(float dt) {
 
     if (_escortMenuOpen) {
         std::vector<size_t> wingmanIdxs;
-        for (size_t ci = 0; ci < _npcMeta.size(); ++ci)
-            if (_npcMeta[ci].alive && _npcMeta[ci].wingman) wingmanIdxs.push_back(ci);
+        for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci)
+            if (_w->npcMeta[ci].alive && _w->npcMeta[ci].wingman) wingmanIdxs.push_back(ci);
         if (wingmanIdxs.empty()) { _escortMenuOpen = false; return; }
 
         bool selValid = false;
         for (size_t ci : wingmanIdxs)
-            if (_npcMeta[ci].id == _escortMenuSelId) { selValid = true; break; }
-        if (!selValid) _escortMenuSelId = _npcMeta[wingmanIdxs[0]].id;
+            if (_w->npcMeta[ci].id == _escortMenuSelId) { selValid = true; break; }
+        if (!selValid) _escortMenuSelId = _w->npcMeta[wingmanIdxs[0]].id;
 
         size_t selIdx = SIZE_MAX;
         for (size_t ci : wingmanIdxs)
-            if (_npcMeta[ci].id == _escortMenuSelId) { selIdx = ci; break; }
+            if (_w->npcMeta[ci].id == _escortMenuSelId) { selIdx = ci; break; }
         if (selIdx == SIZE_MAX) { _escortMenuOpen = false; return; }
 
         int sw2 = GetScreenWidth();
@@ -4841,7 +5197,7 @@ void SpaceFlight::Update(float dt) {
             Rectangle ir = { (float)(iconStartX + i * (ICON_W + ICON_GAP)), 70.0f,
                               (float)ICON_W, (float)ICON_H };
             if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(m2, ir)) {
-                _escortMenuSelId = _npcMeta[wingmanIdxs[i]].id;
+                _escortMenuSelId = _w->npcMeta[wingmanIdxs[i]].id;
                 selIdx = wingmanIdxs[i];
             }
         }
@@ -4850,19 +5206,19 @@ void SpaceFlight::Update(float dt) {
             Rectangle editBtn = { 30.0f, 260.0f, 180.0f, 38.0f };
             Rectangle dismissBtn = { 230.0f, 260.0f, 180.0f, 38.0f };
             if (CheckCollisionPointRec(m2, editBtn)) {
-                _escortModuleNpcId = _npcMeta[selIdx].id;
-                _modulesMenu.Open(&_npcMeta[selIdx].loadout, &_storageMenu.slots,
+                _escortModuleNpcId = _w->npcMeta[selIdx].id;
+                _modulesMenu.Open(&_w->npcMeta[selIdx].loadout, &_storageMenu.slots,
                     NpcMeta::WSlots, NpcMeta::ArSlots,
                     NpcMeta::ShSlots, NpcMeta::EnSlots, 0);
             }
             else if (CheckCollisionPointRec(m2, dismissBtn)) {
-                _npcMeta[selIdx].wingman     = false;
-                _npcMeta[selIdx].wingmanSlot = -1;
-                _npcMeta[selIdx].aiState     = NpcAiState::Patrol;
-                _npcMeta[selIdx].waypointSet = false;
+                _w->npcMeta[selIdx].wingman     = false;
+                _w->npcMeta[selIdx].wingmanSlot = -1;
+                _w->npcMeta[selIdx].aiState     = NpcAiState::Patrol;
+                _w->npcMeta[selIdx].waypointSet = false;
                 _escortMenuSelId = 0;
                 bool anyLeft = false;
-                for (const NpcMeta& nn : _npcMeta)
+                for (const NpcMeta& nn : _w->npcMeta)
                     if (nn.alive && nn.wingman) { _escortMenuSelId = nn.id; anyLeft = true; break; }
                 if (!anyLeft) { _escortMenuOpen = false; return; }
             }
@@ -4933,11 +5289,11 @@ void SpaceFlight::Update(float dt) {
         }
         else if (CheckCollisionPointRec(m, escBtn)) {
             int wingCount = 0;
-            for (const NpcMeta& n : _npcMeta) if (n.alive && n.wingman) wingCount++;
+            for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
             if (wingCount > 0) {
                 _escortMenuOpen = true;
                 _escortMenuSelId = 0;
-                for (const NpcMeta& n : _npcMeta)
+                for (const NpcMeta& n : _w->npcMeta)
                     if (n.alive && n.wingman) { _escortMenuSelId = n.id; break; }
             }
             clickedHudBtn = true;
@@ -4955,7 +5311,7 @@ void SpaceFlight::Update(float dt) {
             _commsMenuOpen = true;
             _commsMenuPhase = 0;
             _commsMenuNpcId = _npcTargetId;
-            for (const NpcMeta& npc : _npcMeta) {
+            for (const NpcMeta& npc : _w->npcMeta) {
                 if (npc.id != _npcTargetId || !npc.alive) continue;
                 if (npc.faction == NpcFaction::Friendly) {
                     _commsMenuNpcName = "FRIENDLY " + npc.shipTypeName;
@@ -4988,16 +5344,16 @@ void SpaceFlight::Update(float dt) {
         if (!clickedHudBtn && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             _lockTargetId = 0;
             // NPC ships (non-escort) take priority
-            for (size_t li = 0; li < _npcMeta.size(); ++li) {
-                const NpcMeta& n = _npcMeta[li];
+            for (size_t li = 0; li < _w->npcMeta.size(); ++li) {
+                const NpcMeta& n = _w->npcMeta[li];
                 if (!n.alive || n.wingman) continue;
-                if (Vector2Distance(mouseWorld, _entities[li].transform.position) < n.radius + 8.0f) {
+                if (Vector2Distance(mouseWorld, _w->entities[li].transform.position) < n.radius + 8.0f) {
                     _lockTargetId = n.id; break;
                 }
             }
             // Then asteroids
             if (_lockTargetId == 0) {
-                for (const Asteroid& a : _asteroids) {
+                for (const Asteroid& a : _w->asteroids) {
                     if (a.alive && Vector2Distance(mouseWorld, a.position) < a.radius) {
                         _lockTargetId = a.id; break;
                     }
@@ -5006,10 +5362,10 @@ void SpaceFlight::Update(float dt) {
         }
         if (_lockTargetId != 0) {
             bool found = false;
-            for (size_t li = 0; li < _npcMeta.size(); ++li)
-                if (_npcMeta[li].id == _lockTargetId && _npcMeta[li].alive) { _lockTargetPos = _entities[li].transform.position; found = true; break; }
+            for (size_t li = 0; li < _w->npcMeta.size(); ++li)
+                if (_w->npcMeta[li].id == _lockTargetId && _w->npcMeta[li].alive) { _lockTargetPos = _w->entities[li].transform.position; found = true; break; }
             if (!found)
-                for (const Asteroid& a : _asteroids)
+                for (const Asteroid& a : _w->asteroids)
                     if (a.id == _lockTargetId && a.alive) { _lockTargetPos = a.position; found = true; break; }
             if (!found) _lockTargetId = 0;
         }
@@ -5071,7 +5427,7 @@ void SpaceFlight::Update(float dt) {
                         p.position = pos;
                         p.velocity = { aimDir.x * _playerMeta.projSpeed, aimDir.y * _playerMeta.projSpeed };
                         p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
-                        _projectiles.push_back(p);
+                        _w->projectiles.push_back(p);
                     }
                 }
                 break;
@@ -5095,7 +5451,7 @@ void SpaceFlight::Update(float dt) {
                             p.position = pos;
                             p.velocity = { d.x * _playerMeta.projSpeed, d.y * _playerMeta.projSpeed };
                             p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
-                            _projectiles.push_back(p);
+                            _w->projectiles.push_back(p);
                         }
                         _playerMeta._fireCooldown = _playerMeta.fireRate;
                     }
@@ -5117,7 +5473,7 @@ void SpaceFlight::Update(float dt) {
                         p.isHoming = true;
                         p.targetId = passLockId;
                         p.turnRate = _playerMeta.weaponTurnRate;
-                        _projectiles.push_back(p);
+                        _w->projectiles.push_back(p);
                         _playerMeta._fireCooldown = _playerMeta.fireRate;
                     }
                 }
@@ -5128,47 +5484,9 @@ void SpaceFlight::Update(float dt) {
         }
     }
 
-    for (Projectile& p : _projectiles) {
-        p.position.x += p.velocity.x * dt;
-        p.position.y += p.velocity.y * dt;
-        p.lifetime += dt;
-        if (p.lifetime >= p.maxLife) p.alive = false;
-    }
+    AdvanceProjectilesAndAsteroids(dt);
 
-    for (Projectile& p : _projectiles) {
-        if (!p.alive || !p.isHoming) continue;
-        Vector2 tPos = {};
-        bool    found = false;
-        if (p.targetIsPlayer) {
-            tPos = _playerEntity.transform.position; found = true;
-        }
-        else if (p.targetId != 0) {
-            for (const Asteroid& a : _asteroids)
-                if (a.id == p.targetId && a.alive) { tPos = a.position; found = true; break; }
-            if (!found)
-                for (size_t li = 0; li < _npcMeta.size(); ++li)
-                    if (_npcMeta[li].id == p.targetId && _npcMeta[li].alive) { tPos = _entities[li].transform.position; found = true; break; }
-        }
-        if (!found) { p.isHoming = false; continue; }
-        float speed = Vector2Length(p.velocity);
-        if (speed < 1.0f) continue;
-        float curAng = atan2f(p.velocity.y, p.velocity.x);
-        Vector2 diff = Vector2Subtract(tPos, p.position);
-        float   tAng = atan2f(diff.y, diff.x);
-        float   delta = tAng - curAng;
-        while (delta > PI) delta -= 2.0f * PI;
-        while (delta < -PI) delta += 2.0f * PI;
-        float turn = std::clamp(delta, -p.turnRate * dt, p.turnRate * dt);
-        float newAng = curAng + turn;
-        p.velocity = { cosf(newAng) * speed, sinf(newAng) * speed };
-    }
-
-    for (Asteroid& a : _asteroids) {
-        a.position.x += a.velocity.x * dt;
-        a.position.y += a.velocity.y * dt;
-        a.rotation   += a.rotSpeed   * dt;
-    }
-
+    _w->age += dt;
     UpdateOrbits(dt);
     UpdateNpcShips(dt);
     ApplySunGravity(dt);
@@ -5187,6 +5505,8 @@ void SpaceFlight::Update(float dt) {
             hp.maxHull = newMax;
         }
 
+        TickStationMining(ps, dt);
+
         // ── ADDED: Player Station Autonomous Firing ─────────────────────────
         // (This MUST be inside the ps loop so we know which station is firing)
 
@@ -5195,13 +5515,13 @@ void SpaceFlight::Update(float dt) {
         Vector2 targetPos = { 0, 0 };
         unsigned int targetId = 0;
 
-        for (size_t li = 0; li < _npcMeta.size(); ++li) {
-            const NpcMeta& npc = _npcMeta[li];
+        for (size_t li = 0; li < _w->npcMeta.size(); ++li) {
+            const NpcMeta& npc = _w->npcMeta[li];
             if (!npc.alive || npc.faction != NpcFaction::Hostile) continue;
-            float d = Vector2Distance(ps.position, _entities[li].transform.position);
+            float d = Vector2Distance(ps.position, _w->entities[li].transform.position);
             if (d < closestDist) {
                 closestDist = d;
-                targetPos = _entities[li].transform.position;
+                targetPos = _w->entities[li].transform.position;
                 targetId = npc.id;
             }
         }
@@ -5262,7 +5582,7 @@ void SpaceFlight::Update(float dt) {
                             p.targetId = targetId;
                         }
 
-                        _projectiles.push_back(p);
+                        _w->projectiles.push_back(p);
                     }
 
                     // Reset the hardpoint's cooldown (incorporate charge time so it doesn't rapid-fire)
@@ -5272,8 +5592,120 @@ void SpaceFlight::Update(float dt) {
         }
     }
 
-    // In-world station firing (per-hardpoint)
-    for (SpaceStation& st : _stations) {
+    UpdateWorldStationFire(dt);
+
+    if (!net::Game().IsClient()) {
+        UpdateCollisions();
+        UpdateNpcCollisions();
+        UpdateCollisions();
+        UpdateNpcCollisions();
+    }
+
+    // Discovery: mark stellar objects the player has flown near
+    static constexpr float DiscoveryRange = 400.0f;
+    for (const SpacePlanet& p : _w->planets) {
+        if (Vector2Distance(_playerEntity.transform.position, p.position) < p.radius + DiscoveryRange) {
+            if (std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) == _discoveredIds.end())
+                _discoveredIds.push_back(p.id);
+        }
+    }
+    for (const SpaceStation& s : _w->stations) {
+        if (!s.alive) continue;
+        if (Vector2Distance(_playerEntity.transform.position, s.position) < s.radius + DiscoveryRange) {
+            if (std::find(_discoveredIds.begin(), _discoveredIds.end(), s.id) == _discoveredIds.end())
+                _discoveredIds.push_back(s.id);
+        }
+    }
+
+    if (!net::Game().IsClient()) {
+        CullAndRespawnAround(dt, _playerEntity.transform.position);
+    } else {
+        // Clients don't own world content (snapshots reconcile it), but local
+        // station-fire visuals and snapshot-killed asteroids still need erasing.
+        auto isDead = [](const auto& e) { return !e.alive; };
+        _w->projectiles.erase(std::remove_if(_w->projectiles.begin(), _w->projectiles.end(), isDead), _w->projectiles.end());
+        _w->asteroids.erase(std::remove_if(_w->asteroids.begin(), _w->asteroids.end(), isDead), _w->asteroids.end());
+    }
+
+    UpdateTarget();
+
+    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen ||
+                       _galacticMap.isOpen || _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
+                       _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
+                       _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
+    if (!anyMenuOpen) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f)
+            _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
+    }
+    _camera.zoom = _cameraZoom;
+
+    _camera.target.x += (_playerEntity.transform.position.x - _camera.target.x) * 6.0f * dt;
+    _camera.target.y += (_playerEntity.transform.position.y - _camera.target.y) * 6.0f * dt;
+
+    // ── Client: send current position + aim to host every frame ───────────────
+    if (net::Game().IsClient() && _worldSynced) {
+        static uint32_t s_inputSeq = 0;
+        net::InputCommand cmd;
+        cmd.networkId   = net::Game().LocalNetworkId();
+        cmd.aimRotation = _playerEntity.transform.rotation;
+        cmd.posX        = _playerEntity.transform.position.x;
+        cmd.posY        = _playerEntity.transform.position.y;
+        cmd.sequence    = s_inputSeq++;
+        cmd.firing      = (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !blockFireUntilRelease) ? 1 : 0;
+        net::Game().ClientSendInput(cmd);
+    }
+}
+
+void SpaceFlight::TickStationMining(PlayerStation& ps, float dt) {
+    if (ps.stationDefId != "mining_station" || ps.storage.empty()) return;
+
+    // Find the Material Probe installed in any aux slot (only the Mining
+    // Drill hardpoint has one, per station_defs.json).
+    const ModuleDef* probe = nullptr;
+    for (const HardpointState& hp : ps.hardpoints) {
+        if (!hp.alive) continue;
+        for (const auto& a : hp.aux) {
+            if (a.has_value() && a->id == "aux_material_probe") { probe = &(*a); break; }
+        }
+        if (probe) break;
+    }
+    if (!probe) return;   // no probe installed — station collects nothing
+
+    ps.miningTimer -= dt;
+    if (ps.miningTimer > 0.0f) return;
+
+    // Higher-grade probes collect faster.
+    int   gradeIdx  = static_cast<int>(probe->grade);   // 0=Common .. 6=Mythic
+    float interval  = std::max(2.0f, 9.0f - gradeIdx * 1.0f);
+    ps.miningTimer  = interval;
+
+    std::string matId = RollMiningMaterialId();
+    for (StorageItem& slot : ps.storage) {
+        if (slot.type == StorageItemType::Material && slot.materialId == matId &&
+            slot.count < StorageMenu::MaxStack) {
+            slot.count++;
+            return;
+        }
+    }
+    for (StorageItem& slot : ps.storage) {
+        if (slot.type == StorageItemType::Empty) {
+            slot.type        = StorageItemType::Material;
+            slot.materialId   = matId;
+            const MatDef* m   = FindMaterial(matId);
+            slot.displayName  = m ? m->displayName : matId;
+            slot.count        = 1;
+            return;
+        }
+    }
+    // Storage full — the timer already reset, so collection simply retries
+    // (and keeps failing) each interval until a slot frees up.
+}
+
+// In-world (NPC faction) station firing, per hardpoint. Operates on `_w`, so
+// it serves both the player's system and background-world ticks.
+void SpaceFlight::UpdateWorldStationFire(float dt) {
+    for (SpaceStation& st : _w->stations) {
         if (!st.alive) continue;
         if (st.retaliateTimer > 0.0f) st.retaliateTimer -= dt;
 
@@ -5289,13 +5721,13 @@ void SpaceFlight::Update(float dt) {
         float        bestDist     = maxRange;
         unsigned int fireTargetId = 0;
 
-        for (size_t j = 0; j < _npcMeta.size(); ++j) {
-            if (!_npcMeta[j].alive) continue;
-            if (DiplomaticRegistry::Get(st.faction, _npcMeta[j].npcFaction) != Relation::Hostile) continue;
-            float d = Vector2Distance(st.position, _entities[j].transform.position);
+        for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+            if (!_w->npcMeta[j].alive) continue;
+            if (DiplomaticRegistry::Get(st.faction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
+            float d = Vector2Distance(st.position, _w->entities[j].transform.position);
             if (d < bestDist) {
-                bestDist = d; fireTarget = _entities[j].transform.position;
-                hasFireTarget = true; fireTargetId = _npcMeta[j].id;
+                bestDist = d; fireTarget = _w->entities[j].transform.position;
+                hasFireTarget = true; fireTargetId = _w->npcMeta[j].id;
             }
         }
         if (DiplomaticRegistry::Get(st.faction, kPlayerFaction) == Relation::Hostile) {
@@ -5313,12 +5745,12 @@ void SpaceFlight::Update(float dt) {
                     hasFireTarget = true; fireTargetId = 0;
                 }
             } else if (st.retaliateAtNpcId != 0) {
-                for (size_t j = 0; j < _npcMeta.size(); ++j) {
-                    if (_npcMeta[j].id == st.retaliateAtNpcId && _npcMeta[j].alive) {
-                        float d = Vector2Distance(st.position, _entities[j].transform.position);
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (_w->npcMeta[j].id == st.retaliateAtNpcId && _w->npcMeta[j].alive) {
+                        float d = Vector2Distance(st.position, _w->entities[j].transform.position);
                         if (!hasFireTarget || d < bestDist) {
-                            bestDist = d; fireTarget = _entities[j].transform.position;
-                            hasFireTarget = true; fireTargetId = _npcMeta[j].id;
+                            bestDist = d; fireTarget = _w->entities[j].transform.position;
+                            hasFireTarget = true; fireTargetId = _w->npcMeta[j].id;
                         }
                         break;
                     }
@@ -5364,57 +5796,84 @@ void SpaceFlight::Update(float dt) {
                 if (ws.fireMode == WeaponFireMode::LockOn) {
                     sp.isHoming = true; sp.turnRate = 3.0f; sp.targetId = fireTargetId;
                 }
-                _projectiles.push_back(sp);
+                _w->projectiles.push_back(sp);
             }
             hp.fireCooldown = ws.fireRate + ws.chargeTime;
         }
     }
+}
 
-    if (!net::Game().IsClient()) {
-        UpdateCollisions();
-        UpdateNpcCollisions();
-        UpdateCollisions();
-        UpdateNpcCollisions();
+// Advance projectiles (movement, lifetime, homing) and drift asteroids for
+// the world `_w` points at. Shared by the active system and background ticks.
+void SpaceFlight::AdvanceProjectilesAndAsteroids(float dt) {
+    for (Projectile& p : _w->projectiles) {
+        p.position.x += p.velocity.x * dt;
+        p.position.y += p.velocity.y * dt;
+        p.lifetime += dt;
+        if (p.lifetime >= p.maxLife) p.alive = false;
     }
 
-    // Discovery: mark stellar objects the player has flown near
-    static constexpr float DiscoveryRange = 400.0f;
-    for (const SpacePlanet& p : _planets) {
-        if (Vector2Distance(_playerEntity.transform.position, p.position) < p.radius + DiscoveryRange) {
-            if (std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) == _discoveredIds.end())
-                _discoveredIds.push_back(p.id);
+    for (Projectile& p : _w->projectiles) {
+        if (!p.alive || !p.isHoming) continue;
+        Vector2 tPos = {};
+        bool    found = false;
+        if (p.targetIsPlayer) {
+            // In a background world the player is parked far away; homing at
+            // that point would fling the projectile out of the system.
+            if (!_bgTick) { tPos = _playerEntity.transform.position; found = true; }
         }
-    }
-    for (const SpaceStation& s : _stations) {
-        if (!s.alive) continue;
-        if (Vector2Distance(_playerEntity.transform.position, s.position) < s.radius + DiscoveryRange) {
-            if (std::find(_discoveredIds.begin(), _discoveredIds.end(), s.id) == _discoveredIds.end())
-                _discoveredIds.push_back(s.id);
+        else if (p.targetId != 0) {
+            for (const Asteroid& a : _w->asteroids)
+                if (a.id == p.targetId && a.alive) { tPos = a.position; found = true; break; }
+            if (!found)
+                for (size_t li = 0; li < _w->npcMeta.size(); ++li)
+                    if (_w->npcMeta[li].id == p.targetId && _w->npcMeta[li].alive) { tPos = _w->entities[li].transform.position; found = true; break; }
         }
+        if (!found) { p.isHoming = false; continue; }
+        float speed = Vector2Length(p.velocity);
+        if (speed < 1.0f) continue;
+        float curAng = atan2f(p.velocity.y, p.velocity.x);
+        Vector2 diff = Vector2Subtract(tPos, p.position);
+        float   tAng = atan2f(diff.y, diff.x);
+        float   delta = tAng - curAng;
+        while (delta > PI) delta -= 2.0f * PI;
+        while (delta < -PI) delta += 2.0f * PI;
+        float turn = std::clamp(delta, -p.turnRate * dt, p.turnRate * dt);
+        float newAng = curAng + turn;
+        p.velocity = { cosf(newAng) * speed, sinf(newAng) * speed };
     }
 
-    for (Asteroid& a : _asteroids)
-        if (a.alive && Vector2Distance(_playerEntity.transform.position, a.position) > 2800.0f)
+    for (Asteroid& a : _w->asteroids) {
+        a.position.x += a.velocity.x * dt;
+        a.position.y += a.velocity.y * dt;
+        a.rotation   += a.rotSpeed   * dt;
+    }
+}
+
+// Despawn far-away asteroids/NPCs and repopulate the space around `anchor` —
+// the local player in the active world, or a remote occupant in a background
+// world. Also erases dead projectiles/asteroids for the ticked world.
+void SpaceFlight::CullAndRespawnAround(float dt, Vector2 anchor) {
+    for (Asteroid& a : _w->asteroids)
+        if (a.alive && Vector2Distance(anchor, a.position) > 2800.0f)
             a.alive = false;
-    for (size_t ci = 0; ci < _npcMeta.size(); ++ci)
-        if (_npcMeta[ci].alive && !_npcMeta[ci].wingman &&
-            Vector2Distance(_playerEntity.transform.position, _entities[ci].transform.position) > 3000.0f) {
-            _npcMeta[ci].alive = false;
-            _npcFreeSlots.push_back(ci);
+    for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci)
+        if (_w->npcMeta[ci].alive && !_w->npcMeta[ci].wingman &&
+            Vector2Distance(anchor, _w->entities[ci].transform.position) > 3000.0f) {
+            _w->npcMeta[ci].alive = false;
+            _w->npcFreeSlots.push_back(ci);
         }
 
     auto isDead = [](const auto& e) { return !e.alive; };
-    _projectiles.erase(std::remove_if(_projectiles.begin(), _projectiles.end(), isDead), _projectiles.end());
-    _asteroids.erase(std::remove_if(_asteroids.begin(), _asteroids.end(), isDead), _asteroids.end());
-    // NPC slots are NOT erased — dead slots are held in _npcFreeSlots for reuse.
-
-    UpdateTarget();
+    _w->projectiles.erase(std::remove_if(_w->projectiles.begin(), _w->projectiles.end(), isDead), _w->projectiles.end());
+    _w->asteroids.erase(std::remove_if(_w->asteroids.begin(), _w->asteroids.end(), isDead), _w->asteroids.end());
+    // NPC slots are NOT erased — dead slots are held in _w->npcFreeSlots for reuse.
 
     static constexpr int MaxAsteroids = 40;
     static constexpr int MaxNpcShips = 20;
-    _respawnTimer -= dt;
-    if (_respawnTimer <= 0.0f) {
-        _respawnTimer = 5.0f;
+    _w->respawnTimer -= dt;
+    if (_w->respawnTimer <= 0.0f) {
+        _w->respawnTimer = 5.0f;
 
         // Compute the half-diagonal of the visible world area so spawns never
         // appear inside the camera frustum regardless of zoom level.
@@ -5422,71 +5881,99 @@ void SpaceFlight::Update(float dt) {
         float halfH     = (float)GetScreenHeight() / (2.0f * _cameraZoom);
         float viewEdge  = sqrtf(halfW * halfW + halfH * halfH) + 150.0f;
 
-        int liveAsteroids = (int)std::count_if(_asteroids.begin(), _asteroids.end(),
+        int liveAsteroids = (int)std::count_if(_w->asteroids.begin(), _w->asteroids.end(),
             [](const Asteroid& a) { return a.alive; });
         for (int s = 0; s < 2 && liveAsteroids < MaxAsteroids; ++s, ++liveAsteroids) {
             float ang     = (float)GetRandomValue(0, 359) * DEG2RAD;
             float minDist = std::max(1100.0f, viewEdge);
             float dist    = minDist + (float)GetRandomValue(0, 800);
-            Vector2 pos = { _playerEntity.transform.position.x + cosf(ang) * dist,
-                            _playerEntity.transform.position.y + sinf(ang) * dist };
+            Vector2 pos = { anchor.x + cosf(ang) * dist,
+                            anchor.y + sinf(ang) * dist };
             Asteroid ra = MakeAsteroid(pos, GetRandomValue(0, 2));
             AssignAsteroidMaterials(ra);
-            _asteroids.push_back(std::move(ra));
+            _w->asteroids.push_back(std::move(ra));
         }
-        int liveNpcs = (int)std::count_if(_npcMeta.begin(), _npcMeta.end(),
+        int liveNpcs = (int)std::count_if(_w->npcMeta.begin(), _w->npcMeta.end(),
             [](const NpcMeta& m) { return m.alive; });
         for (int s = 0; s < 2 && liveNpcs < MaxNpcShips; ++s, ++liveNpcs) {
-            float ang     = (float)GetRandomValue(0, 359) * DEG2RAD;
-            float minDist = std::max(1200.0f, viewEdge);
-            float dist    = minDist + (float)GetRandomValue(0, 800);
-            Vector2 pos = { _playerEntity.transform.position.x + cosf(ang) * dist,
-                            _playerEntity.transform.position.y + sinf(ang) * dist };
-            auto [ne, nm] = MakeNpcEntity(_nextNpcId++, pos);
+            Vector2 pos = { 0.0f, 0.0f };
+
+            // 50-attempt retry loop for dynamic spawns
+            for (int attempt = 0; attempt < 50; ++attempt) {
+                float ang = (float)GetRandomValue(0, 359) * DEG2RAD;
+                float minDist = std::max(1200.0f, viewEdge);
+                float dist = minDist + (float)GetRandomValue(0, 800);
+
+                pos = { anchor.x + cosf(ang) * dist,
+                        anchor.y + sinf(ang) * dist };
+
+                // Validate that this off-screen location isn't right on top of a station or existing enemy
+                if (SpawnPosSafeFromStations(pos, _w->stations, kEnemySpawnMargin) &&
+                    SpawnPosSafeFromNpcs(pos, _w->npcMeta, _w->entities, 400.0f)) {
+                    break; // Found a safe spot!
+                }
+            }
+
+            auto [ne, nm] = MakeNpcEntity(_w->nextNpcId++, pos);
             ApplyNpcLoadout(ne, nm);
             nm.preferredRange = nm.attackRange * 0.75f;
             ne.health.currentHull = ne.health.maxStats.hull;
-            if (!_npcFreeSlots.empty()) {
-                size_t slot = _npcFreeSlots.back(); _npcFreeSlots.pop_back();
-                _entities[slot] = std::move(ne); _npcMeta[slot] = std::move(nm);
+            ne.network.networkId  = ne.id;   // expose to snapshots
+            if (!_w->npcFreeSlots.empty()) {
+                size_t slot = _w->npcFreeSlots.back(); _w->npcFreeSlots.pop_back();
+                _w->entities[slot] = std::move(ne); _w->npcMeta[slot] = std::move(nm);
             } else {
-                _entities.push_back(std::move(ne)); _npcMeta.push_back(std::move(nm));
+                _w->entities.push_back(std::move(ne)); _w->npcMeta.push_back(std::move(nm));
             }
         }
     }
+}
 
-    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen ||
-                       _galacticMap.isOpen || _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
-                       _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
-                       _buildMenu.isOpen || _stationModMenu.isOpen || _placementConfirmOpen;
-    if (!anyMenuOpen) {
-        float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f)
-            _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
+// Simulate one frame of a system the local player is NOT in. Reuses the same
+// per-world simulation functions as the active system by re-pointing `_w`.
+// The local player is parked far outside the world for the duration, so AI,
+// collisions and sun gravity treat them as absent (every player interaction in
+// those functions is distance-gated); culling/respawn anchors on one of the
+// system's remote occupants instead.
+void SpaceFlight::TickBackgroundWorld(float dt, SystemWorld& world) {
+    SystemWorld* prevWorld = _w;
+    _w      = &world;
+    _bgTick = true;
+
+    const Vector2 savedPos = _playerEntity.transform.position;
+    const Vector2 savedVel = _playerEntity.transform.velocity;
+    _playerEntity.transform.position = { 1.0e9f, 1.0e9f };
+    _playerEntity.transform.velocity = { 0.0f, 0.0f };
+
+    world.age += dt;
+    AdvanceProjectilesAndAsteroids(dt);
+    UpdateOrbits(dt);
+    UpdateNpcShips(dt);
+    ApplySunGravity(dt);
+    UpdateWorldStationFire(dt);
+    UpdateCollisions();
+    UpdateNpcCollisions();
+
+    // Anchor culling/repopulation on a player who's actually here.
+    for (const auto& [netId, re] : _remoteEntities) {
+        if (re.id == 0) continue;
+        auto it = _peerSystem.find(netId);
+        if (it != _peerSystem.end() && it->second == world.systemId) {
+            CullAndRespawnAround(dt, re.transform.position);
+            break;
+        }
     }
-    _camera.zoom = _cameraZoom;
 
-    _camera.target.x += (_playerEntity.transform.position.x - _camera.target.x) * 6.0f * dt;
-    _camera.target.y += (_playerEntity.transform.position.y - _camera.target.y) * 6.0f * dt;
-
-    // ── Client: send current position + aim to host every frame ───────────────
-    if (net::Game().IsClient() && _worldSynced) {
-        static uint32_t s_inputSeq = 0;
-        net::InputCommand cmd;
-        cmd.networkId   = net::Game().LocalNetworkId();
-        cmd.aimRotation = _playerEntity.transform.rotation;
-        cmd.posX        = _playerEntity.transform.position.x;
-        cmd.posY        = _playerEntity.transform.position.y;
-        cmd.sequence    = s_inputSeq++;
-        cmd.firing      = (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !blockFireUntilRelease) ? 1 : 0;
-        net::Game().ClientSendInput(cmd);
-    }
+    _playerEntity.transform.position = savedPos;
+    _playerEntity.transform.velocity = savedVel;
+    _bgTick = false;
+    _w      = prevWorld;
 }
 
 void SpaceFlight::Draw() {
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
-        _buildMenu.isOpen || _stationModMenu.isOpen || _placementConfirmOpen);
+        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     Vector2 mouse = GetMousePosition();
     int hy = GetScreenHeight() - 158 - 6;
 
@@ -5560,7 +6047,7 @@ void SpaceFlight::Draw() {
         }
     }
 
-    for (const Asteroid& a : _asteroids) {
+    for (const Asteroid& a : _w->asteroids) {
         if (!a.alive) continue;
         const Texture2D* atex = a.tier == 2 ? &_asteroidTexLarge
                               : a.tier == 1 ? &_asteroidTexMedium
@@ -5571,7 +6058,7 @@ void SpaceFlight::Draw() {
     DrawNpcShips();
     DrawRemotePlayers();
 
-    for (const Projectile& p : _projectiles) {
+    for (const Projectile& p : _w->projectiles) {
         float age = p.lifetime / p.maxLife;
         auto  a8 = (unsigned char)((1.0f - age) * 255.0f);
         if (p.isHoming) {
@@ -5583,7 +6070,7 @@ void SpaceFlight::Draw() {
             DrawCircleV(p.position, 6.0f, Color{ 255, 160,  40, (unsigned char)(a8 / 3) });
         }
     }
-    // Draw server-authoritative projectiles on client (host renders its own _projectiles above).
+    // Draw server-authoritative projectiles on client (host renders its own _w->projectiles above).
     for (const net::ProjectileSnapshot& rp : _remoteProjectiles) {
         DrawCircleV({ rp.posX, rp.posY }, 3.5f, Color{ 255, 220, 100, 220 });
         DrawCircleV({ rp.posX, rp.posY }, 6.0f, Color{ 255, 160,  40,  55 });
@@ -5608,7 +6095,7 @@ void SpaceFlight::Draw() {
             Rectangle src    = { 0.0f, 0.0f, tw, th };
             Rectangle dst    = { pos.x, pos.y, tw * ps, th * ps };
             Vector2   origin = { tw * ps / 2.0f, th * ps / 2.0f };
-            float     lightRange = _sun.active ? _sun.gravRange * 5.0f : 0.0f;
+            float     lightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
             Color     lit = _lighting.BeginLit(pos, { 0.0f, 0.0f }, lightRange);
             DrawTexturePro(*pTexPtr, src, dst, origin, rot, lit);
             _lighting.EndLit();
@@ -5687,14 +6174,14 @@ void SpaceFlight::Draw() {
             (int)(backBtn.y + (backBtn.height - 14) / 2), 14, WHITE);
 
         std::vector<size_t> wingmenIdxs;
-        for (size_t di = 0; di < _npcMeta.size(); ++di)
-            if (_npcMeta[di].alive && _npcMeta[di].wingman) wingmenIdxs.push_back(di);
+        for (size_t di = 0; di < _w->npcMeta.size(); ++di)
+            if (_w->npcMeta[di].alive && _w->npcMeta[di].wingman) wingmenIdxs.push_back(di);
         if (wingmenIdxs.empty()) return;
 
         size_t selIdx = wingmenIdxs[0];
         for (size_t di : wingmenIdxs)
-            if (_npcMeta[di].id == _escortMenuSelId) { selIdx = di; break; }
-        const NpcMeta* sel = &_npcMeta[selIdx];
+            if (_w->npcMeta[di].id == _escortMenuSelId) { selIdx = di; break; }
+        const NpcMeta* sel = &_w->npcMeta[selIdx];
 
         static constexpr int ICON_W = 150, ICON_H = 50, ICON_GAP = 16;
         int totalIconW = (int)wingmenIdxs.size() * ICON_W + ((int)wingmenIdxs.size() - 1) * ICON_GAP;
@@ -5702,16 +6189,16 @@ void SpaceFlight::Draw() {
         for (int i = 0; i < (int)wingmenIdxs.size(); ++i) {
             Rectangle ir = { (float)(iconStartX + i * (ICON_W + ICON_GAP)), 70.0f,
                               (float)ICON_W, (float)ICON_H };
-            bool selThis = (_npcMeta[wingmenIdxs[i]].id == _escortMenuSelId);
+            bool selThis = (_w->npcMeta[wingmenIdxs[i]].id == _escortMenuSelId);
             bool hovThis = CheckCollisionPointRec(m2, ir);
             DrawRectangleRec(ir, selThis ? Color{ 20,55,20,240 } : (hovThis ? Color{ 18,42,18,220 } : Color{ 10,20,10,200 }));
             DrawRectangleLinesEx(ir, selThis ? 2.0f : 1.0f,
                 selThis ? Color{ 80,200,80,255 } : Color{ 34,98,34,160 });
-            std::string iconLblS = _npcMeta[wingmenIdxs[i]].shipTypeName + "  #" + std::to_string(_npcMeta[wingmenIdxs[i]].id);
+            std::string iconLblS = _w->npcMeta[wingmenIdxs[i]].shipTypeName + "  #" + std::to_string(_w->npcMeta[wingmenIdxs[i]].id);
             const char* iconLbl = iconLblS.c_str();
             DrawText(iconLbl, (int)(ir.x + (ir.width - MeasureText(iconLbl, 12)) / 2),
                 (int)(ir.y + 8), 12, selThis ? WHITE : Color{ 100,180,100,220 });
-            float hp = _entities[wingmenIdxs[i]].health.currentHull / _entities[wingmenIdxs[i]].health.maxStats.hull;
+            float hp = _w->entities[wingmenIdxs[i]].health.currentHull / _w->entities[wingmenIdxs[i]].health.maxStats.hull;
             int bx = (int)ir.x + 8, by = (int)(ir.y + 30), bw = ICON_W - 16;
             DrawRectangle(bx, by, bw, 5, Color{ 20,32,20,200 });
             DrawRectangle(bx, by, (int)(bw * hp), 5,
@@ -5722,8 +6209,8 @@ void SpaceFlight::Draw() {
 
         std::string selLblS = "ESCORT: " + sel->shipTypeName + "  #" + std::to_string(sel->id);
         DrawText(selLblS.c_str(), 30, 142, 14, Color{ 68,162,68,255 });
-        float selHull    = _entities[selIdx].health.currentHull;
-        float selMaxHull = _entities[selIdx].health.maxStats.hull;
+        float selHull    = _w->entities[selIdx].health.currentHull;
+        float selMaxHull = _w->entities[selIdx].health.maxStats.hull;
         float hpPct = selHull / selMaxHull;
         char hpLbl[64];
         std::snprintf(hpLbl, sizeof(hpLbl), "Hull  %.0f / %.0f", selHull, selMaxHull);
@@ -5889,6 +6376,7 @@ void SpaceFlight::Draw() {
     // ── Build menu ────────────────────────────────────────────────────────────
     if (_buildMenu.isOpen)       _buildMenu.Draw();
     if (_stationModMenu.isOpen)  _stationModMenu.Draw();
+    if (_miningMenu.isOpen)      _miningMenu.Draw();
 
     // ── Placement mode HUD overlay ────────────────────────────────────────────
     if (_inPlacementMode && !_placementConfirmOpen) {
@@ -6052,22 +6540,23 @@ void SpaceFlight::OnExit() {
     auto& cfg = FleetManager::Get().PlayerShip;
     cfg.HullIntegrity = _playerEntity.health.currentHull;
     cfg.MaxHull       = _playerEntity.health.maxStats.hull;
-    _projectiles.clear();
-    _asteroids.clear();
-    _entities.clear();
-    _npcMeta.clear();
-    _lootDrops.clear();
-    _materialDrops.clear();
+    _w->projectiles.clear();
+    _w->asteroids.clear();
+    _w->entities.clear();
+    _w->npcMeta.clear();
+    _w->lootDrops.clear();
+    _w->materialDrops.clear();
     _commsLog.clear();
     _remoteEntities.clear();
     _remoteFireCooldown.clear();
     _remoteJoinGrace.clear();
     _remoteProjectiles.clear();
+    _peerSystem.clear();
     _npcTargetId = 0;
     _playerEntity = ecs::Entity{};
     _playerMeta   = PlayerMeta{};
-    _planets.clear();
-    _stations.clear();
+    _w->planets.clear();
+    _w->stations.clear();
     if (_planetBaseTex.id    > 0) { UnloadTexture(_planetBaseTex);    _planetBaseTex    = {}; }
     if (_stationBaseTex.id   > 0) { UnloadTexture(_stationBaseTex);   _stationBaseTex   = {}; }
     if (_gargosTex.id        > 0) { UnloadTexture(_gargosTex);        _gargosTex        = {}; }

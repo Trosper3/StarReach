@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include "NetCommon.h"
 #include "Protocol.h"
@@ -22,7 +23,7 @@ namespace net {
 //     session.Poll(dt);                          // pump ENet, fill pendingInputs
 //     ApplyInputsToEntities(session.pendingInputs, world);
 //     session.pendingInputs.clear();
-//     session.HostBroadcast(world);              // ~20 Hz, not every frame
+//     session.HostSendSnapshot(occupants, sysId, world);  // ~20 Hz, per system
 //
 // Typical per-frame use (client):
 //     session.Poll(dt);                          // fills latestSnapshots
@@ -63,15 +64,18 @@ public:
     void Poll(float dt);
 
     // ── Host -> clients ───────────────────────────────────────────────────────
-    // Builds a snapshot from every networked entity (+ asteroids + projectiles) and
-    // broadcasts it unreliably at ~20 Hz.
-    void HostBroadcast(const std::vector<ecs::Entity>&      entities,
-                       const std::vector<AsteroidSnapshot>&  asteroids   = {},
-                       const std::vector<ProjectileSnapshot>& projectiles = {});
+    // Builds one system's snapshot from the given entities (+ asteroids +
+    // projectiles) and sends it unreliably to exactly the listed peers — the
+    // occupants of that system. Encodes once; the packet is shared across sends.
+    void HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
+                          uint32_t                              systemId,
+                          const std::vector<ecs::Entity>&       entities,
+                          const std::vector<AsteroidSnapshot>&  asteroids   = {},
+                          const std::vector<ProjectileSnapshot>& projectiles = {});
 
-    // Send world seed + system id + galaxy master seed to a specific peer so
-    // they generate the same map (both the current system and the galactic map).
-    void HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed, uint32_t gameSeed);
+    // Send a system's seed + live-state diff to a specific peer so they can
+    // generate the map and reconcile it (sent at join and on warp arrival).
+    void HostSendWorldSync(uint32_t peerId, const WorldSyncData& ws);
 
     // Tell a specific client their player was killed (reliable, targeted).
     void HostSendPlayerDead(uint32_t networkId);
@@ -79,23 +83,33 @@ public:
     // Broadcast to all clients that the server is shutting down, then flush.
     void BroadcastServerClosing();
 
-    // Broadcast that a world station was destroyed (reliable).
-    void HostBroadcastStationDead(uint32_t stationId);
+    // Broadcast that a station in `systemId` was destroyed (reliable). Clients
+    // in other systems ignore it; they get station state via WorldSync instead.
+    void HostBroadcastStationDead(uint32_t systemId, uint32_t stationId);
 
     // ── Client -> host ────────────────────────────────────────────────────────
     void ClientSendInput(const InputCommand& cmd);
+
+    // Tell the host this client's warp cinematic reached black and it now
+    // occupies `systemId`; the host replies with a WorldSync for that system.
+    void ClientSendWarpNotify(uint32_t systemId);
 
     // ── I/O buffers consumed by the game loop ────────────────────────────────
     std::vector<InputCommand>          pendingInputs;              // host side
     std::vector<ecs::NetworkSnapshot>  latestSnapshots;            // client side
     std::vector<AsteroidSnapshot>      latestAsteroidSnapshots;    // client side
     std::vector<ProjectileSnapshot>    latestProjectileSnapshots;  // client side
+    uint32_t                           latestSnapshotSystemId = 0; // client: system the snapshot describes
     bool                               snapshotDirty    = false;   // client: true when a new snapshot arrived
     bool                               pendingPlayerDead = false;  // client: server killed this player
     bool                               pendingServerClosing = false; // client: host shut down
     std::vector<uint32_t>              newPeerIds;          // host: ids of peers that just joined
+    std::vector<uint32_t>              disconnectedPeerIds; // host: ids of peers that just left
     std::optional<WorldSyncData>       pendingWorldSync;    // client: set on WorldSync receipt
-    std::vector<uint32_t>              pendingStationDeadIds; // client: station ids destroyed on server
+    // Host: (peerId, systemId) warp notifications awaiting a WorldSync reply.
+    std::vector<std::pair<uint32_t, uint32_t>> pendingWarpNotifies;
+    // Client: (systemId, stationId) pairs destroyed on the server.
+    std::vector<std::pair<uint32_t, uint32_t>> pendingStationDeads;
 
 private:
     void handlePacket(ENetPeer* from, const uint8_t* data, size_t len);
