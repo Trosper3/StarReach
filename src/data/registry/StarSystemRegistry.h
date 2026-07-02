@@ -24,11 +24,19 @@
 // QueryRegion() is the only entry point that touches more than one system at
 // a time, and it's bounded to a caller-supplied result budget regardless of
 // how large a world-space rect it's asked about (see its comment below).
+//
+// Scale: kGalaxySpan/GridDim gives a ~80,000u nominal star-to-star spacing,
+// with jitter capped so the worst-case adjacent pair is still ~40,000u apart.
+// That's kept deliberately well above the largest possible in-system travel
+// distance (~25,000u — two planets at opposite max orbits around a rare
+// O-class star; see SpaceFlight::SpawnPlanetsAndStations) so the map reads
+// at two clearly distinct scales: tight, planet/station-scale hops within a
+// system, and vastly larger star-to-star gaps between systems.
 
 namespace StarSystemRegistry {
 
-inline constexpr unsigned int kDefaultCount = 1'000'000u;   // adjustable via Init()
-inline constexpr float        kGalaxySpan   = 2'000'000.0f; // world spans [-span/2, +span/2]
+inline constexpr unsigned int kDefaultCount = 1'000'000u;    // adjustable via Init()
+inline constexpr float        kGalaxySpan   = 80'000'000.0f; // world spans [-span/2, +span/2]
 
 namespace detail {
 
@@ -139,11 +147,13 @@ inline StarSystem Generate(unsigned int id) {
     float cellCX = (cx + 0.5f) * cellSize - originOffset;
     float cellCY = (cy + 0.5f) * cellSize - originOffset;
 
-    // Jitter within the cell (up to 80% of cell size) so systems don't sit
-    // on a visibly perfect grid.
+    // Jitter within the cell (up to 50% of cell size, i.e. +/-25%) so systems
+    // don't sit on a visibly perfect grid, while keeping the worst-case
+    // adjacent-pair distance (cellSize * (1 - 2*0.25) = cellSize * 0.5) safely
+    // above the max in-system travel distance — see the scale note up top.
     uint32_t jh = detail::Hash32(detail::MasterSeedRef(), id, 0x51ED27u);
-    float jx = ((jh & 0xFFFFu) / 65535.0f - 0.5f) * cellSize * 0.8f;
-    float jy = (((jh >> 16) & 0xFFFFu) / 65535.0f - 0.5f) * cellSize * 0.8f;
+    float jx = ((jh & 0xFFFFu) / 65535.0f - 0.5f) * cellSize * 0.5f;
+    float jy = (((jh >> 16) & 0xFFFFu) / 65535.0f - 0.5f) * cellSize * 0.5f;
 
     s.galacticPos = { cellCX + jx, cellCY + jy };
     return s;

@@ -53,8 +53,8 @@ static void CalcGalButtons(const Rectangle& bot, Rectangle& sysMap, Rectangle& m
 }
 
 // ── Camera tuning ────────────────────────────────────────────────────────────
-static constexpr float kDefaultViewWidth = 100000.0f; // world units across at Open()/Home
-static constexpr float kMaxZoomViewWidth = 20000.0f;  // world units across at max zoom-in
+static constexpr float kDefaultViewWidth = 350000.0f; // world units across at Open()/Home
+static constexpr float kMaxZoomViewWidth = 20000.0f;   // world units across at max zoom-in
 static constexpr float kZoomStep         = 1.15f;
 static constexpr float kPanSpeedPx       = 500.0f;     // screen px/sec at scale=1
 static constexpr int   kDrawBudget       = 6000;       // decorative background points/frame
