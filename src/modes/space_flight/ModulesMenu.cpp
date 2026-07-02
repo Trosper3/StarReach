@@ -276,8 +276,8 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
         if (ax.hasSensors)       addStat("Sensor Range", "%.0f u", ax.sensorRange);
         if (ax.hasCloaking)      addStr("Cloaking", "Active");
         if (ax.hasLockOnJammer)  addStr("Lock-On Jam", "Active");
-        if (ax.materialFindBonus > 0.0f)
-            addStat("Mat. Find", "+%.0f%%", ax.materialFindBonus * 100.0f);
+        // materialFindBonus has no effect on a player-piloted ship — it only
+        // governs a mining station's collection rate once installed there.
         if (nLines == 0)         addStr("Status", "No effects");
         break;
     }

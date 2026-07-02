@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "core/Module.h"
+#include "core/StorageItem.h"
 #include "raylib.h"
 #include <optional>
 #include <string>
@@ -35,6 +36,10 @@ struct PlayerStation {
     Vector2      position = {};
     bool         alive = true;
     std::vector<HardpointState> hardpoints;
+
+    // Onboard cargo hold (currently only populated for mining stations).
+    std::vector<StorageItem> storage;
+    float                    miningTimer = 0.0f;   // seconds until next auto-collected material
 
     HealthComponent health;
 

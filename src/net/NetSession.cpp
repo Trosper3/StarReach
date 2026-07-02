@@ -126,7 +126,11 @@ void NetSession::Shutdown() {
     snapshotDirty          = false;
     pendingPlayerDead      = false;
     pendingServerClosing   = false;
-    pendingStationDeadIds.clear();
+    newPeerIds.clear();
+    disconnectedPeerIds.clear();
+    pendingWorldSync.reset();
+    pendingWarpNotifies.clear();
+    pendingStationDeads.clear();
 }
 
 void NetSession::Poll(float /*dt*/) {
@@ -164,7 +168,9 @@ void NetSession::Poll(float /*dt*/) {
 
         case ENET_EVENT_TYPE_DISCONNECT:
             if (_role == NetRole::Host) {
-                std::printf("[net] client %u disconnected\n", GetPeerId(event.peer));
+                uint32_t leftId = GetPeerId(event.peer);
+                std::printf("[net] client %u disconnected\n", leftId);
+                if (leftId != 0) disconnectedPeerIds.push_back(leftId);
                 SetPeerId(event.peer, 0);
             } else {
                 std::printf("[net] disconnected from host\n");
@@ -229,11 +235,13 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
     }
 
     case MsgType::Snapshot: {
-        // Client receives authoritative world state (entities + asteroids + projectiles).
+        // Client receives authoritative state for one system (entities + asteroids + projectiles).
+        uint32_t sysId = 0;
         std::vector<ecs::NetworkSnapshot> snaps;
         std::vector<AsteroidSnapshot>     aSnaps;
         std::vector<ProjectileSnapshot>   pSnaps;
-        if (DecodeSnapshot(r, snaps, aSnaps, pSnaps)) {
+        if (DecodeSnapshot(r, sysId, snaps, aSnaps, pSnaps)) {
+            latestSnapshotSystemId      = sysId;
             latestSnapshots             = std::move(snaps);
             latestAsteroidSnapshots     = std::move(aSnaps);
             latestProjectileSnapshots   = std::move(pSnaps);
@@ -253,8 +261,17 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
     }
 
     case MsgType::StationDead: {
-        uint32_t id = 0;
-        if (DecodeStationDead(r, id)) pendingStationDeadIds.push_back(id);
+        uint32_t sysId = 0, id = 0;
+        if (DecodeStationDead(r, sysId, id)) pendingStationDeads.push_back({ sysId, id });
+        break;
+    }
+
+    case MsgType::ClientWarpNotify: {
+        // Host: a client warped; remember where it went so SpaceFlight can
+        // attach it to (or spin up) that system and reply with a WorldSync.
+        uint32_t sysId = 0;
+        if (DecodeClientWarpNotify(r, sysId))
+            pendingWarpNotifies.push_back({ GetPeerId(from), sysId });
         break;
     }
 
@@ -269,26 +286,42 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
     }
 }
 
-void NetSession::HostBroadcast(const std::vector<ecs::Entity>&       entities,
-                               const std::vector<AsteroidSnapshot>&   asteroids,
-                               const std::vector<ProjectileSnapshot>&  projectiles) {
-    if (_role != NetRole::Host || !_host) return;
+void NetSession::HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
+                                  uint32_t                              systemId,
+                                  const std::vector<ecs::Entity>&       entities,
+                                  const std::vector<AsteroidSnapshot>&   asteroids,
+                                  const std::vector<ProjectileSnapshot>&  projectiles) {
+    if (_role != NetRole::Host || !_host || peerIds.empty()) return;
 
     std::vector<ecs::NetworkSnapshot> snaps;
     snaps.reserve(entities.size());
     for (const auto& e : entities) {
         if (e.id == 0 || e.network.networkId == 0) continue;
         ecs::NetworkSnapshot s;
-        s.networkId = e.network.networkId;
-        s.position  = e.transform.position;
-        s.velocity  = e.transform.velocity;
-        s.rotation  = e.transform.rotation;
+        s.networkId    = e.network.networkId;
+        s.position     = e.transform.position;
+        s.velocity     = e.transform.velocity;
+        s.rotation     = e.transform.rotation;
+        s.shipNameHash = e.network.shipNameHash;
         snaps.push_back(s);
     }
 
-    auto pkt = EncodeSnapshot(snaps, asteroids, projectiles);
+    auto pkt = EncodeSnapshot(systemId, snaps, asteroids, projectiles);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), 0 /*unreliable*/);
-    enet_host_broadcast(_host, kChannelUnreliable, p);
+    bool sent = false;
+    for (size_t i = 0; i < _host->peerCount; ++i) {
+        ENetPeer* peer = &_host->peers[i];
+        if (peer->state != ENET_PEER_STATE_CONNECTED) continue;
+        uint32_t id = GetPeerId(peer);
+        for (uint32_t want : peerIds) {
+            if (want == id) {
+                enet_peer_send(peer, kChannelUnreliable, p);
+                sent = true;
+                break;
+            }
+        }
+    }
+    if (!sent) enet_packet_destroy(p);  // nobody matched; don't leak the packet
 }
 
 void NetSession::HostSendPlayerDead(uint32_t networkId) {
@@ -306,12 +339,12 @@ void NetSession::HostSendPlayerDead(uint32_t networkId) {
     enet_packet_destroy(p);
 }
 
-void NetSession::HostBroadcastStationDead(uint32_t stationId) {
+void NetSession::HostBroadcastStationDead(uint32_t systemId, uint32_t stationId) {
     if (_role != NetRole::Host || !_host) return;
-    auto pkt = EncodeStationDead(stationId);
+    auto pkt = EncodeStationDead(systemId, stationId);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
     enet_host_broadcast(_host, kChannelReliable, p);
-    std::printf("[net] broadcast StationDead id %u\n", stationId);
+    std::printf("[net] broadcast StationDead system %u id %u\n", systemId, stationId);
 }
 
 void NetSession::BroadcastServerClosing() {
@@ -323,10 +356,9 @@ void NetSession::BroadcastServerClosing() {
     std::printf("[net] broadcast ServerClosing\n");
 }
 
-void NetSession::HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed, uint32_t gameSeed) {
+void NetSession::HostSendWorldSync(uint32_t peerId, const WorldSyncData& ws) {
     if (_role != NetRole::Host || !_host) return;
 
-    WorldSyncData ws{ systemId, seed, gameSeed };
     auto pkt = EncodeWorldSync(ws);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
 
@@ -347,6 +379,15 @@ void NetSession::ClientSendInput(const InputCommand& cmd) {
     auto pkt = EncodeInput(cmd);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), 0 /*unreliable*/);
     enet_peer_send(_serverPeer, kChannelUnreliable, p);
+}
+
+void NetSession::ClientSendWarpNotify(uint32_t systemId) {
+    if (_role != NetRole::Client || !_serverPeer || !_connected) return;
+
+    auto pkt = EncodeClientWarpNotify(systemId);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    enet_peer_send(_serverPeer, kChannelReliable, p);
+    std::printf("[net] sent ClientWarpNotify for system %u\n", systemId);
 }
 
 } // namespace net

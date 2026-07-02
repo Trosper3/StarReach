@@ -13,7 +13,9 @@ inline ModuleDef Aux_BasicScanner() {
 inline ModuleDef Aux_MaterialProbe() {
     ModuleDef m;
     m.id = "aux_material_probe"; m.displayName = "Material Probe";
-    m.description = "Resonance scanner tuned to identify valuable asteroid compositions.";
+    m.description = "Resonance scanner tuned to identify valuable asteroid compositions. "
+                     "Installed on a mining station's drill hardpoint, its grade sets how "
+                     "quickly the station harvests raw materials.";
     m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Uncommon;
     m.auxiliary.materialFindBonus = 0.30f;
     return m;

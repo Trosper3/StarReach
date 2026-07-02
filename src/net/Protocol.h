@@ -15,26 +15,39 @@
 namespace net {
 
 enum class MsgType : uint8_t {
-    Hello         = 1,   // C->S: request to join (carries protocol version)
-    Welcome       = 2,   // S->C: accepted; assigns the client its networkId
-    Reject        = 3,   // S->C: refused (e.g. protocol mismatch / server full)
-    Input         = 4,   // C->S: per-tick player input command
-    Snapshot      = 5,   // S->C: authoritative world state (entities + asteroids + projectiles)
-    WorldSync     = 6,   // S->C: system id + seed so client generates the same map
-    PlayerDead    = 7,   // S->C: targeted client's player was killed; show death screen
-    ServerClosing = 8,   // S->C: broadcast before host shuts down; clients return to menu
-    StationDead   = 9,   // S->C: a world station was destroyed; client marks it dead
+    Hello           = 1,   // C->S: request to join (carries protocol version)
+    Welcome         = 2,   // S->C: accepted; assigns the client its networkId
+    Reject          = 3,   // S->C: refused (e.g. protocol mismatch / server full)
+    Input           = 4,   // C->S: per-tick player input command
+    Snapshot        = 5,   // S->C: authoritative state of ONE system (entities + asteroids + projectiles)
+    WorldSync       = 6,   // S->C: system id + seed + live-state diff; sent at join and on warp arrival
+    PlayerDead      = 7,   // S->C: targeted client's player was killed; show death screen
+    ServerClosing   = 8,   // S->C: broadcast before host shuts down; clients return to menu
+    StationDead     = 9,   // S->C: a world station was destroyed; client marks it dead
+    ClientWarpNotify= 10,  // C->S: client's warp cinematic hit black; wants system `systemId`
 };
 
-// Payload for WorldSync — the client calls SpawnPlanetsAndStations(worldSeed)
-// and switches to system systemId on receipt. gameSeed is the galaxy master
-// seed (StarSystemRegistry::Init) so the client's galactic map matches the
-// host's; it's independent of worldSeed, which only seeds the current
-// system's planets/stations.
+// Station state that differs from what seed-regeneration produces. Sent inside
+// WorldSync so a client arriving at a lived-in system sees damage/deaths that
+// happened before it got there. NPCs/asteroids/projectiles need no diff: they
+// self-heal from the first Snapshot (clients evict anything absent from it).
+struct StationStateSync {
+    uint32_t id    = 0;
+    float    hull  = 0.0f;
+    uint8_t  alive = 1;
+};
+
+// Payload for WorldSync — the client calls SpawnPlanetsAndStations(worldSeed),
+// fast-forwards planet orbits by worldAge, applies the station diff, and
+// switches to system systemId. gameSeed is the galaxy master seed
+// (StarSystemRegistry::Init) so the client's galactic map matches the host's;
+// it's independent of worldSeed, which only seeds one system's content.
 struct WorldSyncData {
     uint32_t systemId  = 1;
     uint32_t worldSeed = 0;
     uint32_t gameSeed  = 0;
+    float    worldAge  = 0.0f;   // seconds the host has simulated this system
+    std::vector<StationStateSync> stations;  // only stations that differ from genesis
 };
 
 // Reason codes for a Reject message.
@@ -144,12 +157,14 @@ struct ProjectileSnapshot {
 };
 
 inline std::vector<uint8_t> EncodeSnapshot(
+    uint32_t                                 systemId,
     const std::vector<ecs::NetworkSnapshot>& snaps,
     const std::vector<AsteroidSnapshot>&     asteroids   = {},
     const std::vector<ProjectileSnapshot>&   projectiles = {})
 {
     ByteWriter w;
     w.put(uint8_t(MsgType::Snapshot));
+    w.put(systemId);   // which system this snapshot describes; clients drop mismatches
     w.put(uint16_t(snaps.size()));
     for (const auto& s : snaps) {
         w.put(s.networkId);
@@ -158,6 +173,7 @@ inline std::vector<uint8_t> EncodeSnapshot(
         w.put(s.velocity.x);
         w.put(s.velocity.y);
         w.put(s.rotation);
+        w.put(s.shipNameHash);
     }
     // Asteroid section.
     uint8_t aCount = static_cast<uint8_t>(std::min(asteroids.size(), size_t(255)));
@@ -197,15 +213,29 @@ inline std::vector<uint8_t> EncodeServerClosing() {
     return std::move(w.data);
 }
 
-inline std::vector<uint8_t> EncodeStationDead(uint32_t stationId) {
+inline std::vector<uint8_t> EncodeStationDead(uint32_t systemId, uint32_t stationId) {
     ByteWriter w;
     w.put(uint8_t(MsgType::StationDead));
+    w.put(systemId);
     w.put(stationId);
     return std::move(w.data);
 }
 
-inline bool DecodeStationDead(ByteReader& r, uint32_t& outId) {
-    outId = r.get<uint32_t>();
+inline bool DecodeStationDead(ByteReader& r, uint32_t& outSystemId, uint32_t& outId) {
+    outSystemId = r.get<uint32_t>();
+    outId       = r.get<uint32_t>();
+    return r.ok;
+}
+
+inline std::vector<uint8_t> EncodeClientWarpNotify(uint32_t systemId) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::ClientWarpNotify));
+    w.put(systemId);
+    return std::move(w.data);
+}
+
+inline bool DecodeClientWarpNotify(ByteReader& r, uint32_t& outSystemId) {
+    outSystemId = r.get<uint32_t>();
     return r.ok;
 }
 
@@ -215,6 +245,14 @@ inline std::vector<uint8_t> EncodeWorldSync(const WorldSyncData& ws) {
     w.put(ws.systemId);
     w.put(ws.worldSeed);
     w.put(ws.gameSeed);
+    w.put(ws.worldAge);
+    uint16_t count = static_cast<uint16_t>(std::min(ws.stations.size(), size_t(65535)));
+    w.put(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        w.put(ws.stations[i].id);
+        w.put(ws.stations[i].hull);
+        w.put(ws.stations[i].alive);
+    }
     return std::move(w.data);
 }
 
@@ -244,6 +282,19 @@ inline bool DecodeWorldSync(ByteReader& r, WorldSyncData& out) {
     out.systemId  = r.get<uint32_t>();
     out.worldSeed = r.get<uint32_t>();
     out.gameSeed  = r.get<uint32_t>();
+    out.worldAge  = r.get<float>();
+    uint16_t count = r.get<uint16_t>();
+    if (!r.ok) return false;
+    out.stations.clear();
+    out.stations.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        StationStateSync ss;
+        ss.id    = r.get<uint32_t>();
+        ss.hull  = r.get<float>();
+        ss.alive = r.get<uint8_t>();
+        if (!r.ok) return false;
+        out.stations.push_back(ss);
+    }
     return r.ok;
 }
 
@@ -260,6 +311,7 @@ inline bool DecodeInput(ByteReader& r, InputCommand& out) {
 }
 
 inline bool DecodeSnapshot(ByteReader& r,
+                           uint32_t&                          outSystemId,
                            std::vector<ecs::NetworkSnapshot>& out,
                            std::vector<AsteroidSnapshot>&     asteroidOut,
                            std::vector<ProjectileSnapshot>&   projOut)
@@ -267,17 +319,19 @@ inline bool DecodeSnapshot(ByteReader& r,
     out.clear();
     asteroidOut.clear();
     projOut.clear();
+    outSystemId = r.get<uint32_t>();
     uint16_t count = r.get<uint16_t>();
     if (!r.ok) return false;
     out.reserve(count);
     for (uint16_t i = 0; i < count; ++i) {
         ecs::NetworkSnapshot s;
-        s.networkId  = r.get<uint32_t>();
-        s.position.x = r.get<float>();
-        s.position.y = r.get<float>();
-        s.velocity.x = r.get<float>();
-        s.velocity.y = r.get<float>();
-        s.rotation   = r.get<float>();
+        s.networkId    = r.get<uint32_t>();
+        s.position.x   = r.get<float>();
+        s.position.y   = r.get<float>();
+        s.velocity.x   = r.get<float>();
+        s.velocity.y   = r.get<float>();
+        s.rotation     = r.get<float>();
+        s.shipNameHash = r.get<uint32_t>();
         if (!r.ok) return false;
         out.push_back(s);
     }

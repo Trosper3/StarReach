@@ -2,6 +2,7 @@
 #include "EventBus.h"
 #include "data/registry/PlayerStationRegistry.h"
 #include "data/modules/ArmorDefs.h"
+#include "data/modules/ModuleLookup.h"
 #include "core/ShipRegistry.h"
 #include "engine/SpriteCache.h"
 #include "engine/ResourceManager.h"
@@ -52,13 +53,51 @@ PlayerStation& FleetManager::SpawnStation(const std::string& stationDefId, Vecto
         }
     }
 
-    // Initialize default armor on the newly created station (ps)
+    // Install each hardpoint's preloaded modules (from station_defs.json) into
+    // the first compatible empty slot of matching type.
+    if (def) {
+        for (size_t hi = 0; hi < ps.hardpoints.size() && hi < def->hardpoints.size(); ++hi) {
+            HardpointState& hp = ps.hardpoints[hi];
+            for (const std::string& modId : def->hardpoints[hi].preloadedModules) {
+                std::optional<ModuleDef> mod = ModuleById(modId);
+                if (!mod) continue;
+                switch (mod->type) {
+                case ModuleType::Weapon:
+                    for (auto& w : hp.weapons) if (!w.has_value()) { w = *mod; break; }
+                    break;
+                case ModuleType::Armor:
+                    if (!hp.armor.has_value()) hp.armor = *mod;
+                    break;
+                case ModuleType::Shield:
+                    for (auto& s : hp.shields) if (!s.has_value()) { s = *mod; break; }
+                    break;
+                case ModuleType::Engine:
+                    if (!hp.engine.has_value()) hp.engine = *mod;
+                    break;
+                case ModuleType::Auxiliary:
+                    for (auto& a : hp.aux) if (!a.has_value()) { a = *mod; break; }
+                    break;
+                default: break;
+                }
+            }
+        }
+    }
+
+    // Any armor-capable hardpoint still bare (no preloaded armor in the def)
+    // gets a basic starter patch, then hull totals are derived from whatever
+    // armor ended up equipped.
     for (HardpointState& hp : ps.hardpoints) {
-        if (hp.arSlots > 0) {
-            hp.armor = Armor_HullPatch(); // Inject a basic starter armor module
+        if (hp.arSlots > 0 && !hp.armor.has_value())
+            hp.armor = Armor_HullPatch();
+        if (hp.armor.has_value()) {
             hp.maxHull = 100.0f + hp.armor->armor.hullBonus;
             hp.hull = hp.maxHull;         // Heal to full on spawn
         }
+    }
+
+    // Mining stations get a cargo hold for auto-collected materials.
+    if (stationDefId == "mining_station") {
+        ps.storage.assign(8, StorageItem{});
     }
 
     PlayerStations.push_back(std::move(ps));

@@ -8,6 +8,7 @@
 #include "ModulesMenu.h"
 #include "BuildMenu.h"
 #include "StationModuleMenu.h"
+#include "MiningStationMenu.h"
 #include "core/Module.h"
 #include "core/PlayerStation.h"
 #include "core/SaveManager.h"
@@ -17,6 +18,7 @@
 #include "engine/LightingSystem.h"
 #include "raylib.h"
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -24,6 +26,8 @@
 #include <core/ShipDef.h>
 #include "core/FactionEnum.h"
 #include "net/Protocol.h"
+
+namespace ecs { struct ShipDef; }
 
 // ── Stellar objects ───────────────────────────────────────────────────────────
 
@@ -178,6 +182,38 @@ struct CommsEntry {
     bool        fromPlayer = false;
 };
 
+// ── Per-system simulation state ──────────────────────────────────────────────
+// Everything needed to simulate one star system independently of any other.
+// SpaceFlight keeps one SystemWorld per system occupied this session (keyed by
+// systemId in _worlds); `_w` points at the world the local player is in — that
+// world is the one rendered and driven by the normal Update path. On a host,
+// worlds whose only occupants are remote clients are ticked by
+// TickBackgroundWorld(); unoccupied worlds are frozen in memory (state kept,
+// no simulation) until someone warps back in.
+struct SystemWorld {
+    unsigned int systemId = 1;
+    uint32_t     seed     = 0;      // content seed (planets/stations/asteroids/NPCs)
+    float        age      = 0.0f;   // seconds simulated since generation (orbit sync)
+
+    // entities[i] and npcMeta[i] are always parallel — same index = same NPC.
+    std::vector<ecs::Entity>  entities;
+    std::vector<NpcMeta>      npcMeta;
+    std::vector<size_t>       npcFreeSlots;  // indices of dead slots available for reuse
+    unsigned int              nextNpcId = 1000;
+
+    std::vector<Projectile>   projectiles;
+    std::vector<Asteroid>     asteroids;
+    std::vector<SpacePlanet>  planets;
+    std::vector<SpaceStation> stations;
+    SpaceSun                  sun;
+
+    std::vector<LootDrop>     lootDrops;
+    std::vector<MaterialDrop> materialDrops;
+
+    Vector2 playerSpawnPos = {};    // seed-derived; identical on host and client
+    float   respawnTimer   = 0.0f;  // asteroid/NPC repopulation timer
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class SpaceFlight : public IGameMode {
@@ -216,19 +252,20 @@ private:
     std::string _placingShipDefId;
     Vector2     _shipPlacementPos;
 
-    // ── ECS entity list + NPC metadata ──────────────────────────────────────
-    // _entities[i] and _npcMeta[i] are always parallel — same index = same NPC.
-    std::vector<ecs::Entity>  _entities;
-    std::vector<NpcMeta>      _npcMeta;
-    std::vector<size_t>       _npcFreeSlots; // indices of dead slots available for reuse
+    // ── Per-system worlds ────────────────────────────────────────────────────
+    // One SystemWorld per system occupied this session. `_w` is never null
+    // between OnEnter and OnExit and points at the local player's world.
+    std::unordered_map<unsigned int, std::unique_ptr<SystemWorld>> _worlds;
+    SystemWorld* _w = nullptr;
+    SystemWorld& GetOrCreateWorld(unsigned int systemId);
+    SystemWorld& EnsureWorldGenerated(unsigned int systemId);
+
     ecs::GameModeManager      _modeManager;
 
     // Player represented as a single ECS entity + game-specific meta.
     ecs::Entity  _playerEntity;
     PlayerMeta   _playerMeta;
 
-    std::vector<Projectile> _projectiles;
-    std::vector<Asteroid>   _asteroids;
     SystemMap               _systemMap;
     GalacticMap             _galacticMap;
     StorageMenu             _storageMenu;
@@ -254,6 +291,12 @@ private:
     void SpawnInitialAsteroids();
     void SpawnNpcShips();
     void SpawnPlanetsAndStations(unsigned int seed = 0);
+    void AdvanceProjectilesAndAsteroids(float dt);
+    void UpdateWorldStationFire(float dt);
+    void CullAndRespawnAround(float dt, Vector2 anchor);
+    void TickBackgroundWorld(float dt, SystemWorld& world);
+    void ApplyWorldSyncClient(const net::WorldSyncData& ws);
+    net::WorldSyncData BuildWorldSync(const SystemWorld& world) const;
     void BeginWarpSequence(unsigned int targetSystemId);
     void BeginLocalWarp(Vector2 targetPos);
     void UpdateWarpSequence(float dt);
@@ -282,6 +325,10 @@ private:
     void SpawnMaterialDrop(Vector2 pos, const std::string& materialId);
     ModuleDef GenerateDrop(ModuleGrade grade);
     void AddCommsMessage(const std::string& text, bool fromPlayer = false);
+    // Auto-collects a material into a mining station's storage at an interval
+    // set by the grade of its installed Material Probe. No-op without one, or
+    // while the station's storage is full.
+    void TickStationMining(PlayerStation& ps, float dt);
 
     int          _selectedWeapon    = 0;
     unsigned int _lockTargetId      = 0;
@@ -291,11 +338,13 @@ private:
 
     BuildMenu         _buildMenu;
     StationModuleMenu _stationModMenu;
+    MiningStationMenu _miningMenu;
     bool              _inPlacementMode    = false;
     std::string       _placingStationDefId;
     bool              _placementConfirmOpen = false;
     Vector2           _placementPos       = {};
     unsigned int      _stationModMenuId   = 0;
+    unsigned int      _miningMenuId       = 0;
 
     Texture2D    _planetBaseTex     = {};
     Texture2D    _stationBaseTex    = {};
@@ -304,21 +353,12 @@ private:
     Texture2D    _asteroidTexMedium = {};
     Texture2D    _asteroidTexSmall  = {};
 
-    SpaceSun                   _sun;
     Texture2D                  _sunTex         = {};
     Texture2D                  _sunCorona      = {};
-    Vector2                    _playerSpawnPos = {};
     ecs::LightingSystem        _lighting;
 
-    std::vector<SpacePlanet>   _planets;
-    std::vector<SpaceStation>  _stations;
-
     unsigned int            _npcTargetId  = 0;
-    unsigned int            _nextNpcId    = 1000;
-    float                   _respawnTimer = 0.0f;
 
-    std::vector<LootDrop>     _lootDrops;
-    std::vector<MaterialDrop> _materialDrops;
     bool                      _hasSensors  = false;
 
     float                     _hyperdriveRange = 0.0f;
@@ -333,7 +373,9 @@ private:
     // travel follows it. FlyOut/FadeOut/FlyIn = cross-system (fades through
     // black while the new system spawns). LocalFly = same-system dash straight
     // to the target position, no fade.
-    enum class WarpPhase { None, TurnToFace, FlyOut, FadeOut, FlyIn, LocalFly };
+    // AwaitSync is client-only: screen stays black after FadeOut until the
+    // host's WorldSync for the destination system arrives, then FlyIn plays.
+    enum class WarpPhase { None, TurnToFace, FlyOut, FadeOut, AwaitSync, FlyIn, LocalFly };
     struct WarpParticle { Vector2 pos, vel; float life, maxLife; };
 
     WarpPhase                 _warpPhase          = WarpPhase::None;
@@ -352,7 +394,6 @@ private:
     float _deathTimer  = 0.0f;
 
     // ── Multiplayer ───────────────────────────────────────────────────────────
-    uint32_t _worldSeed    = 0;
     float    _netTickAccum = 0.0f;
     bool     _worldSynced  = true;  // false on client until WorldSync received
     // Remote entities (NPCs + other players) keyed by networkId.
@@ -361,9 +402,20 @@ private:
     std::unordered_map<uint32_t, float>         _remoteFireCooldown;
     // Grace timer: new clients are invincible for 5 s so they don't die at spawn.
     std::unordered_map<uint32_t, float>         _remoteJoinGrace;
+    // Host: which system each connected peer is currently in (networkId -> systemId).
+    std::unordered_map<uint32_t, unsigned int>  _peerSystem;
     // Server-authoritative projectiles rendered on client.
     std::vector<net::ProjectileSnapshot>        _remoteProjectiles;
+    // True while TickBackgroundWorld simulates a world the local player isn't
+    // in: suppresses comms chatter and player-station (FleetManager) targeting,
+    // which aren't tagged with a system and belong to the player's world.
+    bool _bgTick = false;
+    // Host: true for a peer currently in the same system as `_w`.
+    bool PeerInCurrentWorld(uint32_t networkId) const;
     void DrawRemotePlayers() const;
+    // Client: resolves a snapshot's shipNameHash back to a ShipDef so a remote
+    // NPC can render with its real sprite instead of the red-circle fallback.
+    const ecs::ShipDef* ResolveShipDefByHash(uint32_t shipNameHash) const;
 
     std::vector<CommsEntry> _commsLog;
 
