@@ -277,6 +277,7 @@ private:
     void DrawLocalMap()        const;
     bool IsNearPlanet()    const;
     bool IsNearStation()   const;
+    bool IsNearEnterableStation() const;
     void SpawnLootDrop(Vector2 pos, NpcFaction killedFaction);
     void SpawnMaterialDrop(Vector2 pos, const std::string& materialId);
     ModuleDef GenerateDrop(ModuleGrade grade);
