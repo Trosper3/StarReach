@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -103,6 +104,7 @@ public:
         // Galactic state
         unsigned int              currentSystemId     = 1;
         std::vector<unsigned int> discoveredSystemIds;
+        uint32_t                  gameSeed            = 0; // master galaxy seed
 
         // Faction standing (faction id → rank index, 0 = first rank)
         std::unordered_map<std::string, int> factionRankIndices;

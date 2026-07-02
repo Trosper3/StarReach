@@ -78,6 +78,7 @@ bool SaveManager::SaveGameToPath(const GameState& gs, const std::string& path,
 
     // ── Galactic state ────────────────────────────────────────────────────────
     data["currentSystemId"] = gs.currentSystemId;
+    data["gameSeed"]        = gs.gameSeed;
     {
         json arr = json::array();
         for (unsigned int id : gs.discoveredSystemIds) arr.push_back(id);
@@ -269,6 +270,7 @@ bool SaveManager::LoadGame(const std::string& filename, GameState& out) {
 
     // ── Galactic state ────────────────────────────────────────────────────────
     out.currentSystemId = data.value("currentSystemId", 1u);
+    out.gameSeed         = data.value("gameSeed", 1u); // old saves: fixed fallback seed
     out.discoveredSystemIds.clear();
     if (data.contains("discoveredSystems") && data["discoveredSystems"].is_array())
         for (const auto& d : data["discoveredSystems"])

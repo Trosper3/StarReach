@@ -12,6 +12,7 @@ struct PlayerShipConfig {
     float                    MaxHull         = 100.f;
     Faction                  PlayerFaction   = Faction::Republic;
     std::vector<std::string> ComponentSlots  = {"", "", "", ""};
+    std::string               GalaxySeedInput; // New Game only; blank = random galaxy seed
 };
 
 /// Owns the player's ship configuration, hull state, and built stations.

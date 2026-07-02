@@ -254,6 +254,12 @@ private:
     void SpawnInitialAsteroids();
     void SpawnNpcShips();
     void SpawnPlanetsAndStations(unsigned int seed = 0);
+    void BeginWarpSequence(unsigned int targetSystemId);
+    void BeginLocalWarp(Vector2 targetPos);
+    void UpdateWarpSequence(float dt);
+    void DrawWarpParticles()   const;
+    void CommitWarpWorldSwitch(unsigned int targetSystemId);
+    void SpawnWarpParticle(Vector2 pos, Vector2 dir);
     void UpdateCollisions();
     void UpdateNpcShips(float dt);
     void UpdateNpcCollisions();
@@ -319,6 +325,27 @@ private:
 
     unsigned int              _currentSystemId     = 1;
     std::vector<unsigned int> _discoveredSystemIds;
+    uint32_t                  _gameSeed            = 0; // master galaxy seed (StarSystemRegistry)
+
+    // ── Warp sequence (galactic map -> new system, and in-system local warp) ──
+    // TurnToFace is shared by both; _warpPhaseAfterTurn picks which flavor of
+    // travel follows it. FlyOut/FadeOut/FlyIn = cross-system (fades through
+    // black while the new system spawns). LocalFly = same-system dash straight
+    // to the target position, no fade.
+    enum class WarpPhase { None, TurnToFace, FlyOut, FadeOut, FlyIn, LocalFly };
+    struct WarpParticle { Vector2 pos, vel; float life, maxLife; };
+
+    WarpPhase                 _warpPhase          = WarpPhase::None;
+    WarpPhase                 _warpPhaseAfterTurn = WarpPhase::FlyOut;
+    float                     _warpPhaseTimer     = 0.0f;
+    unsigned int              _warpTargetSystemId = 0;
+    Vector2                   _warpDir            = { 0.0f, -1.0f }; // unit direction of travel
+    float                     _warpStartRot       = 0.0f;
+    float                     _warpTargetRot      = 0.0f;
+    float                     _warpFadeAlpha      = 0.0f;
+    Vector2                   _warpFlyInStart     = {};
+    Vector2                   _warpLocalTarget    = {};   // destination for LocalFly
+    std::vector<WarpParticle> _warpParticles;
 
     bool  _playerDead  = false;
     float _deathTimer  = 0.0f;

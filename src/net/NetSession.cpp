@@ -323,10 +323,10 @@ void NetSession::BroadcastServerClosing() {
     std::printf("[net] broadcast ServerClosing\n");
 }
 
-void NetSession::HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed) {
+void NetSession::HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed, uint32_t gameSeed) {
     if (_role != NetRole::Host || !_host) return;
 
-    WorldSyncData ws{ systemId, seed };
+    WorldSyncData ws{ systemId, seed, gameSeed };
     auto pkt = EncodeWorldSync(ws);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
 

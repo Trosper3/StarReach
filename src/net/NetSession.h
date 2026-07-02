@@ -69,8 +69,9 @@ public:
                        const std::vector<AsteroidSnapshot>&  asteroids   = {},
                        const std::vector<ProjectileSnapshot>& projectiles = {});
 
-    // Send world seed + system id to a specific peer so they generate the same map.
-    void HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed);
+    // Send world seed + system id + galaxy master seed to a specific peer so
+    // they generate the same map (both the current system and the galactic map).
+    void HostSendWorldSync(uint32_t peerId, uint32_t systemId, uint32_t seed, uint32_t gameSeed);
 
     // Tell a specific client their player was killed (reliable, targeted).
     void HostSendPlayerDead(uint32_t networkId);

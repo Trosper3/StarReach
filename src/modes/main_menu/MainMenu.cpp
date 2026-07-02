@@ -397,7 +397,7 @@ void MainMenu::UpdateSingleplayer(float dt) {
 
     // Arrow buttons
     static constexpr float circleR  = 130.0f;
-    float circleCY = (float)sh - 90.0f - 20.0f - circleR;
+    float circleCY = (float)sh - 90.0f - 66.0f - circleR;
     float arrowW   = 44.0f, arrowH = 44.0f;
     float arrowGap = circleR + 55.0f;
     Rectangle leftR  = { cx - arrowGap - arrowW, circleCY - arrowH * 0.5f, arrowW, arrowH };
@@ -410,6 +410,33 @@ void MainMenu::UpdateSingleplayer(float dt) {
     if (IsClicked(rightR) && !_factions.empty()) {
         _factionIdx = (_factionIdx + 1) % (int)_factions.size();
         OnFactionChanged();
+    }
+
+    // Galaxy seed field (optional — blank means a random galaxy each New Game)
+    Rectangle seedBoxR = { cx - 156.0f, circleCY + circleR + 14.0f, 240.0f, 32.0f };
+    Rectangle seedBtnR = { seedBoxR.x + seedBoxR.width + 8.0f, seedBoxR.y, 64.0f, 32.0f };
+
+    if (_editingSeed) {
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            _editingSeed = false;
+        } else {
+            int ch;
+            while ((ch = GetCharPressed()) != 0)
+                if (ch >= 32 && ch < 127 && (int)_seedEditBuffer.size() < 24)
+                    _seedEditBuffer += (char)ch;
+            if (IsKeyPressed(KEY_BACKSPACE) && !_seedEditBuffer.empty())
+                _seedEditBuffer.pop_back();
+            if (IsClicked(seedBtnR) || IsKeyPressed(KEY_ENTER)) {
+                _galaxySeedText = _seedEditBuffer;
+                _editingSeed    = false;
+            } else if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) &&
+                       !IsHovered(seedBoxR) && !IsHovered(seedBtnR)) {
+                _editingSeed = false;
+            }
+        }
+    } else if (IsClicked(seedBoxR)) {
+        _seedEditBuffer = _galaxySeedText;
+        _editingSeed    = true;
     }
 
     // Bottom buttons
@@ -426,6 +453,7 @@ void MainMenu::UpdateSingleplayer(float dt) {
         fleetShip.MaxHull       = 100.0f;
         fleetShip.HullIntegrity = 100.0f;
         fleetShip.ComponentSlots = { "", "", "", "" };
+        fleetShip.GalaxySeedInput = _galaxySeedText;
         InventoryManager::Get().Credits = 0;
         InventoryManager::Get().Reset();
         GameManager::Get().TransitionTo(GameMode::SpaceFlight);
@@ -462,7 +490,7 @@ void MainMenu::DrawSingleplayer() const {
     static constexpr float loreY        = nameY + nameFontSize + 22.0f;
     static constexpr float circleR      = 130.0f;
 
-    float circleCY = (float)sh - 90.0f - 20.0f - circleR;
+    float circleCY = (float)sh - 90.0f - 66.0f - circleR;
     float loreMaxY = circleCY - circleR - 60.0f;
 
     // ── Left column: lore text ─────────────────────────────────────────────────
@@ -534,6 +562,28 @@ void MainMenu::DrawSingleplayer() const {
         };
         DrawArrow(leftR, "<");
         DrawArrow(rightR, ">");
+
+        // Galaxy seed field (optional)
+        {
+            Rectangle seedBoxR = { cx - 156.0f, circleCY + circleR + 14.0f, 240.0f, 32.0f };
+            Rectangle seedBtnR = { seedBoxR.x + seedBoxR.width + 8.0f, seedBoxR.y, 64.0f, 32.0f };
+
+            bool editing = _editingSeed;
+            DrawRectangleRec(seedBoxR, editing ? Color{ 24, 36, 52, 230 } : Color{ 16, 22, 32, 210 });
+            DrawRectangleLinesEx(seedBoxR, 1.0f,
+                editing ? Color{ 80, 120, 180, 255 } : Color{ 52, 68, 88, 150 });
+            if (editing) DrawTechCorners(seedBoxR, 6.0f, 1.2f, Color{ 80, 140, 220, 255 });
+
+            std::string shown = editing ? _seedEditBuffer : _galaxySeedText;
+            bool isPlaceholder = shown.empty() && !editing;
+            if (isPlaceholder) shown = "GALAXY SEED (optional)";
+            if (editing && (int)(GetTime() * 2) % 2 == 0) shown += '_';
+            DrawTextEx(_bodyFont, shown.c_str(),
+                { seedBoxR.x + 8.0f, seedBoxR.y + 8.0f }, 13.0f, UISpacing,
+                isPlaceholder ? Color{ 90, 110, 135, 200 } : Color{ 200, 220, 248, 255 });
+
+            DrawButton(_uiFont, seedBtnR, "SET", 11.0f);
+        }
 
         // Start New / Continue buttons
         float btnW = 210.0f, btnH = 50.0f, btnGap = 20.0f;

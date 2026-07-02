@@ -84,6 +84,12 @@ private:
     float       _nameSavedTimer   = 0.0f;
     std::string _nameSavedMessage;
     std::string _wrappedLore;
+
+    // New Game galaxy seed (optional) — blank means "random". Mirrors the
+    // _editingName/_editBuffer click-to-edit pattern above.
+    std::string _galaxySeedText;
+    std::string _seedEditBuffer;
+    bool        _editingSeed = false;
     static constexpr float CharsPerSec = 38.0f;
     SavePicker  _savePicker;
 
