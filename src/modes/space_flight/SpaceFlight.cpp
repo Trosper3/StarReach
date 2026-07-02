@@ -95,41 +95,47 @@ static Vector2 GetNpcStationHardpointPos(const SpaceStation& st, int hpIndex) {
              st.position.y + sinf(angle) * offsetRad };
 }
 
-static void BuildNpcStationHardpoints(SpaceStation& st, const StationTypeDef& typeDef) {
-    bool isMilitary = (typeDef.id == "military_outpost");
-    auto weaponOpt  = ModuleRegistry::ById(isMilitary ? "scatter_rifle_i" : "pulse_cannon_i");
-    auto armorOpt   = ModuleRegistry::ById("armor_steel_plating");
-
+// Builds every NPC station's hardpoint loadout procedurally (independent of
+// StationTypeDef::hardpoints, which is now just flavor/name/service data):
+// one Core hub, one Docking Bay, and 1-3 Weapon Batteries (75% / 15% / 10%
+// chance of 1/2/3). Every combat-capable hardpoint gets a real module so
+// there's always something concrete to damage/capture later.
+static void BuildNpcStationHardpoints(SpaceStation& st) {
     st.hardpoints.clear();
     float totalHull = 0.0f;
 
-    for (const StationHardpointDef& hpDef : typeDef.hardpoints) {
-        HardpointState hp;
-        hp.id          = hpDef.id;
-        hp.displayName = hpDef.displayName;
-        hp.isCore      = hpDef.isCore;
-        hp.maxHull     = hpDef.maxHull;
-        hp.hull        = hpDef.maxHull;
-        hp.alive       = true;
-        hp.wSlots      = hpDef.wSlots;
-        hp.arSlots     = hpDef.arSlots;
-        hp.shSlots     = hpDef.shSlots;
-        hp.enSlots     = hpDef.enSlots;
-        hp.auxSlots    = hpDef.auxSlots;
+    HardpointState core;
+    core.id          = "core";
+    core.displayName = "Core";
+    core.isCore      = true;
+    core.maxHull     = 250.0f;
+    core.hull        = core.maxHull;
+    core.arSlots     = 1;
+    core.armor       = ModuleRegistry::Random(ModuleType::Armor, ModuleRegistry::RollGrade());
+    totalHull += core.maxHull;
+    st.hardpoints.push_back(core);
 
-        for (int i = 0; i < hpDef.wSlots; ++i)
-            hp.weapons.push_back(weaponOpt.has_value() ? std::optional<ModuleDef>(*weaponOpt) : std::nullopt);
+    HardpointState dock;
+    dock.id          = "docking_bay";
+    dock.displayName = "Docking Bay";
+    dock.isDockingBay = true;
+    dock.maxHull     = 150.0f;
+    dock.hull        = dock.maxHull;
+    totalHull += dock.maxHull;
+    st.hardpoints.push_back(dock);
 
-        if (hpDef.arSlots > 0 && armorOpt.has_value()) {
-            hp.armor = *armorOpt;
-            totalHull += armorOpt->armor.hullBonus;
-        }
-
-        for (int i = 0; i < hpDef.shSlots;  ++i) hp.shields.push_back(std::nullopt);
-        for (int i = 0; i < hpDef.auxSlots; ++i) hp.aux.push_back(std::nullopt);
-
-        totalHull += hpDef.maxHull;
-        st.hardpoints.push_back(hp);
+    int roll = GetRandomValue(1, 100);
+    int weaponCount = (roll <= 75) ? 1 : (roll <= 90) ? 2 : 3;
+    for (int i = 0; i < weaponCount; ++i) {
+        HardpointState wb;
+        wb.id          = "weapon_battery_" + std::to_string(i + 1);
+        wb.displayName = "Weapon Battery " + std::to_string(i + 1);
+        wb.maxHull     = 120.0f;
+        wb.hull        = wb.maxHull;
+        wb.wSlots      = 1;
+        wb.weapons.push_back(ModuleRegistry::Random(ModuleType::Weapon, ModuleRegistry::RollGrade()));
+        totalHull += wb.maxHull;
+        st.hardpoints.push_back(wb);
     }
 
     st.maxHull = totalHull;
@@ -224,7 +230,9 @@ void SpaceFlight::DrawBackground() const {
 }
 
 static constexpr float PlanetDrawRadius  = 180.0f;
-static constexpr float StationDrawRadius =  90.0f;
+// Matches the player's general-purpose "space_station" blueprint radius
+// (PlayerStationRegistry) so NPC stations read at the same visual scale.
+static constexpr float StationDrawRadius = 200.0f;
 
 void SpaceFlight::DrawPlanets() const {
     if (_planetBaseTex.id == 0) return;
@@ -252,14 +260,21 @@ void SpaceFlight::DrawStations() const {
 
         for (int i = 0; i < (int)s.hardpoints.size(); ++i) {
             const HardpointState& hp = s.hardpoints[i];
-            if (hp.isCore) continue; // core is at center, skip visual ring
             Vector2 hpPos = GetNpcStationHardpointPos(s, i);
-            float hpRad = 10.0f;
+            float hpDrawRad = hp.isCore ? 18.0f : 14.0f;
+
+            float hpHullPct = hp.maxHull > 0.0f ? std::clamp(hp.hull / hp.maxHull, 0.0f, 1.0f) : 0.0f;
+            Color ringCol = hpHullPct > 0.5f ? Color{ 48,188,68,255 }
+                : hpHullPct > 0.25f ? Color{ 212,168,28,255 } : Color{ 208,42,32,255 };
+            DrawCircleV(hpPos, hpDrawRad, Color{ 15, 25, 40, 240 });
+            DrawCircleLinesV(hpPos, hpDrawRad, ringCol);
+
             bool hasWeapon = !hp.weapons.empty() && hp.weapons[0].has_value();
-            Color ringCol = hasWeapon ? Color{ 220, 100, 60, 200 } : Color{ 80, 160, 255, 200 };
-            DrawCircleV(hpPos, hpRad, Color{ 15, 25, 40, 210 });
-            DrawCircleLinesV(hpPos, hpRad, ringCol);
-            DrawCircleV(hpPos, hpRad * 0.4f, hasWeapon ? Color{ 200, 80, 40, 255 } : Color{ 80, 140, 200, 255 });
+            Color iconCol = hp.isCore       ? Color{ 200, 160,  30, 255 }
+                : hp.isDockingBay ? Color{ 140, 220, 255, 255 }
+                : hasWeapon       ? Color{ 220,  90,  60, 255 }
+                                  : Color{ 100, 180, 255, 200 };
+            DrawCircleV(hpPos, hpDrawRad * 0.4f, iconCol);
         }
     }
 }
@@ -582,7 +597,7 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
             const auto& stTypes = StationTypeRegistry::All();
             const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
             st.stationTypeId = typeDef.id;
-            BuildNpcStationHardpoints(st, typeDef);
+            BuildNpcStationHardpoints(st);
             _stations.push_back(std::move(st));
         }
     }
@@ -726,6 +741,26 @@ static NpcFaction RelationToNpcFaction(Relation r) {
     if (r == Relation::Friendly) return NpcFaction::Friendly;
     if (r == Relation::Hostile)  return NpcFaction::Hostile;
     return NpcFaction::Neutral;
+}
+
+// Same proximity rule as IsNearStation(), but hostile NPC stations don't
+// count — you can't dock with (or board) something actively shooting at you.
+// Player-owned stations are always enterable regardless of faction data.
+bool SpaceFlight::IsNearEnterableStation() const {
+    const Vector2& pos = _playerEntity.transform.position;
+    for (const SpaceStation& s : _stations) {
+        if (!s.alive) continue;
+        if (Vector2Distance(pos, s.position) >= s.radius + 50.0f) continue;
+        if (DiplomaticRegistry::Get(s.faction, kPlayerFaction) == Relation::Hostile) continue;
+        return true;
+    }
+    for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+        if (!ps.alive) continue;
+        const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
+        float rad = def ? def->radius : 120.0f;
+        if (Vector2Distance(pos, ps.position) < rad + 50.0f) return true;
+    }
+    return false;
 }
 
 static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2 pos) {
@@ -2392,6 +2427,7 @@ void SpaceFlight::UpdateTarget() {
             _target.typeDesc    = "Orbital platform";
             _target.hasFaction  = true;
             _target.gameFaction = s.faction;
+            _target.npcFaction  = RelationToNpcFaction(DiplomaticRegistry::Get(s.faction, kPlayerFaction));
             _target.health = s.hull;
             _target.maxHealth = s.maxHull;
             _target.distance = Vector2Distance(_playerEntity.transform.position, s.position);
@@ -2609,16 +2645,27 @@ void SpaceFlight::DrawHUD() const {
             }
         }
         else if (_target.isStellar) {
+            // Stations get a faction-relation tint (same rule as NPC ships);
+            // planets have no faction data so they keep the original blue look.
+            bool isHostileStn = _target.hasFaction && (_target.npcFaction == NpcFaction::Hostile);
+            bool isNeutralStn = _target.hasFaction && (_target.npcFaction == NpcFaction::Neutral);
+            Color stnRing = !_target.hasFaction ? Color{ 30,50,100,180 }
+                : isHostileStn ? Color{ 120,30,30,180 }
+                : isNeutralStn ? Color{ 100,90,20,180 } : Color{ 30,80,30,180 };
+            Color stnTint = !_target.hasFaction ? WHITE
+                : isHostileStn ? Color{ 255,160,160,255 }
+                : isNeutralStn ? Color{ 255,240,160,255 } : Color{ 160,255,190,255 };
+
             DrawStatusRing(tc, tHpIn, tHpOut, 0.0f, Color{ 48,88,188,255 }, Color{ 22,22,32,200 });
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-            DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, Color{ 30,50,100,180 });
+            DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, stnRing);
             if (_target.iconTex && _target.iconTex->id > 0) {
                 float tw = (float)_target.iconTex->width, th = (float)_target.iconTex->height;
                 float sc2 = (tAreaR * 1.85f) / std::max(tw, th);
                 DrawTexturePro(*_target.iconTex,
                     { 0, 0, tw, th }, { tc.x, tc.y, tw * sc2, th * sc2 },
-                    { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, WHITE);
+                    { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, stnTint);
             }
             if (hasSensors) {
                 int dx = (int)(tc.x + tShOut + 12), dy = hy + 12;
@@ -2751,7 +2798,7 @@ void SpaceFlight::DrawHUD() const {
     ComputeHudButtons(sw, sh, modBtn, stoBtn, escBtn, enterBtn, buildBtn, commsBtn, ranksBtn);
     bool hovMod = CheckCollisionPointRec(mouse, modBtn);
     bool hovSto = CheckCollisionPointRec(mouse, stoBtn);
-    bool nearStation = IsNearStation();
+    bool nearStation = IsNearEnterableStation();
     bool nearPlanet  = nearStation || IsNearPlanet();
     bool hovEnter    = nearPlanet && CheckCollisionPointRec(mouse, enterBtn);
 
@@ -3376,7 +3423,7 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         const auto& stTypes = StationTypeRegistry::All();
         const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
         st.stationTypeId = typeDef.id;
-        BuildNpcStationHardpoints(st, typeDef);
+        BuildNpcStationHardpoints(st);
         _stations.push_back(std::move(st));
     }
 
@@ -4895,8 +4942,8 @@ void SpaceFlight::Update(float dt) {
             }
             clickedHudBtn = true;
         }
-        else if ((IsNearStation() || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
-            if (IsNearStation()) _stationPopupOpen = true;
+        else if ((IsNearEnterableStation() || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
+            if (IsNearEnterableStation()) _stationPopupOpen = true;
             else                 _enterPopupOpen   = true;
             clickedHudBtn = true;
         }

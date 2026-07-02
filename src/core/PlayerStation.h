@@ -9,7 +9,8 @@
 struct HardpointState {
     std::string id;
     std::string displayName;
-    bool        isCore   = false;
+    bool        isCore       = false;
+    bool        isDockingBay = false; // future capture/boarding target; no combat slots
     float       hull     = 100.0f;
     float       maxHull  = 100.0f;
     bool        alive    = true;
