@@ -2,6 +2,7 @@
 #include "data/registry/StarSystemRegistry.h"
 #include "raylib.h"
 #include "raymath.h"
+#include "shared/ui/HudTheme.h"
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
@@ -12,13 +13,14 @@ static bool GIsHov(Rectangle r) { return CheckCollisionPointRec(GetMousePosition
 static bool GIsClk(Rectangle r) { return GIsHov(r) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT); }
 
 static void DrawGalBtn(Rectangle r, const char* label) {
-    Color bg  = GIsHov(r) ? Color{20,50,90,230}  : Color{8,18,38,210};
-    Color bdr = GIsHov(r) ? Color{60,140,220,255} : Color{30,80,160,180};
-    DrawRectangleRec(r, bg);
-    DrawRectangleLinesEx(r, 1.0f, bdr);
+    using namespace hudtheme;
+    bool hov = GIsHov(r);
+    Color bg  = hov ? Color{ 30,55,70,230 } : Color{ 14,20,28,200 };
+    Color fg  = hov ? WHITE : HudLabel;
+    DrawHudChamferRect(r, 8.0f, bg, HudBorder, hov ? 2.0f : 1.0f);
     int tw = MeasureText(label, 15);
     DrawText(label, (int)(r.x + (r.width  - tw) / 2.0f),
-                    (int)(r.y + (r.height - 15) / 2.0f), 15, WHITE);
+                    (int)(r.y + (r.height - 15) / 2.0f), 15, fg);
 }
 
 struct GalLayout {
@@ -265,47 +267,45 @@ static void DrawStarShape(Vector2 c, float outerR, float innerR, Color fill, Col
 }
 
 void GalacticMap::Draw() const {
+    using namespace hudtheme;
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     auto L = CalcGalLayout(sw, sh);
 
-    DrawRectangle(0, 0, sw, sh, Color{0, 0, 12, 220});
+    DrawRectangle(0, 0, sw, sh, Color{ 2, 4, 9, 220 });
 
     // ── Title bar ─────────────────────────────────────────────────────────────
-    DrawRectangleRec(L.title, Color{6,12,28,245});
-    DrawRectangleLinesEx(L.title, 1.0f, Color{30,100,200,200});
-    DrawText("GALACTIC NAVIGATION ARRAY", L.mx + 14, (int)L.title.y + 11, 16, Color{60,160,240,255});
+    DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
+    DrawText("GALACTIC NAVIGATION ARRAY", L.mx + 14, (int)L.title.y + 11, 16, HudValue);
 
     bool hasHyperdrive = _mapData.hyperdriveRange > 0.0f;
     if (hasHyperdrive) {
         char rangeLabel[64];
         std::snprintf(rangeLabel, sizeof(rangeLabel), "[ JUMP RANGE: %.0f u ]", _mapData.hyperdriveRange);
         int tw = MeasureText(rangeLabel, 14);
-        DrawText(rangeLabel, L.mx + L.mw - tw - 14, (int)L.title.y + 13, 14, Color{60,180,240,255});
+        DrawText(rangeLabel, L.mx + L.mw - tw - 14, (int)L.title.y + 13, 14, HudGood);
     } else {
         const char* statusLbl = "[ NO HYPERDRIVE EQUIPPED ]";
         DrawText(statusLbl, L.mx + L.mw - MeasureText(statusLbl, 14) - 14,
-                 (int)L.title.y + 13, 14, Color{220,100,35,255});
+                 (int)L.title.y + 13, 14, HudCaution);
     }
 
     // ── Map panel ────────────────────────────────────────────────────────────
-    DrawRectangleRec(L.map, Color{1,2,8,252});
-    DrawRectangleLinesEx(L.map, 1.5f, Color{30,100,200,200});
+    DrawHudBracketPanel(L.map, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
 
     BeginScissorMode((int)L.map.x, (int)L.map.y, (int)L.map.width, (int)L.map.height);
 
     int mpx = (int)L.map.x, mpy = (int)L.map.y;
     int mpw = (int)L.map.width, mph = (int)L.map.height;
     for (int x = mpx + 60; x < mpx + mpw; x += 60)
-        DrawLine(x, mpy, x, mpy + mph, Color{15,25,50,50});
+        DrawLine(x, mpy, x, mpy + mph, Color{ 30,45,60,50 });
     for (int y = mpy + 40; y < mpy + mph; y += 40)
-        DrawLine(mpx, y, mpx + mpw, y, Color{15,25,50,50});
+        DrawLine(mpx, y, mpx + mpw, y, Color{ 30,45,60,50 });
 
     if (_mapData.currentSystemId == 0) {
         const char* msg = "NO STAR SYSTEMS CHARTED";
-        DrawText(msg, mpx + (mpw - MeasureText(msg, 16)) / 2, mpy + mph / 2 - 8, 16, Color{60,80,120,200});
+        DrawText(msg, mpx + (mpw - MeasureText(msg, 16)) / 2, mpy + mph / 2 - 8, 16, HudLabel);
         EndScissorMode();
-        DrawRectangleRec(L.bot, Color{6,10,24,245});
-        DrawRectangleLinesEx(L.bot, 1.0f, Color{30,100,200,200});
+        DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
         return;
     }
 
@@ -464,8 +464,7 @@ void GalacticMap::Draw() const {
     EndScissorMode();
 
     // ── Bottom panel ─────────────────────────────────────────────────────────
-    DrawRectangleRec(L.bot, Color{6,10,24,245});
-    DrawRectangleLinesEx(L.bot, 1.0f, Color{30,100,200,200});
+    DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
 
     Rectangle sysMapBtn, mainMenuBtn;
     CalcGalButtons(L.bot, sysMapBtn, mainMenuBtn);
@@ -474,5 +473,5 @@ void GalacticMap::Draw() const {
 
     const char* hint = "RIGHT-DRAG / WASD: PAN   WHEEL: ZOOM   HOME: RECENTER";
     DrawText(hint, (int)(L.map.x + L.map.width - MeasureText(hint, 11) - 10),
-              (int)L.map.y + 8, 11, Color{80, 140, 200, 190});
+              (int)L.map.y + 8, 11, HudLabel);
 }

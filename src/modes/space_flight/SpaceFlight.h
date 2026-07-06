@@ -9,6 +9,7 @@
 #include "BuildMenu.h"
 #include "StationModuleMenu.h"
 #include "MiningStationMenu.h"
+#include "StationServicesMenu.h"
 #include "core/Module.h"
 #include "core/PlayerStation.h"
 #include "core/SaveManager.h"
@@ -96,6 +97,7 @@ struct NpcMeta {
     bool         retaliatingVsPlayer = false;
     unsigned int retaliationTargetId = 0;
     float        fireCooldown  = 0.0f;
+    bool         docked        = false; // parked at a friendly station, healing
     // Derived weapon/movement stats (set by ApplyNpcLoadout)
     float        npcThrust     = 0.0f;
     float        npcDamage     = 0.0f;
@@ -334,11 +336,11 @@ private:
     unsigned int _lockTargetId      = 0;
     Vector2      _lockTargetPos     = {};
     bool         _enterPopupOpen    = false;
-    bool         _stationPopupOpen  = false;
 
-    BuildMenu         _buildMenu;
-    StationModuleMenu _stationModMenu;
-    MiningStationMenu _miningMenu;
+    BuildMenu            _buildMenu;
+    StationModuleMenu    _stationModMenu;
+    MiningStationMenu    _miningMenu;
+    StationServicesMenu  _stationServicesMenu;
     bool              _inPlacementMode    = false;
     std::string       _placingStationDefId;
     bool              _placementConfirmOpen = false;
@@ -351,6 +353,8 @@ private:
     Texture2D    _gargosTex         = {};
     Texture2D    _asteroidTexLarge  = {};
     Texture2D    _asteroidTexMedium = {};
+    Font         _hudFontUi         = {}; // Orbitron — HUD labels/buttons
+    Font         _hudFontVal        = {}; // Exo 2 — HUD values/readouts
     Texture2D    _asteroidTexSmall  = {};
 
     Texture2D                  _sunTex         = {};
