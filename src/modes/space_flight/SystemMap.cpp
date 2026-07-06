@@ -1,6 +1,7 @@
 #include "SystemMap.h"
 #include "raylib.h"
 #include "raymath.h"
+#include "shared/ui/HudTheme.h"
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
@@ -8,14 +9,16 @@
 static bool IsHov(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(), r); }
 static bool IsClk(Rectangle r) { return IsHov(r) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT); }
 
-static void DrawMapBtn(Rectangle r, const char* label) {
-    Color bg  = IsHov(r) ? Color{50,95,50,230} : Color{15,30,15,210};
-    Color bdr = IsHov(r) ? Color{80,210,80,255} : Color{40,130,40,180};
-    DrawRectangleRec(r, bg);
-    DrawRectangleLinesEx(r, 1.0f, bdr);
+static void DrawMapBtn(Rectangle r, const char* label, bool enabled = true) {
+    using namespace hudtheme;
+    bool hov = enabled && IsHov(r);
+    Color bg  = !enabled ? Color{ 16,16,16,150 } : (hov ? Color{ 30,55,70,230 } : Color{ 14,20,28,200 });
+    Color bdr = !enabled ? HudDiv : HudBorder;
+    Color fg  = !enabled ? Color{ 50,55,60,160 } : (hov ? WHITE : HudLabel);
+    DrawHudChamferRect(r, 8.0f, bg, bdr, hov ? 2.0f : 1.0f);
     int tw = MeasureText(label, 15);
     DrawText(label, (int)(r.x + (r.width  - tw) / 2.0f),
-                    (int)(r.y + (r.height - 15) / 2.0f), 15, WHITE);
+                    (int)(r.y + (r.height - 15) / 2.0f), 15, fg);
 }
 
 struct MapLayout {
@@ -39,20 +42,32 @@ static MapLayout CalcLayout(int sw, int sh) {
     return L;
 }
 
-// 5 buttons: RESUME, GALACTIC, SAVE, LOAD, MAIN MENU
+// Top row (new):    MODULES | STORAGE | ESCORTS | RANKS
+// Bottom row:        RESUME | GALACTIC MAP | SAVE | LOAD | MAIN MENU
 static void CalcButtons(const Rectangle& bot,
-                         Rectangle& resume, Rectangle& galactic,
-                         Rectangle& save,   Rectangle& load, Rectangle& menu) {
-    float bh  = 44.0f;
-    float bw  = (bot.width - 80.0f) / 5.0f;
-    float by  = bot.y + (bot.height - bh) / 2.0f;
-    float x0  = bot.x + 15.0f;
-    float gap = (bot.width - 30.0f - bw * 5.0f) / 4.0f;
-    resume  = { x0,                  by, bw, bh };
-    galactic= { x0 + (bw+gap),       by, bw, bh };
-    save    = { x0 + (bw+gap)*2.0f,  by, bw, bh };
-    load    = { x0 + (bw+gap)*3.0f,  by, bw, bh };
-    menu    = { x0 + (bw+gap)*4.0f,  by, bw, bh };
+                         Rectangle& modules, Rectangle& storage, Rectangle& escorts, Rectangle& ranks,
+                         Rectangle& resume,  Rectangle& galactic,
+                         Rectangle& save,    Rectangle& load, Rectangle& menu) {
+    float bh     = 40.0f;
+    float rowGap = 12.0f;
+    float x0     = bot.x + 15.0f;
+
+    float bw5  = (bot.width - 80.0f) / 5.0f;
+    float gap5 = (bot.width - 30.0f - bw5 * 5.0f) / 4.0f;
+    float by2  = bot.y + bot.height - bh - 14.0f;
+    resume   = { x0,                   by2, bw5, bh };
+    galactic = { x0 + (bw5+gap5),      by2, bw5, bh };
+    save     = { x0 + (bw5+gap5)*2.0f, by2, bw5, bh };
+    load     = { x0 + (bw5+gap5)*3.0f, by2, bw5, bh };
+    menu     = { x0 + (bw5+gap5)*4.0f, by2, bw5, bh };
+
+    float bw4  = (bot.width - 60.0f) / 4.0f;
+    float gap4 = (bot.width - 30.0f - bw4 * 4.0f) / 3.0f;
+    float by1  = by2 - rowGap - bh;
+    modules  = { x0,                   by1, bw4, bh };
+    storage  = { x0 + (bw4+gap4),      by1, bw4, bh };
+    escorts  = { x0 + (bw4+gap4)*2.0f, by1, bw4, bh };
+    ranks    = { x0 + (bw4+gap4)*3.0f, by1, bw4, bh };
 }
 
 SystemMap::MapProjection SystemMap::ComputeProjection(const Rectangle& mapRect) const {
@@ -100,14 +115,20 @@ MapAction SystemMap::Update(float dt) {
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     auto L = CalcLayout(sw, sh);
+    Rectangle modulesBtn, storageBtn, escortsBtn, ranksBtn;
     Rectangle resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn;
-    CalcButtons(L.bot, resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn);
+    CalcButtons(L.bot, modulesBtn, storageBtn, escortsBtn, ranksBtn,
+                resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn);
 
     if (IsClk(resumeBtn))  { Close(); return MapAction::Close;           }
     if (IsClk(galacticBtn))               return MapAction::OpenGalacticMap;
     if (IsClk(saveBtn))    { _saveWriter.Open(); return MapAction::None; }
     if (IsClk(loadBtn))    { _savePicker.Open(); return MapAction::None; }
     if (IsClk(menuBtn))                   return MapAction::GoMainMenu;
+    if (IsClk(modulesBtn))                return MapAction::OpenModules;
+    if (IsClk(storageBtn))                return MapAction::OpenStorage;
+    if (IsClk(escortsBtn))                return MapAction::OpenEscorts;
+    if (IsClk(ranksBtn))                  return MapAction::OpenRanks;
 
     // Blip selection and warp
     if (!_mapData.blips.empty() && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
@@ -153,42 +174,41 @@ MapAction SystemMap::Update(float dt) {
 }
 
 void SystemMap::Draw() const {
+    using namespace hudtheme;
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     auto L = CalcLayout(sw, sh);
 
-    DrawRectangle(0, 0, sw, sh, Color{0, 0, 8, 215});
+    DrawRectangle(0, 0, sw, sh, Color{ 2, 4, 9, 215 });
 
     // ── Title bar ─────────────────────────────────────────────────────────────
-    DrawRectangleRec(L.title, Color{8,20,8,245});
-    DrawRectangleLinesEx(L.title, 1.0f, Color{40,160,40,200});
-    DrawText("SYSTEM NAVIGATION ARRAY", L.mx + 14, (int)L.title.y + 11, 16, Color{75,195,75,255});
+    DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
+    DrawText("SYSTEM NAVIGATION ARRAY", L.mx + 14, (int)L.title.y + 11, 16, HudValue);
 
     bool hasHyperdrive = _mapData.hyperdriveRange > 0.0f;
     if (hasHyperdrive) {
         char rangeLabel[64];
         std::snprintf(rangeLabel, sizeof(rangeLabel), "[ HYPERDRIVE RANGE: %.0f u ]", _mapData.hyperdriveRange);
         int tw = MeasureText(rangeLabel, 14);
-        DrawText(rangeLabel, L.mx + L.mw - tw - 14, (int)L.title.y + 13, 14, Color{80,220,80,255});
+        DrawText(rangeLabel, L.mx + L.mw - tw - 14, (int)L.title.y + 13, 14, HudGood);
     } else {
         const char* statusLbl = "[ NO HYPERDRIVE EQUIPPED ]";
         DrawText(statusLbl, L.mx + L.mw - MeasureText(statusLbl, 14) - 14,
-                 (int)L.title.y + 13, 14, Color{220,100,35,255});
+                 (int)L.title.y + 13, 14, HudCaution);
     }
 
     // ── Map panel ────────────────────────────────────────────────────────────
-    DrawRectangleRec(L.map, Color{2,5,2,250});
-    DrawRectangleLinesEx(L.map, 1.5f, Color{40,160,40,200});
+    DrawHudBracketPanel(L.map, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
 
     int mpx = (int)L.map.x, mpy = (int)L.map.y;
     int mpw = (int)L.map.width, mph = (int)L.map.height;
     for (int x = mpx + 60; x < mpx + mpw; x += 60)
-        DrawLine(x, mpy, x, mpy + mph, Color{25,50,25,60});
+        DrawLine(x, mpy, x, mpy + mph, Color{ 30,45,60,60 });
     for (int y = mpy + 40; y < mpy + mph; y += 40)
-        DrawLine(mpx, y, mpx + mpw, y, Color{25,50,25,60});
+        DrawLine(mpx, y, mpx + mpw, y, Color{ 30,45,60,60 });
 
     if (_mapData.blips.empty()) {
         const char* msg = "NO STELLAR OBJECTS DETECTED";
-        DrawText(msg, mpx + (mpw - MeasureText(msg, 16)) / 2, mpy + mph / 2 - 8, 16, Color{80,100,80,200});
+        DrawText(msg, mpx + (mpw - MeasureText(msg, 16)) / 2, mpy + mph / 2 - 8, 16, HudLabel);
     } else {
         auto proj = ComputeProjection(L.map);
         Vector2 playerSP = proj.Project(_mapData.playerPos);
@@ -291,11 +311,18 @@ void SystemMap::Draw() const {
     }
 
     // ── Bottom panel ─────────────────────────────────────────────────────────
-    DrawRectangleRec(L.bot, Color{8,14,8,245});
-    DrawRectangleLinesEx(L.bot, 1.0f, Color{40,160,40,200});
+    DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
 
+    Rectangle modulesBtn, storageBtn, escortsBtn, ranksBtn;
     Rectangle resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn;
-    CalcButtons(L.bot, resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn);
+    CalcButtons(L.bot, modulesBtn, storageBtn, escortsBtn, ranksBtn,
+                resumeBtn, galacticBtn, saveBtn, loadBtn, menuBtn);
+
+    DrawMapBtn(modulesBtn, "MODULES");
+    DrawMapBtn(storageBtn, "STORAGE");
+    DrawMapBtn(escortsBtn, "ESCORTS", _mapData.wingmanCount > 0);
+    DrawMapBtn(ranksBtn,   "RANKS");
+
     DrawMapBtn(resumeBtn,  "RESUME  [ESC]");
     DrawMapBtn(galacticBtn,"GALACTIC MAP");
     DrawMapBtn(saveBtn,    "SAVE");
@@ -305,7 +332,7 @@ void SystemMap::Draw() const {
     if (_saveFeedbackTimer > 0.0f) {
         const char* msg = "GAME SAVED";
         float alpha = std::min(1.0f, _saveFeedbackTimer / 0.4f);
-        Color col = { 75, 218, 75, (unsigned char)(alpha * 255) };
+        Color col = { HudGood.r, HudGood.g, HudGood.b, (unsigned char)(alpha * 255) };
         DrawText(msg, L.mx + L.mw - MeasureText(msg, 16) - 14, (int)L.bot.y + 6, 16, col);
     }
 

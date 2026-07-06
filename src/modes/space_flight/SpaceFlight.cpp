@@ -24,7 +24,10 @@
 #include "core/ShipRegistry.h"
 #include "data/MaterialDefs.h"
 #include "systems/diplomacy/DiplomaticRegistry.h"
+#include "modes/space_flight/systems/HostileTargeting.h"
+#include "modes/space_flight/systems/DockRepair.h"
 #include "net/NetworkManager.h"
+#include "shared/ui/HudTheme.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -88,28 +91,22 @@ static Vector2 GetSafeSpawnPosition(SystemWorld* w, float baseDistance, float ma
     return safeSpawn; // Fallback to the last attempt if the map is completely swamped
 }
 
-// Row 1: MODULES | STORAGE | ESCORTS
-// Row 2: ENTER   | BUILD   | COMMS
-// Row 3: RANKS (full width)
+// MODULES/STORAGE/ESCORTS/RANKS moved to the SystemMap pause menu.
+// Right section of the HUD now just holds ENTER (top bar) with BUILD and
+// COMMS stacked vertically as icon buttons below it.
 static void ComputeHudButtons(int sw, int sh,
-    Rectangle& modBtn, Rectangle& stoBtn, Rectangle& escBtn,
-    Rectangle& enterBtn, Rectangle& buildBtn, Rectangle& commsBtn,
-    Rectangle& ranksBtn) {
-    static constexpr int HudH2 = 158;
+    Rectangle& enterBtn, Rectangle& buildBtn, Rectangle& commsBtn) {
+    static constexpr int HudH2 = 174;
     static constexpr int CenterW = 190;
     int hx = 12, hw = sw - 24;
     int rDiv = hx + (hw - CenterW) / 2 + CenterW;
     int hy = sh - HudH2 - 6;
     int rx = rDiv + 12, ry = hy + 10;
     int rw = (hx + hw) - rDiv - 16;
-    int btnW = std::min((rw - 16) / 3, 120);
-    modBtn   = { (float)rx,                   (float)ry,        (float)btnW, 28.0f };
-    stoBtn   = { (float)(rx + btnW + 8),      (float)ry,        (float)btnW, 28.0f };
-    escBtn   = { (float)(rx + btnW * 2 + 16), (float)ry,        (float)btnW, 28.0f };
-    enterBtn = { (float)rx,                   (float)(ry + 36), (float)btnW, 28.0f };
-    buildBtn = { (float)(rx + btnW + 8),      (float)(ry + 36), (float)btnW, 28.0f };
-    commsBtn = { (float)(rx + btnW * 2 + 16), (float)(ry + 36), (float)btnW, 28.0f };
-    ranksBtn = { (float)rx,                   (float)(ry + 72), (float)(btnW * 3 + 16), 28.0f };
+    int btnW = std::min(rw, 160);
+    enterBtn = { (float)rx, (float)ry,        (float)btnW, 38.0f };
+    buildBtn = { (float)rx, (float)(ry + 43), (float)btnW, 38.0f };
+    commsBtn = { (float)rx, (float)(ry + 86), (float)btnW, 38.0f };
 }
 
 static const char* FactionName(Faction f) {
@@ -289,11 +286,14 @@ void SpaceFlight::DrawPlanets() const {
     float size = PlanetDrawRadius * 2.0f;
     Rectangle src = { 0.0f, 0.0f, (float)_planetBaseTex.width, (float)_planetBaseTex.height };
     Vector2   origin = { size * 0.5f, size * 0.5f };
+    float     lightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
     for (const SpacePlanet& p : _w->planets) {
         DrawCircleV(p.position, p.radius * 1.10f, Color{ 80, 120, 210, 18 });
         DrawCircleV(p.position, p.radius * 1.05f, Color{ 90, 130, 220, 12 });
         Rectangle dst = { p.position.x, p.position.y, size, size };
-        DrawTexturePro(_planetBaseTex, src, dst, origin, 0.0f, WHITE);
+        Color lit = _lighting.BeginLit(p.position, { 0.0f, 0.0f }, lightRange);
+        DrawTexturePro(_planetBaseTex, src, dst, origin, 0.0f, lit);
+        _lighting.EndLit();
     }
 }
 
@@ -302,14 +302,18 @@ void SpaceFlight::DrawStations() const {
     float size = StationDrawRadius * 2.0f;
     Rectangle src = { 0.0f, 0.0f, (float)_stationBaseTex.width, (float)_stationBaseTex.height };
     Vector2   origin = { size * 0.5f, size * 0.5f };
+    float     lightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
     for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         DrawCircleV(s.position, s.radius * 1.25f, Color{ 60, 120, 200, 14 });
         Rectangle dst = { s.position.x, s.position.y, size, size };
-        DrawTexturePro(_stationBaseTex, src, dst, origin, 0.0f, WHITE);
+        Color lit = _lighting.BeginLit(s.position, { 0.0f, 0.0f }, lightRange);
+        DrawTexturePro(_stationBaseTex, src, dst, origin, 0.0f, lit);
+        _lighting.EndLit();
 
         for (int i = 0; i < (int)s.hardpoints.size(); ++i) {
             const HardpointState& hp = s.hardpoints[i];
+            if (!hp.alive) continue;
             Vector2 hpPos = GetNpcStationHardpointPos(s, i);
             float hpDrawRad = hp.isCore ? 18.0f : 14.0f;
 
@@ -350,7 +354,10 @@ void SpaceFlight::DrawPlayerStations() const {
             Rectangle src = { 0.0f, 0.0f, (float)_stationBaseTex.width, (float)_stationBaseTex.height };
             Rectangle dst = { ps.position.x, ps.position.y, size, size };
             Vector2 origin = { size * 0.5f, size * 0.5f };
-            DrawTexturePro(_stationBaseTex, src, dst, origin, 0.0f, WHITE);
+            float lightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
+            Color lit = _lighting.BeginLit(ps.position, { 0.0f, 0.0f }, lightRange);
+            DrawTexturePro(_stationBaseTex, src, dst, origin, 0.0f, lit);
+            _lighting.EndLit();
         }
         else if (ps.stationDefId == "mining_station") {
             // Draw the solid mining station box
@@ -954,6 +961,20 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
 
+        if (m.docked) {
+            e.health.currentHull = std::min(
+                e.health.currentHull + repair::kDockHealPerSecond * e.health.maxStats.hull * dt,
+                e.health.maxStats.hull);
+            if (e.health.currentHull >= e.health.maxStats.hull) {
+                m.docked = false;
+                m.aiState = NpcAiState::Patrol;
+                m.waypointSet = false;
+                m.retaliatingVsPlayer = false;
+                m.retaliationTargetId = 0;
+            }
+            continue;
+        }
+
         float distToPlayer = Vector2Distance(e.transform.position, _playerEntity.transform.position);
 
         if (m.faction == NpcFaction::Hostile && !m.wingman) {
@@ -1003,7 +1024,8 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 }
                 break;
             case NpcAiState::Flee:
-                if (distToClosestTarget > m.aggroRange * 2.2f) {
+                if (distToClosestTarget > m.aggroRange * 2.2f &&
+                    !repair::FindNearestFriendlyDock(*_w, m.npcFaction, e.transform.position).valid) {
                     m.aiState = NpcAiState::Patrol;
                     m.waypointSet = false;
                 }
@@ -1056,7 +1078,8 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 if (e.health.currentHull / e.health.maxStats.hull < 0.20f) {
                     if (m.aiState != NpcAiState::Flee) { m.aiState = NpcAiState::Flee; m.waypointSet = false; }
                 } else if (m.aiState == NpcAiState::Flee) {
-                    if (closestHostileDist > m.aggroRange * 2.2f) {
+                    if (closestHostileDist > m.aggroRange * 2.2f &&
+                        !repair::FindNearestFriendlyDock(*_w, m.npcFaction, e.transform.position).valid) {
                         m.aiState = NpcAiState::Patrol; m.waypointSet = false;
                         m.retaliatingVsPlayer = false; m.retaliationTargetId = 0;
                     }
@@ -1228,6 +1251,29 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             break;
         }
         case NpcAiState::Flee: {
+            m.waypointSet = false;
+            repair::FriendlyDock dock = repair::FindNearestFriendlyDock(*_w, m.npcFaction, e.transform.position);
+            if (dock.valid) {
+                float distToDock = Vector2Distance(e.transform.position, dock.position);
+                if (distToDock < repair::kDockRadius) {
+                    // Arrived — park just outside the station center from the
+                    // dock hardpoint so the ship doesn't render on top of it.
+                    SpaceStation* st = nullptr;
+                    for (SpaceStation& s : _w->stations) if (s.id == dock.stationId) { st = &s; break; }
+                    Vector2 outward = st ? Vector2Normalize(Vector2Subtract(dock.position, st->position))
+                                          : Vector2{ 0.0f, -1.0f };
+                    e.transform.position = Vector2Add(dock.position, Vector2Scale(outward, 20.0f));
+                    e.transform.velocity = { 0.0f, 0.0f };
+                    m.docked = true;
+                    desiredRot  = e.transform.rotation;
+                    thrustMult  = 0.0f;
+                    break;
+                }
+                Vector2 toDock = Vector2Subtract(dock.position, e.transform.position);
+                desiredRot = atan2f(toDock.x, -toDock.y) * RAD2DEG;
+                thrustMult = 1.0f;
+                break;
+            }
             Vector2 threatPos = _playerEntity.transform.position;
             if (DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction) != Relation::Hostile) {
                 float best = FLT_MAX;
@@ -1239,7 +1285,6 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             }
             Vector2 away = Vector2Subtract(e.transform.position, threatPos);
             desiredRot = atan2f(away.x, -away.y) * RAD2DEG;
-            m.waypointSet = false;
             thrustMult = 1.0f;
             break;
         }
@@ -1748,10 +1793,7 @@ void SpaceFlight::UpdateNpcCollisions() {
             float rad = def ? def->radius : 120.0f;
 
             // 1. Check if outer defenses still exist to protect the core
-            bool hasOuterHardpoints = false;
-            for (const HardpointState& hp : ps.hardpoints) {
-                if (!hp.isCore && hp.alive) { hasOuterHardpoints = true; break; }
-            }
+            bool hasOuterHardpoints = combat::CoreIsProtected(ps.hardpoints);
 
             bool hitStation = false;
             for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
@@ -1844,9 +1886,7 @@ void SpaceFlight::UpdateNpcCollisions() {
             // Quick broad-phase: skip if not near the station at all
             if (Vector2Distance(p.position, st.position) > st.radius + 20.0f) continue;
 
-            bool hasOuterHardpoints = false;
-            for (const HardpointState& hp : st.hardpoints)
-                if (!hp.isCore && hp.alive) { hasOuterHardpoints = true; break; }
+            bool hasOuterHardpoints = combat::CoreIsProtected(st.hardpoints);
 
             bool hitStation = false;
             for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
@@ -2212,14 +2252,17 @@ void SpaceFlight::SpawnInitialAsteroids() {
     }
 }
 
-static void DrawAsteroid(const Asteroid& a, const Texture2D* tex) {
+static void DrawAsteroid(const Asteroid& a, const Texture2D* tex,
+    const ecs::LightingSystem& lighting, float lightRange) {
     if (tex && tex->id > 0) {
         float tw = (float)tex->width, th = (float)tex->height;
         float diameter = a.radius * 2.0f;
         Rectangle src    = { 0.0f, 0.0f, tw, th };
         Rectangle dst    = { a.position.x, a.position.y, diameter, diameter };
         Vector2   origin = { diameter / 2.0f, diameter / 2.0f };
-        DrawTexturePro(*tex, src, dst, origin, a.rotation, WHITE);
+        Color     lit = lighting.BeginLit(a.position, { 0.0f, 0.0f }, lightRange);
+        DrawTexturePro(*tex, src, dst, origin, a.rotation, lit);
+        lighting.EndLit();
         return;
     }
     int sides = a.tier == 2 ? 8 : a.tier == 1 ? 7 : 6;
@@ -2480,12 +2523,33 @@ void SpaceFlight::UpdateCollisions() {
     for (auto& a : spawns) _w->asteroids.push_back(std::move(a));
 }
 
-static constexpr int HudH = 158;
-static const Color HudBg = { 7, 12,  7, 228 };
-static const Color HudBorder = { 40,158, 40, 200 };
-static const Color HudLabel = { 68,162, 68, 255 };
-static const Color HudValue = { 192,218,192, 255 };
-static const Color HudDiv = { 34, 98, 34, 175 };
+using namespace hudtheme;
+static constexpr int HudH = 174;
+
+// Simplified icon glyphs for the icon+label HUD buttons.
+static void DrawHudHammerIcon(Vector2 c, float s, Color color) {
+    DrawRectangleRec({ c.x - s * 0.55f, c.y - s * 0.65f, s * 1.1f, s * 0.5f }, color);
+    DrawRectangleRec({ c.x - s * 0.12f, c.y - s * 0.15f, s * 0.24f, s * 0.85f }, color);
+}
+static void DrawHudRadarIcon(Vector2 c, float s, Color color) {
+    DrawRing({ c.x, c.y - s * 0.15f }, s * 0.55f, s * 0.68f, 0.0f, 180.0f, 16, color);
+    DrawLineEx({ c.x, c.y + s * 0.05f }, { c.x, c.y + s * 0.55f }, 2.0f, color);
+    DrawLineEx({ c.x - s * 0.05f, c.y - s * 0.05f }, { c.x - s * 0.5f, c.y - s * 0.55f }, 2.0f, color);
+    DrawCircleV({ c.x - s * 0.5f, c.y - s * 0.55f }, s * 0.09f, color);
+}
+// Down arrow dropping into a dock/hangar bracket — reads as "enter/dock".
+static void DrawHudDockIcon(Vector2 c, float s, Color color) {
+    DrawLineEx({ c.x, c.y - s * 0.55f }, { c.x, c.y + s * 0.05f }, 2.0f, color);
+    DrawTriangle(
+        { c.x - s * 0.28f, c.y + s * 0.05f },
+        { c.x, c.y + s * 0.38f },
+        { c.x + s * 0.28f, c.y + s * 0.05f },
+        color);
+    float by = c.y + s * 0.55f;
+    DrawLineEx({ c.x - s * 0.5f, by - s * 0.28f }, { c.x - s * 0.5f, by }, 2.0f, color);
+    DrawLineEx({ c.x + s * 0.5f, by - s * 0.28f }, { c.x + s * 0.5f, by }, 2.0f, color);
+    DrawLineEx({ c.x - s * 0.5f, by }, { c.x + s * 0.5f, by }, 2.0f, color);
+}
 
 void SpaceFlight::UpdateTarget() {
     Vector2 mouse = GetMousePosition();
@@ -2641,23 +2705,35 @@ void SpaceFlight::DrawHUD() const {
     int lDiv = hx + (hw - CenterW) / 2;
     int rDiv = lDiv + CenterW;
 
-    DrawRectangle(hx, hy, hw, HudH, HudBg);
-    DrawRectangleLinesEx({ (float)hx, (float)hy, (float)hw, (float)HudH }, 1.0f, HudBorder);
-    DrawRectangle(lDiv, hy + 6, 1, HudH - 12, HudDiv);
-    DrawRectangle(rDiv, hy + 6, 1, HudH - 12, HudDiv);
+    DrawHudBracketPanel({ (float)hx, (float)hy, (float)hw, (float)HudH }, HudBg, HudBorder, 18.0f, 2.0f);
+    DrawRectangle(lDiv, hy + 10, 1, HudH - 20, HudDiv);
+    DrawRectangle(rDiv, hy + 10, 1, HudH - 20, HudDiv);
 
     auto DrawStatusRing = [](Vector2 c, float iR, float oR,
         float pct, Color fill, Color bg) {
             DrawRing(c, iR, oR, -90.0f, 270.0f, 64, bg);
-            if (pct > 0.005f)
+            if (pct > 0.005f) {
+                Color glow = fill; glow.a = 55;
+                DrawRing(c, iR - 2.0f, oR + 2.0f, -90.0f, -90.0f + 360.0f * pct, 64, glow);
                 DrawRing(c, iR, oR, -90.0f, -90.0f + 360.0f * pct, 64, fill);
+            }
+            for (int t = 0; t < 4; ++t) {
+                float ang = (-90.0f + 90.0f * t) * DEG2RAD;
+                Vector2 dir = { cosf(ang), sinf(ang) };
+                DrawLineEx({ c.x + dir.x * (iR - 2.0f), c.y + dir.y * (iR - 2.0f) },
+                    { c.x + dir.x * (oR + 2.0f), c.y + dir.y * (oR + 2.0f) },
+                    1.0f, Color{ 10,14,18,200 });
+            }
         };
     auto DrawHalfRing = [](Vector2 c, float iR, float oR,
         float pct, Color fill, Color bg, bool left) {
             float s = left ? 90.0f : -90.0f;
             DrawRing(c, iR, oR, s, s + 180.0f, 32, bg);
-            if (pct > 0.005f)
+            if (pct > 0.005f) {
+                Color glow = fill; glow.a = 55;
+                DrawRing(c, iR - 2.0f, oR + 2.0f, s, s + 180.0f * pct, 32, glow);
                 DrawRing(c, iR, oR, s, s + 180.0f * pct, 32, fill);
+            }
         };
     auto Rot2D = [](Vector2 v, float deg) -> Vector2 {
         float r = deg * DEG2RAD;
@@ -2670,11 +2746,16 @@ void SpaceFlight::DrawHUD() const {
     Vector2 sc = { (float)((lDiv + rDiv) / 2), (float)(hy + HudH / 2 - 6) };
 
     DrawCircleV(sc, sShOut + 1.0f, Color{ 6, 10, 6, 230 });
+    DrawCircleLines((int)sc.x, (int)sc.y, (int)(sShOut + 3.0f), Color{ 90,150,190,90 });
 
     float hullPct = _playerEntity.health.currentHull / _playerEntity.health.maxStats.hull;
-    Color hullCol = hullPct > 0.5f ? Color{ 48,188,68,255 }
-        : hullPct > 0.25f ? Color{ 212,168,28,255 }
-    : Color{ 208,42,32,255 };
+    Color hullCol = hullPct > 0.5f ? HudGood
+        : hullPct > 0.25f ? HudCaution
+        : HudCritical;
+    if (hullPct <= 0.25f) {
+        float pulse = 0.55f + 0.45f * sinf((float)GetTime() * 6.0f);
+        hullCol.a = (unsigned char)(150 + 90 * pulse);
+    }
     DrawStatusRing(sc, sHpIn, sHpOut, hullPct, hullCol, Color{ 22,32,22,200 });
 
     float ksPct = _playerEntity.health.maxStats.shield > 0.0f
@@ -2684,6 +2765,26 @@ void SpaceFlight::DrawHUD() const {
     DrawHalfRing(sc, sShIn, sShOut, ksPct, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
     DrawHalfRing(sc, sShIn, sShOut, esPct, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
     DrawCircleLines((int)sc.x, (int)sc.y, (int)sAreaR, Color{ 30,55,30,160 });
+
+    {
+        char pctBuf[8];
+        std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", hullPct * 100.0f);
+        Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 15.0f, 1.0f);
+        DrawTextEx(_hudFontVal, pctBuf, { sc.x - hpTs.x / 2.0f, sc.y + sShOut + 6.0f }, 15.0f, 1.0f, hullCol);
+
+        if (_playerEntity.health.maxStats.shield > 0.0f) {
+            std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", ksPct * 100.0f);
+            Vector2 ksTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
+            DrawTextEx(_hudFontVal, pctBuf, { sc.x - sShOut - ksTs.x - 5.0f, sc.y - ksTs.y / 2.0f },
+                14.0f, 1.0f, Color{ 255,210,60,255 });
+        }
+        if (_playerMeta.maxEnergyShield > 0.0f) {
+            std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", esPct * 100.0f);
+            Vector2 esTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
+            DrawTextEx(_hudFontVal, pctBuf, { sc.x + sShOut + 5.0f, sc.y - esTs.y / 2.0f },
+                14.0f, 1.0f, Color{ 60,180,220,255 });
+        }
+    }
 
     Texture2D* shipTexPtr = _playerShipTex;
     if (shipTexPtr && shipTexPtr->id > 0) {
@@ -2709,22 +2810,24 @@ void SpaceFlight::DrawHUD() const {
         DrawTriangleLines(tip, rgt, lft, Color{ 140,200,255,255 });
     }
     const char* snc = _playerMeta.displayName.c_str();
-    DrawText(snc, (int)sc.x - MeasureText(snc, 11) / 2, hy + HudH - 17, 11, HudLabel);
+    Vector2 sncTs = MeasureTextEx(_hudFontUi, snc, 11.0f, 1.0f);
+    DrawTextEx(_hudFontUi, snc, { sc.x - sncTs.x / 2.0f, (float)(hy + HudH - 17) }, 11.0f, 1.0f, HudLabel);
 
     const float tAreaR = 26.0f;
     const float tHpIn = 28.0f, tHpOut = 35.0f;
     const float tShIn = 37.0f, tShOut = 44.0f;
     Vector2 tc = { (float)(hx + 60), (float)(hy + HudH / 2 - 6) };
     DrawCircleV(tc, tShOut + 1.0f, Color{ 6, 8, 14, 230 });
+    DrawCircleLines((int)tc.x, (int)tc.y, (int)(tShOut + 3.0f), Color{ 90,150,190,90 });
 
     const bool hasSensors = _hasSensors;
 
     if (_target.valid) {
         if (_target.isNpc) {
             float tHpPct = _target.health / _target.maxHealth;
-            Color tHpCol = tHpPct > 0.5f ? Color{ 48,188,68,255 }
-                : tHpPct > 0.25f ? Color{ 212,168,28,255 }
-            : Color{ 208,42,32,255 };
+            Color tHpCol = tHpPct > 0.5f ? HudGood
+                : tHpPct > 0.25f ? HudCaution
+                : HudCritical;
             DrawStatusRing(tc, tHpIn, tHpOut, tHpPct, tHpCol, Color{ 22,22,32,200 });
             float tKsPct = (_target.maxKineticShield > 0.0f)
                 ? _target.kineticShield / _target.maxKineticShield : 0.0f;
@@ -2737,6 +2840,22 @@ void SpaceFlight::DrawHUD() const {
             Color tgtRing = isHostileNpc ? Color{ 120,30,30,180 }
                 : isNeutralNpc ? Color{ 100,90,20,180 } : Color{ 30,80,30,180 };
             DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, tgtRing);
+
+            // Percentage readouts stacked below the ring — the target cluster sits
+            // close to the screen edge, so flanking labels (as on the player ring)
+            // would clip; a centered stack always has room to grow.
+            if (hasSensors || _target.isWingman) {
+                char pctBuf[8];
+                std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", tHpPct * 100.0f);
+                Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
+                DrawTextEx(_hudFontVal, pctBuf, { tc.x - hpTs.x / 2.0f, tc.y + tShOut + 6.0f }, 14.0f, 1.0f, tHpCol);
+            }
+            if (_target.isWingman && (_target.maxKineticShield > 0.0f || _target.maxEnergyShield > 0.0f)) {
+                char shBuf[24];
+                std::snprintf(shBuf, sizeof(shBuf), "%.0f%% / %.0f%%", tKsPct * 100.0f, tEsPct * 100.0f);
+                Vector2 shTs = MeasureTextEx(_hudFontVal, shBuf, 12.0f, 1.0f);
+                DrawTextEx(_hudFontVal, shBuf, { tc.x - shTs.x / 2.0f, tc.y + tShOut + 23.0f }, 12.0f, 1.0f, HudLabel);
+            }
             Texture2D* npcTexPtr = nullptr;
             for (size_t ni = 0; ni < _w->npcMeta.size(); ++ni) {
                 if (_w->npcMeta[ni].id == _npcTargetId && _w->npcMeta[ni].alive) {
@@ -2760,28 +2879,28 @@ void SpaceFlight::DrawHUD() const {
                 DrawTexturePro(npcTex, isrc, idst, { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, tint);
             }
             if (hasSensors || _target.isWingman) {
-                int dx = (int)(tc.x + tShOut + 12), dy = hy + 12;
-                DrawText(_target.name.c_str(), dx, dy, 13, HudValue); dy += 18;
-                DrawText(_target.typeDesc.c_str(), dx, dy, 12, HudLabel); dy += 16;
+                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
+                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
                 char db[64];
                 std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance);
-                DrawText(db, dx, dy, 12, HudValue); dy += 16;
+                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth);
-                DrawText(db, dx, dy, 12, HudValue); dy += 16;
+                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 if (hasSensors && _target.hasFaction) {
                     char fb[48];
                     std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
-                    DrawText(fb, dx, dy, 12, Color{ 180, 210, 255, 255 }); dy += 16;
+                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
                 }
                 if (_target.isWingman && _target.maxKineticShield > 0.0f) {
                     std::snprintf(db, sizeof(db), "KS  %.0f / %.0f",
                         _target.kineticShield, _target.maxKineticShield);
-                    DrawText(db, dx, dy, 12, Color{ 255,210,60,255 }); dy += 16;
+                    DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 255,210,60,255 }); dy += 16;
                 }
                 if (_target.isWingman && _target.maxEnergyShield > 0.0f) {
                     std::snprintf(db, sizeof(db), "ES  %.0f / %.0f",
                         _target.energyShield, _target.maxEnergyShield);
-                    DrawText(db, dx, dy, 12, Color{ 60,180,220,255 });
+                    DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 60,180,220,255 });
                 }
             }
         }
@@ -2809,21 +2928,21 @@ void SpaceFlight::DrawHUD() const {
                     { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, stnTint);
             }
             if (hasSensors) {
-                int dx = (int)(tc.x + tShOut + 12), dy = hy + 12;
-                DrawText(_target.name.c_str(), dx, dy, 13, HudValue); dy += 18;
-                DrawText(_target.typeDesc.c_str(), dx, dy, 12, HudLabel); dy += 16;
+                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
+                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
                 if (_target.hasFaction) {
                     char fb[48];
                     std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
-                    DrawText(fb, dx, dy, 12, Color{ 180, 210, 255, 255 });
+                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 });
                 }
             }
         }
         else {
             float tHpPct = _target.health / _target.maxHealth;
-            Color tHpCol = tHpPct > 0.5f ? Color{ 48,188,68,255 }
-                : tHpPct > 0.25f ? Color{ 212,168,28,255 }
-            : Color{ 208,42,32,255 };
+            Color tHpCol = tHpPct > 0.5f ? HudGood
+                : tHpPct > 0.25f ? HudCaution
+                : HudCritical;
             DrawStatusRing(tc, tHpIn, tHpOut, hasSensors ? tHpPct : 0.0f, tHpCol, Color{ 22,22,32,200 });
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
@@ -2833,89 +2952,104 @@ void SpaceFlight::DrawHUD() const {
             DrawPoly(tc, sides, tAreaR * 0.65f, spin, Color{ 30,26,21,255 });
             DrawPolyLinesEx(tc, sides, tAreaR * 0.65f, spin, 1.0f, Color{ 130,115,90,255 });
             if (hasSensors) {
-                int dx = (int)(tc.x + tShOut + 12), dy = hy + 12;
-                DrawText(_target.name.c_str(), dx, dy, 13, HudValue); dy += 18;
-                DrawText(_target.typeDesc.c_str(), dx, dy, 12, HudLabel); dy += 16;
+                char pctBuf[8];
+                std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", tHpPct * 100.0f);
+                Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
+                DrawTextEx(_hudFontVal, pctBuf, { tc.x - hpTs.x / 2.0f, tc.y + tShOut + 6.0f }, 14.0f, 1.0f, tHpCol);
+            }
+            if (hasSensors) {
+                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
+                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
                 char db[64];
                 std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance);
-                DrawText(db, dx, dy, 12, HudValue); dy += 16;
+                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth);
-                DrawText(db, dx, dy, 12, HudValue); dy += 16;
+                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 for (const auto& mc : _target.materialComps) {
                     const MatDef* mat = FindMaterial(mc.materialId);
                     char mb[48];
                     std::snprintf(mb, sizeof(mb), "%-10s %d%%",
                         mat ? mat->displayName : mc.materialId.c_str(), mc.percent);
-                    DrawText(mb, dx, dy, 11, mat ? mat->hudColor : HudValue);
+                    DrawTextEx(_hudFontVal, mb, { dx, dy }, 11.0f, 1.0f, mat ? mat->hudColor : HudValue);
                     dy += 14;
                 }
             }
         }
     }
     else {
-        DrawStatusRing(tc, tHpIn, tHpOut, 0.0f, Color{ 48,188,68,255 }, Color{ 22,22,32,200 });
+        DrawStatusRing(tc, tHpIn, tHpOut, 0.0f, HudGood, Color{ 22,22,32,200 });
         DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
         DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
         DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, Color{ 30,30,55,110 });
-        DrawText("NO", (int)tc.x - MeasureText("NO", 10) / 2, (int)tc.y - 10, 10, Color{ 80,80,100,200 });
-        DrawText("TARGET", (int)tc.x - MeasureText("TARGET", 10) / 2, (int)tc.y + 2, 10, Color{ 80,80,100,200 });
+        Vector2 noTs = MeasureTextEx(_hudFontUi, "NO", 10.0f, 1.0f);
+        Vector2 tgtTs = MeasureTextEx(_hudFontUi, "TARGET", 10.0f, 1.0f);
+        DrawTextEx(_hudFontUi, "NO", { tc.x - noTs.x / 2.0f, tc.y - 10.0f }, 10.0f, 1.0f, Color{ 80,80,100,200 });
+        DrawTextEx(_hudFontUi, "TARGET", { tc.x - tgtTs.x / 2.0f, tc.y + 2.0f }, 10.0f, 1.0f, Color{ 80,80,100,200 });
     }
 
     bool showTargetData = hasSensors || (_target.valid && _target.isNpc && _target.isWingman);
     int weapX = (int)(tc.x + tShOut) + 10 + (showTargetData ? 168 : 12);
     int wy = hy + 10;
 
-    DrawText("WEAPON", weapX, wy, 11, HudLabel); wy += 14;
+    DrawTextEx(_hudFontUi, "WEAPON", { (float)weapX, (float)wy }, 11.0f, 1.0f, HudLabel); wy += 14;
     if (_playerMeta.canFire) {
         int barW = std::min(lDiv - weapX - 10, 140);
         if (_playerMeta.weaponFireMode == WeaponFireMode::Charge) {
             float chargePct = _playerMeta.ChargePct();
             bool  full = chargePct >= 1.0f;
-            Color cFill = full ? Color{ 80,200,80,255 } : Color{ 60,150,220,255 };
+            Color cFill = full ? HudGood : Color{ 60,150,220,255 };
             DrawRectangle(weapX, wy, barW, 10, Color{ 20,28,20,200 });
             DrawRectangle(weapX, wy, (int)(barW * chargePct), 10, cFill);
             DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,10.0f }, 1.0f, HudDiv);
             wy += 12;
             const char* cl = full ? "FULL CHARGE" : chargePct > 0.01f ? "CHARGING" : "HOLD TO CHARGE";
-            DrawText(cl, weapX, wy, 11, full ? Color{ 80,220,80,255 } : Color{ 100,175,220,255 });
+            DrawTextEx(_hudFontVal, cl, { (float)weapX, (float)wy }, 11.0f, 1.0f,
+                full ? HudGood : Color{ 100,175,220,255 });
             wy += 16;
         }
         else if (_playerMeta.weaponFireMode == WeaponFireMode::LockOn) {
             bool locked = (_lockTargetId != 0);
-            DrawText(locked ? "TARGET LOCKED" : "CLICK TO LOCK", weapX, wy + 2, 11,
-                locked ? Color{ 220,80,80,255 } : Color{ 120,120,140,220 });
+            DrawTextEx(_hudFontVal, locked ? "TARGET LOCKED" : "CLICK TO LOCK",
+                { (float)weapX, (float)wy + 2.0f }, 11.0f, 1.0f,
+                locked ? HudCritical : Color{ 120,120,140,220 });
             wy += 16;
             float readyPct = 1.0f - _playerMeta.FireCooldownPct();
             DrawRectangle(weapX, wy, barW, 6, Color{ 20,28,20,200 });
             DrawRectangle(weapX, wy, (int)(barW * readyPct), 6,
-                readyPct >= 1.0f ? Color{ 48,198,78,255 } : Color{ 178,138,28,255 });
+                readyPct >= 1.0f ? HudGood : HudCaution);
             DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,6.0f }, 1.0f, HudDiv);
             wy += 10;
         }
         else {
             float readyPct = 1.0f - _playerMeta.FireCooldownPct();
             bool  isReady = readyPct >= 1.0f;
-            Color wFill = isReady ? Color{ 48,198,78,255 } : Color{ 178,138,28,255 };
+            Color wFill = isReady ? HudGood : HudCaution;
+            if (isReady) {
+                float pulse = 0.6f + 0.4f * sinf((float)GetTime() * 5.0f);
+                wFill.a = (unsigned char)(170 + 85 * pulse);
+            }
             DrawRectangle(weapX, wy, barW, 10, Color{ 20,28,20,200 });
             DrawRectangle(weapX, wy, (int)(barW * readyPct), 10, wFill);
             DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,10.0f }, 1.0f, HudDiv);
             wy += 12;
-            DrawText(isReady ? "READY" : "CHARGING", weapX, wy, 11,
-                isReady ? Color{ 75,218,75,255 } : Color{ 198,158,38,255 });
+            DrawTextEx(_hudFontVal, isReady ? "READY" : "CHARGING", { (float)weapX, (float)wy }, 11.0f, 1.0f,
+                isReady ? HudGood : HudCaution);
             wy += 16;
         }
     }
     else {
-        DrawText("NO WEAPON", weapX, wy + 2, 11, Color{ 160,60,60,220 }); wy += 28;
+        DrawTextEx(_hudFontVal, "NO WEAPON", { (float)weapX, (float)wy + 2.0f }, 11.0f, 1.0f, HudCritical); wy += 28;
     }
 
-    DrawText("SLOTS", weapX, wy, 10, HudLabel); wy += 12;
+    DrawTextEx(_hudFontUi, "SLOTS", { (float)weapX, (float)wy }, 10.0f, 1.0f, HudLabel); wy += 12;
     for (int i = 0; i < _playerMeta.weaponSlots; ++i) {
         bool isSelected = (i == _selectedWeapon);
         Rectangle slot = { (float)(weapX + i * 38), (float)wy, 32.0f, 26.0f };
-        DrawRectangleRec(slot, isSelected ? Color{ 20,38,20,230 } : Color{ 14,22,14,200 });
-        DrawRectangleLinesEx(slot, isSelected ? 2.0f : 1.0f,
-            isSelected ? Color{ 80,200,80,255 } : HudDiv);
+        DrawHudChamferRect(slot, 5.0f,
+            isSelected ? Color{ 20,38,20,230 } : Color{ 14,22,14,200 },
+            isSelected ? HudGood : HudDiv,
+            isSelected ? 2.0f : 1.0f);
         char kh[2] = { (char)('1' + i), 0 };
         if (i == 9) kh[0] = '0';
         DrawText(kh, (int)slot.x + 3, (int)slot.y + 3, 7, Color{ 60,100,60,175 });
@@ -2935,105 +3069,72 @@ void SpaceFlight::DrawHUD() const {
         }
     }
 
-    Rectangle modBtn, stoBtn, escBtn, enterBtn, buildBtn, commsBtn, ranksBtn;
-    ComputeHudButtons(sw, sh, modBtn, stoBtn, escBtn, enterBtn, buildBtn, commsBtn, ranksBtn);
-    bool hovMod = CheckCollisionPointRec(mouse, modBtn);
-    bool hovSto = CheckCollisionPointRec(mouse, stoBtn);
+    Rectangle enterBtn, buildBtn, commsBtn;
+    ComputeHudButtons(sw, sh, enterBtn, buildBtn, commsBtn);
     bool nearStation = IsNearEnterableStation();
     bool nearPlanet  = nearStation || IsNearPlanet();
     bool hovEnter    = nearPlanet && CheckCollisionPointRec(mouse, enterBtn);
 
-    // Row 1 — MODULES
-    DrawRectangleRec(modBtn, hovMod ? Color{ 50,95,50,230 } : Color{ 12,22,12,200 });
-    DrawRectangleLinesEx(modBtn, 1.0f, HudDiv);
-    DrawText("MODULES",
-        (int)(modBtn.x + (modBtn.width - MeasureText("MODULES", 10)) / 2),
-        (int)(modBtn.y + 9), 10, hovMod ? WHITE : HudLabel);
+    float breathe = 0.6f + 0.4f * sinf((float)GetTime() * 3.0f);
 
-    // Row 1 — STORAGE
-    DrawRectangleRec(stoBtn, hovSto ? Color{ 50,95,50,230 } : Color{ 12,22,12,200 });
-    DrawRectangleLinesEx(stoBtn, 1.0f, HudDiv);
-    DrawText("STORAGE",
-        (int)(stoBtn.x + (stoBtn.width - MeasureText("STORAGE", 10)) / 2),
-        (int)(stoBtn.y + 9), 10, hovSto ? WHITE : HudLabel);
-
-    // Row 1 — ESCORTS
-    {
-        int wingCount = 0;
-        for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
-        bool escActive = (wingCount > 0);
-        bool hovEsc = escActive && CheckCollisionPointRec(mouse, escBtn);
-        Color escBg = escActive ? (hovEsc ? Color{ 20,70,40,230 } : Color{ 10,28,18,200 })
-            : Color{ 16,16,16,150 };
-        Color escBdr = escActive ? Color{ 30,140,80,200 } : HudDiv;
-        Color escFg = escActive ? (hovEsc ? WHITE : Color{ 50,180,90,255 })
-            : Color{ 45,50,55,150 };
-        DrawRectangleRec(escBtn, escBg);
-        DrawRectangleLinesEx(escBtn, 1.0f, escBdr);
-        char escLbl[64];
-        std::snprintf(escLbl, sizeof(escLbl), "ESCORTS (%d)", wingCount);
-        DrawText(escLbl,
-            (int)(escBtn.x + (escBtn.width - MeasureText(escLbl, 10)) / 2),
-            (int)(escBtn.y + 9), 10, escFg);
-    }
-
-    // Row 2 — ENTER
+    // ENTER — dock-arrow icon, label below (contextual, breathes when actionable)
     {
         Color enterBg = nearPlanet ? (hovEnter ? Color{ 30,70,90,230 } : Color{ 12,25,35,200 })
             : Color{ 16,16,16,150 };
-        Color enterBdr = nearPlanet ? Color{ 40,130,200,200 } : HudDiv;
+        Color enterBdr = nearPlanet ? Color{ 60,160,220,200 } : HudDiv;
+        if (nearPlanet && !hovEnter) enterBdr.a = (unsigned char)(140 + 100 * breathe);
         Color enterFg = nearPlanet ? (hovEnter ? WHITE : Color{ 60,160,220,255 })
             : Color{ 50,55,60,160 };
-        DrawRectangleRec(enterBtn, enterBg);
-        DrawRectangleLinesEx(enterBtn, 1.0f, enterBdr);
-        DrawText("ENTER",
-            (int)(enterBtn.x + (enterBtn.width - MeasureText("ENTER", 10)) / 2),
-            (int)(enterBtn.y + 9), 10, enterFg);
+        DrawHudChamferRect(enterBtn, 6.0f, enterBg, enterBdr, 1.5f);
+        DrawHudDockIcon({ enterBtn.x + enterBtn.width / 2.0f, enterBtn.y + enterBtn.height * 0.38f }, 16.0f, enterFg);
+        const char* enterLbl = "ENTER";
+        Vector2 enterTs = MeasureTextEx(_hudFontUi, enterLbl, 9.0f, 1.0f);
+        DrawTextEx(_hudFontUi, enterLbl,
+            { enterBtn.x + (enterBtn.width - enterTs.x) / 2.0f, enterBtn.y + enterBtn.height - enterTs.y - 3.0f },
+            9.0f, 1.0f, enterFg);
     }
 
-    // Row 2 — BUILD (blue)
+    // BUILD — hammer icon, label below
     {
         bool hovBuild = CheckCollisionPointRec(mouse, buildBtn);
-        DrawRectangleRec(buildBtn, hovBuild ? Color{ 20,50,110,230 } : Color{ 10,22,50,200 });
-        DrawRectangleLinesEx(buildBtn, 1.0f, Color{ 40,100,200,200 });
-        DrawText("BUILD",
-            (int)(buildBtn.x + (buildBtn.width - MeasureText("BUILD", 10)) / 2),
-            (int)(buildBtn.y + 9), 10, hovBuild ? WHITE : Color{ 80,150,230,255 });
+        Color bg = hovBuild ? Color{ 20,50,110,230 } : Color{ 10,22,50,200 };
+        Color bdr = Color{ 40,100,200,200 };
+        Color fg = hovBuild ? WHITE : Color{ 80,150,230,255 };
+        DrawHudChamferRect(buildBtn, 6.0f, bg, bdr, 1.5f);
+        DrawHudHammerIcon({ buildBtn.x + buildBtn.width / 2.0f, buildBtn.y + buildBtn.height * 0.38f }, 16.0f, fg);
+        const char* buildLbl = "BUILD";
+        Vector2 buildTs = MeasureTextEx(_hudFontUi, buildLbl, 9.0f, 1.0f);
+        DrawTextEx(_hudFontUi, buildLbl,
+            { buildBtn.x + (buildBtn.width - buildTs.x) / 2.0f, buildBtn.y + buildBtn.height - buildTs.y - 3.0f },
+            9.0f, 1.0f, fg);
     }
 
-    // Row 2 — COMMS
+    // COMMS — radar dish icon, label below
     {
         bool npcActive = (_npcTargetId != 0);
         bool hovComms = npcActive && CheckCollisionPointRec(mouse, commsBtn);
-        Color commsBg = npcActive ? (hovComms ? Color{ 20,60,80,230 } : Color{ 10,28,40,200 })
+        Color bg = npcActive ? (hovComms ? Color{ 20,60,80,230 } : Color{ 10,28,40,200 })
             : Color{ 16,16,16,150 };
-        Color commsBdr = npcActive ? Color{ 30,100,160,200 } : HudDiv;
-        Color commsFg = npcActive ? (hovComms ? WHITE : Color{ 50,140,190,255 })
+        Color bdr = npcActive ? Color{ 30,100,160,200 } : HudDiv;
+        Color fg = npcActive ? (hovComms ? WHITE : Color{ 50,140,190,255 })
             : Color{ 45,50,55,150 };
-        DrawRectangleRec(commsBtn, commsBg);
-        DrawRectangleLinesEx(commsBtn, 1.0f, commsBdr);
-        DrawText("COMMS",
-            (int)(commsBtn.x + (commsBtn.width - MeasureText("COMMS", 10)) / 2),
-            (int)(commsBtn.y + 9), 10, commsFg);
-    }
-
-    // Row 3 — RANKS
-    {
-        bool hovRanks = CheckCollisionPointRec(mouse, ranksBtn);
-        DrawRectangleRec(ranksBtn, hovRanks ? Color{ 50,95,50,230 } : Color{ 12,22,12,200 });
-        DrawRectangleLinesEx(ranksBtn, 1.0f, HudDiv);
-        DrawText("RANKS",
-            (int)(ranksBtn.x + (ranksBtn.width - MeasureText("RANKS", 10)) / 2),
-            (int)(ranksBtn.y + 9), 10, hovRanks ? WHITE : HudLabel);
+        DrawHudChamferRect(commsBtn, 6.0f, bg, bdr, 1.5f);
+        DrawHudRadarIcon({ commsBtn.x + commsBtn.width / 2.0f, commsBtn.y + commsBtn.height * 0.38f }, 16.0f, fg);
+        const char* commsLbl = "COMMS";
+        Vector2 commsTs = MeasureTextEx(_hudFontUi, commsLbl, 9.0f, 1.0f);
+        DrawTextEx(_hudFontUi, commsLbl,
+            { commsBtn.x + (commsBtn.width - commsTs.x) / 2.0f, commsBtn.y + commsBtn.height - commsTs.y - 3.0f },
+            9.0f, 1.0f, fg);
     }
 
     (void)rDiv;
 
-    DrawText("[ESC] MAP", hx + hw - MeasureText("[ESC] MAP", 11) - 8,
-        hy + HudH - 15, 11, Color{ 55,115,55,170 });
+    Vector2 escMapTs = MeasureTextEx(_hudFontVal, "[ESC] MAP", 11.0f, 1.0f);
+    DrawTextEx(_hudFontVal, "[ESC] MAP", { (float)(hx + hw) - escMapTs.x - 8.0f, (float)(hy + HudH - 15) },
+        11.0f, 1.0f, HudLabel);
 
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
-        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
+        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     if (!menuOpen && mouse.y < hy) {
         int cs = 8;
@@ -3667,7 +3768,7 @@ void SpaceFlight::OnEnter() {
 
     _selectedWeapon = 0;
     _enterPopupOpen      = false;
-    _stationPopupOpen    = false;
+    _stationServicesMenu.isOpen = false;
     _inPlacementMode     = false;
     _placementConfirmOpen= false;
     _placingStationDefId.clear();
@@ -3788,6 +3889,8 @@ void SpaceFlight::OnEnter() {
     if (_asteroidTexLarge.id > 0) { UnloadTexture(_asteroidTexLarge); _asteroidTexLarge = {}; }
     if (_asteroidTexMedium.id > 0){ UnloadTexture(_asteroidTexMedium);_asteroidTexMedium= {}; }
     if (_asteroidTexSmall.id > 0) { UnloadTexture(_asteroidTexSmall); _asteroidTexSmall = {}; }
+    if (_hudFontUi.texture.id  > 0) { UnloadFont(_hudFontUi);  _hudFontUi  = {}; }
+    if (_hudFontVal.texture.id > 0) { UnloadFont(_hudFontVal); _hudFontVal = {}; }
     _planetBaseTex    = LoadTexture("assets/planets/planet1.png");
     _stationBaseTex   = LoadTexture("assets/stations/space_station1.png");
     _gargosTex        = LoadTexture("assets/ships/gargos.png");
@@ -3802,6 +3905,13 @@ void SpaceFlight::OnEnter() {
     if (_asteroidTexLarge.id > 0) SetTextureFilter(_asteroidTexLarge, TEXTURE_FILTER_BILINEAR);
     if (_asteroidTexMedium.id> 0) SetTextureFilter(_asteroidTexMedium,TEXTURE_FILTER_BILINEAR);
     if (_asteroidTexSmall.id > 0) SetTextureFilter(_asteroidTexSmall, TEXTURE_FILTER_BILINEAR);
+
+    _hudFontUi = LoadFontEx("assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf", 40, nullptr, 0);
+    if (_hudFontUi.texture.id == 0) _hudFontUi = GetFontDefault();
+    else { GenTextureMipmaps(&_hudFontUi.texture); SetTextureFilter(_hudFontUi.texture, TEXTURE_FILTER_TRILINEAR); }
+    _hudFontVal = LoadFontEx("assets/fonts/Exo_2/Exo2-VariableFont_wght.ttf", 40, nullptr, 0);
+    if (_hudFontVal.texture.id == 0) _hudFontVal = GetFontDefault();
+    else { GenTextureMipmaps(&_hudFontVal.texture); SetTextureFilter(_hudFontVal.texture, TEXTURE_FILTER_TRILINEAR); }
 
     // ── World entities: restore or spawn fresh ────────────────────────────────
     _w->sun = SpaceSun{};
@@ -4513,6 +4623,8 @@ void SpaceFlight::Update(float dt) {
                 _loadout.armor      = Armor_HullPatch();
                 _loadout.engine     = Engine_Thruster_I();
                 _loadout.hyperdrive = std::nullopt;
+                if (_playerMeta.weaponSlots > 0)
+                    _loadout.weapons[0] = Weapon_PulseCannon_I();
                 ApplyLoadout();
                 // When the player dies and needs to respawn:
                 float spawnDist = _w->sun.gravRange + 800.0f;
@@ -4541,7 +4653,8 @@ void SpaceFlight::Update(float dt) {
 
     if (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _localMapOpen ||
-        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen) {
+        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen ||
+        _stationServicesMenu.isOpen) {
         blockFireUntilRelease = true;
     }
 
@@ -4554,8 +4667,8 @@ void SpaceFlight::Update(float dt) {
         if (_enterPopupOpen) {
             _enterPopupOpen = false;
         }
-        else if (_stationPopupOpen) {
-            _stationPopupOpen = false;
+        else if (_stationServicesMenu.isOpen) {
+            _stationServicesMenu.Close();
         }
         else if (_buildMenu.isOpen) {
             _buildMenu.Close();
@@ -4649,6 +4762,7 @@ void SpaceFlight::Update(float dt) {
             SystemMapData mapData;
             mapData.playerPos       = _playerEntity.transform.position;
             mapData.hyperdriveRange = _hyperdriveRange;
+            for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) mapData.wingmanCount++;
             for (const SpacePlanet& p : _w->planets) {
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) != _discoveredIds.end();
                 mapData.blips.push_back({ p.id, p.position, p.radius, true, disc });
@@ -4671,6 +4785,36 @@ void SpaceFlight::Update(float dt) {
         if (action == MapAction::OpenGalacticMap) {
             _systemMap.Close();
             _galacticMap.Open();
+            return;
+        }
+        if (action == MapAction::OpenModules) {
+            _systemMap.Close();
+            _modulesMenu.Open(&_loadout, &_storageMenu.slots,
+                _playerMeta.weaponSlots, _playerMeta.armorSlots,
+                _playerMeta.shieldSlots, _playerMeta.engineSlots,
+                _playerMeta.hyperdriveSlots, _playerMeta.auxSlots);
+            return;
+        }
+        if (action == MapAction::OpenStorage) {
+            _systemMap.Close();
+            _storageMenu.Open((int)_storageMenu.slots.size());
+            return;
+        }
+        if (action == MapAction::OpenEscorts) {
+            int wingCount = 0;
+            for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
+            if (wingCount > 0) {
+                _systemMap.Close();
+                _escortMenuOpen = true;
+                _escortMenuSelId = 0;
+                for (const NpcMeta& n : _w->npcMeta)
+                    if (n.alive && n.wingman) { _escortMenuSelId = n.id; break; }
+            }
+            return;
+        }
+        if (action == MapAction::OpenRanks) {
+            _systemMap.Close();
+            _ranksMenuOpen = true;
             return;
         }
         if (action == MapAction::GoMainMenu) {
@@ -4819,14 +4963,8 @@ void SpaceFlight::Update(float dt) {
         return;
     }
 
-    if (_stationPopupOpen) {
-        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
-        static constexpr int PopH = 130;
-        int py2 = sh2 / 2 - PopH / 2;
-        Rectangle okBtn = { (float)(sw2 / 2 - 60), (float)(py2 + PopH - 46), 120.0f, 32.0f };
-        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) &&
-            CheckCollisionPointRec(GetMousePosition(), okBtn))
-            _stationPopupOpen = false;
+    if (_stationServicesMenu.isOpen) {
+        _stationServicesMenu.Update();
         return;
     }
 
@@ -5268,38 +5406,16 @@ void SpaceFlight::Update(float dt) {
 
     // ── HUD button clicks ─────────────────────────────────────────────────────
     Vector2 mousePos = GetMousePosition();
-    int hy = GetScreenHeight() - 158 - 6;
+    int hy = GetScreenHeight() - HudH - 6;
 
     bool clickedHudBtn = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen || _ranksMenuOpen || (mousePos.y >= hy);
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Rectangle modBtn, stoBtn, escBtn, enterBtn, buildBtn, commsBtn, ranksBtn;
-        ComputeHudButtons(GetScreenWidth(), GetScreenHeight(), modBtn, stoBtn, escBtn, enterBtn, buildBtn, commsBtn, ranksBtn);
+        Rectangle enterBtn, buildBtn, commsBtn;
+        ComputeHudButtons(GetScreenWidth(), GetScreenHeight(), enterBtn, buildBtn, commsBtn);
         Vector2 m = GetMousePosition();
-        if (CheckCollisionPointRec(m, modBtn)) {
-            _modulesMenu.Open(&_loadout, &_storageMenu.slots,
-                _playerMeta.weaponSlots, _playerMeta.armorSlots,
-                _playerMeta.shieldSlots, _playerMeta.engineSlots,
-                _playerMeta.hyperdriveSlots, _playerMeta.auxSlots);
-            clickedHudBtn = true;
-        }
-        else if (CheckCollisionPointRec(m, stoBtn)) {
-            _storageMenu.Open((int)_storageMenu.slots.size());
-            clickedHudBtn = true;
-        }
-        else if (CheckCollisionPointRec(m, escBtn)) {
-            int wingCount = 0;
-            for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
-            if (wingCount > 0) {
-                _escortMenuOpen = true;
-                _escortMenuSelId = 0;
-                for (const NpcMeta& n : _w->npcMeta)
-                    if (n.alive && n.wingman) { _escortMenuSelId = n.id; break; }
-            }
-            clickedHudBtn = true;
-        }
-        else if ((IsNearEnterableStation() || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
-            if (IsNearEnterableStation()) _stationPopupOpen = true;
+        if ((IsNearEnterableStation() || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
+            if (IsNearEnterableStation()) _stationServicesMenu.Open(&_playerEntity, &_storageMenu.slots);
             else                 _enterPopupOpen   = true;
             clickedHudBtn = true;
         }
@@ -5327,10 +5443,6 @@ void SpaceFlight::Update(float dt) {
                 }
                 break;
             }
-            clickedHudBtn = true;
-        }
-        else if (CheckCollisionPointRec(m, ranksBtn)) {
-            _ranksMenuOpen = true;
             clickedHudBtn = true;
         }
     }
@@ -5631,7 +5743,7 @@ void SpaceFlight::Update(float dt) {
 
     bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen ||
                        _galacticMap.isOpen || _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
-                       _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
+                       _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
                        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
     if (!anyMenuOpen) {
         float wheel = GetMouseWheelMove();
@@ -5715,34 +5827,24 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
             if (!hp.weapons.empty() && hp.weapons[0].has_value())
                 maxRange = std::max(maxRange, hp.weapons[0]->weapon.projRange);
 
-        // Find closest valid target within range
-        Vector2      fireTarget   = {};
-        bool         hasFireTarget = false;
-        float        bestDist     = maxRange;
-        unsigned int fireTargetId = 0;
+        // Find closest valid target within range — shared template so any
+        // future hostile-capable unit (ships, turrets, ...) can reuse the
+        // exact same "nearest hostile in range" rule stations use here.
+        combat::HostileTarget pick = combat::FindNearestHostileTarget(
+            *_w, _playerEntity, kPlayerFaction, st.faction, st.position, maxRange, st.id);
 
-        for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
-            if (!_w->npcMeta[j].alive) continue;
-            if (DiplomaticRegistry::Get(st.faction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
-            float d = Vector2Distance(st.position, _w->entities[j].transform.position);
-            if (d < bestDist) {
-                bestDist = d; fireTarget = _w->entities[j].transform.position;
-                hasFireTarget = true; fireTargetId = _w->npcMeta[j].id;
-            }
-        }
-        if (DiplomaticRegistry::Get(st.faction, kPlayerFaction) == Relation::Hostile) {
-            float d = Vector2Distance(st.position, _playerEntity.transform.position);
-            if (d < bestDist) {
-                bestDist = d; fireTarget = _playerEntity.transform.position;
-                hasFireTarget = true; fireTargetId = 0;
-            }
-        }
+        Vector2      fireTarget        = pick.position;
+        bool         hasFireTarget     = pick.valid;
+        float        bestDist          = pick.valid ? Vector2Distance(st.position, pick.position) : maxRange;
+        unsigned int fireTargetId      = pick.id;
+        bool         fireTargetIsPlayer= (pick.kind == combat::HostileTargetKind::Player);
+
         if (st.retaliating && st.retaliateTimer > 0.0f) {
             if (st.retaliateAtPlayer) {
                 float d = Vector2Distance(st.position, _playerEntity.transform.position);
                 if (!hasFireTarget || d < bestDist) {
                     bestDist = d; fireTarget = _playerEntity.transform.position;
-                    hasFireTarget = true; fireTargetId = 0;
+                    hasFireTarget = true; fireTargetId = 0; fireTargetIsPlayer = true;
                 }
             } else if (st.retaliateAtNpcId != 0) {
                 for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
@@ -5750,7 +5852,7 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
                         float d = Vector2Distance(st.position, _w->entities[j].transform.position);
                         if (!hasFireTarget || d < bestDist) {
                             bestDist = d; fireTarget = _w->entities[j].transform.position;
-                            hasFireTarget = true; fireTargetId = _w->npcMeta[j].id;
+                            hasFireTarget = true; fireTargetId = _w->npcMeta[j].id; fireTargetIsPlayer = false;
                         }
                         break;
                     }
@@ -5794,7 +5896,8 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
                 sp.fromPlayer = false;
                 sp.ownerId    = st.id;
                 if (ws.fireMode == WeaponFireMode::LockOn) {
-                    sp.isHoming = true; sp.turnRate = 3.0f; sp.targetId = fireTargetId;
+                    sp.isHoming = true; sp.turnRate = 3.0f;
+                    sp.targetId = fireTargetId; sp.targetIsPlayer = fireTargetIsPlayer;
                 }
                 _w->projectiles.push_back(sp);
             }
@@ -5828,6 +5931,9 @@ void SpaceFlight::AdvanceProjectilesAndAsteroids(float dt) {
             if (!found)
                 for (size_t li = 0; li < _w->npcMeta.size(); ++li)
                     if (_w->npcMeta[li].id == p.targetId && _w->npcMeta[li].alive) { tPos = _w->entities[li].transform.position; found = true; break; }
+            if (!found)
+                for (const SpaceStation& st : _w->stations)
+                    if (st.id == p.targetId && st.alive) { tPos = st.position; found = true; break; }
         }
         if (!found) { p.isHoming = false; continue; }
         float speed = Vector2Length(p.velocity);
@@ -5972,10 +6078,10 @@ void SpaceFlight::TickBackgroundWorld(float dt, SystemWorld& world) {
 
 void SpaceFlight::Draw() {
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
-        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationPopupOpen || _localMapOpen ||
+        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     Vector2 mouse = GetMousePosition();
-    int hy = GetScreenHeight() - 158 - 6;
+    int hy = GetScreenHeight() - HudH - 6;
 
     // ModulesMenu and StorageMenu manage the cursor themselves to avoid flicker
     bool selfManagedCursor = _modulesMenu.isOpen || _storageMenu.isOpen;
@@ -6047,12 +6153,15 @@ void SpaceFlight::Draw() {
         }
     }
 
-    for (const Asteroid& a : _w->asteroids) {
-        if (!a.alive) continue;
-        const Texture2D* atex = a.tier == 2 ? &_asteroidTexLarge
-                              : a.tier == 1 ? &_asteroidTexMedium
-                              :               &_asteroidTexSmall;
-        DrawAsteroid(a, atex);
+    {
+        float asteroidLightRange = _w->sun.active ? _w->sun.gravRange * 5.0f : 0.0f;
+        for (const Asteroid& a : _w->asteroids) {
+            if (!a.alive) continue;
+            const Texture2D* atex = a.tier == 2 ? &_asteroidTexLarge
+                                  : a.tier == 1 ? &_asteroidTexMedium
+                                  :               &_asteroidTexSmall;
+            DrawAsteroid(a, atex, _lighting, asteroidLightRange);
+        }
     }
 
     DrawNpcShips();
@@ -6320,24 +6429,7 @@ void SpaceFlight::Draw() {
             (int)(okBtn.y + 10), 12, hovOk ? WHITE : Color{ 120, 185, 240, 220 });
     }
 
-    if (_stationPopupOpen) {
-        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
-        DrawRectangle(0, 0, sw2, sh2, Color{ 0, 0, 0, 160 });
-        static constexpr int PopW = 380, PopH = 130;
-        int px2 = sw2 / 2 - PopW / 2, py2 = sh2 / 2 - PopH / 2;
-        DrawRectangle(px2, py2, PopW, PopH, Color{ 8, 18, 30, 240 });
-        DrawRectangleLinesEx({ (float)px2, (float)py2, (float)PopW, (float)PopH },
-            1.5f, Color{ 60, 140, 220, 220 });
-        const char* msg = "Space station function coming soon";
-        DrawText(msg, sw2 / 2 - MeasureText(msg, 14) / 2, py2 + 30, 14,
-            Color{ 160, 210, 255, 240 });
-        Rectangle okBtn = { (float)(sw2 / 2 - 60), (float)(py2 + PopH - 46), 120.0f, 32.0f };
-        bool hovOk = CheckCollisionPointRec(GetMousePosition(), okBtn);
-        DrawRectangleRec(okBtn, hovOk ? Color{ 30, 80, 140, 230 } : Color{ 14, 40, 75, 200 });
-        DrawRectangleLinesEx(okBtn, 1.0f, Color{ 60, 140, 220, 200 });
-        DrawText("OK", (int)(okBtn.x + (okBtn.width - MeasureText("OK", 12)) / 2),
-            (int)(okBtn.y + 10), 12, hovOk ? WHITE : Color{ 120, 190, 255, 220 });
-    }
+    _stationServicesMenu.Draw();
 
     if (_ranksMenuOpen) {
         int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
@@ -6565,5 +6657,7 @@ void SpaceFlight::OnExit() {
     if (_asteroidTexLarge.id > 0) { UnloadTexture(_asteroidTexLarge); _asteroidTexLarge = {}; }
     if (_asteroidTexMedium.id> 0) { UnloadTexture(_asteroidTexMedium);_asteroidTexMedium= {}; }
     if (_asteroidTexSmall.id > 0) { UnloadTexture(_asteroidTexSmall); _asteroidTexSmall = {}; }
+    if (_hudFontUi.texture.id  > 0) { UnloadFont(_hudFontUi);  _hudFontUi  = {}; }
+    if (_hudFontVal.texture.id > 0) { UnloadFont(_hudFontVal); _hudFontVal = {}; }
     _lighting.Shutdown();
 }

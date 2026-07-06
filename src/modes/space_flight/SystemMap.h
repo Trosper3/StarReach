@@ -5,7 +5,8 @@
 #include <string>
 #include <vector>
 
-enum class MapAction { None, Close, GoMainMenu, SaveToFile, LoadGame, WarpTo, OpenGalacticMap };
+enum class MapAction { None, Close, GoMainMenu, SaveToFile, LoadGame, WarpTo, OpenGalacticMap,
+    OpenModules, OpenStorage, OpenEscorts, OpenRanks };
 
 struct MapBlip {
     unsigned int id;
@@ -18,6 +19,7 @@ struct MapBlip {
 struct SystemMapData {
     Vector2              playerPos;
     float                hyperdriveRange = 0.0f;
+    int                  wingmanCount = 0;
     std::vector<MapBlip> blips;
 };
 
