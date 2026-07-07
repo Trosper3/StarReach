@@ -39,6 +39,7 @@ const char* StorageMenu::TypeName(ModuleType t) {
     case ModuleType::Engine:     return "ENGINE";
     case ModuleType::Hyperdrive: return "HYPERDRIVE";
     case ModuleType::Auxiliary:  return "AUXILIARY";
+    case ModuleType::Consumable: return "REPAIR";
     default:                     return "UNKNOWN";
     }
 }
@@ -51,6 +52,7 @@ Color StorageMenu::TypeColor(ModuleType t) {
     case ModuleType::Engine:     return { 255,140, 30,255 };
     case ModuleType::Hyperdrive: return { 180, 80,255,255 };
     case ModuleType::Auxiliary:  return {  60,200,100,255 };
+    case ModuleType::Consumable: return {  90,230,140,255 };
     default:                     return { 120,120,120,255 };
     }
 }
@@ -96,7 +98,8 @@ void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
             item.module.type == ModuleType::Armor      ? "A" :
             item.module.type == ModuleType::Shield     ? "S" :
             item.module.type == ModuleType::Engine     ? "E" :
-            item.module.type == ModuleType::Hyperdrive ? "H" : "U";
+            item.module.type == ModuleType::Hyperdrive ? "H" :
+            item.module.type == ModuleType::Consumable ? "R" : "U";
         Color lc = TypeColor(item.module.type);
         int fs = 28;
         int lw = MeasureText(letter, fs);
@@ -120,6 +123,27 @@ void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
         std::snprintf(cnt, sizeof(cnt), "x%d", item.count);
         DrawText(cnt, (int)r.x+6, (int)(r.y + r.height - 18), 12,
                  Color{140,220,140,255});
+        return;
+    }
+
+    if (item.type == StorageItemType::Hardpoint) {
+        static constexpr Color hc = { 210,160, 60,255 };
+        DrawRectangleLinesEx({ r.x+1, r.y+1, r.width-2, r.height-2 }, 2.0f,
+                             { hc.r, hc.g, hc.b, 170 });
+        const char* letter = "H";
+        int fs = 28;
+        int lw = MeasureText(letter, fs);
+        DrawText(letter,
+                 (int)(r.x + (r.width - lw) / 2.0f),
+                 (int)(r.y + (r.height - fs) / 2.0f - 4),
+                 fs, { hc.r, hc.g, hc.b, 210 });
+        const char* nm = item.hardpoint.displayName.c_str();
+        int nfs = 8;
+        while (MeasureText(nm, nfs) > (int)r.width - 6 && nfs > 6) nfs--;
+        DrawText(nm,
+                 (int)(r.x + (r.width - MeasureText(nm, nfs)) / 2.0f),
+                 (int)(r.y + r.height - 12),
+                 nfs, { hc.r, hc.g, hc.b, 160 });
     }
 }
 
@@ -139,6 +163,14 @@ void StorageMenu::DrawItemTooltip(const StorageItem& item, int x, int y) {
         if (!item.module.description.empty())
             DrawText(item.module.description.c_str(), x+10, ty, 11,
                      Color{130,175,130,200});
+    } else if (item.type == StorageItemType::Hardpoint) {
+        const StationHardpointDef& hp = item.hardpoint;
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "Hull %.0f", hp.maxHull);
+        DrawText(buf, x+10, ty, 12, Color{ 210,160, 60,220 }); ty += 18;
+        std::snprintf(buf, sizeof(buf), "W:%d  A:%d  S:%d  E:%d  X:%d",
+                      hp.wSlots, hp.arSlots, hp.shSlots, hp.enSlots, hp.auxSlots);
+        DrawText(buf, x+10, ty, 12, Color{170,190,170,210});
     } else {
         char cnt[32];
         std::snprintf(cnt, sizeof(cnt), "%d / %d", item.count, MaxStack);

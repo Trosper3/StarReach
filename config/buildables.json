@@ -38,31 +38,348 @@
   {
     "id": "craft_basic_armor",
     "displayName": "Basic Armor Mk.I",
-    "description": "Reinforced hull plating (+50 hull).",
+    "description": "Emergency hull plating (+25 hull).",
     "type": "Module",
-    "moduleDefId": "armor_basic",
+    "moduleDefId": "armor_hull_patch",
     "itemCost": [ { "itemId": "steel_plate", "amount": 2 } ]
+  },
+  {
+    "id": "craft_steel_plating",
+    "displayName": "Steel Plating",
+    "description": "Reinforced alloy plating. A significant upgrade over salvaged material.",
+    "type": "Module",
+    "moduleDefId": "armor_steel_plating",
+    "itemCost": [
+      { "itemId": "steel_plate",    "amount": 3 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_composite_shell",
+    "displayName": "Composite Shell",
+    "description": "Multi-layer composite hull bonded with impact-absorbing polymer.",
+    "type": "Module",
+    "moduleDefId": "armor_composite_shell",
+    "itemCost": [
+      { "itemId": "steel_plate",    "amount": 4 },
+      { "itemId": "titanium_alloy", "amount": 2 },
+      { "itemId": "circuit_board",  "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_reactive_hull",
+    "displayName": "Reactive Hull",
+    "description": "Reactive plating that hardens on impact. Military specification.",
+    "type": "Module",
+    "moduleDefId": "armor_reactive_hull",
+    "itemCost": [
+      { "itemId": "steel_plate",    "amount": 5 },
+      { "itemId": "titanium_alloy", "amount": 3 },
+      { "itemId": "power_cell",     "amount": 2 }
+    ]
   },
   {
     "id": "craft_basic_engine",
     "displayName": "Basic Engine Mk.I",
     "description": "Standard sublight drive.",
     "type": "Module",
-    "moduleDefId": "engine_basic",
+    "moduleDefId": "engine_thruster_i",
     "itemCost": [
       { "itemId": "thruster_core", "amount": 1 },
       { "itemId": "steel_plate",   "amount": 1 }
     ]
   },
   {
+    "id": "craft_impulse_drive",
+    "displayName": "Impulse Drive",
+    "description": "Compact ion drive with improved throttle response.",
+    "type": "Module",
+    "moduleDefId": "engine_impulse_drive",
+    "itemCost": [
+      { "itemId": "thruster_core", "amount": 2 },
+      { "itemId": "steel_plate",   "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_overdrive_core",
+    "displayName": "Overdrive Core",
+    "description": "Pushes thrust output well beyond rated safety margins.",
+    "type": "Module",
+    "moduleDefId": "engine_overdrive_core",
+    "itemCost": [
+      { "itemId": "thruster_core", "amount": 2 },
+      { "itemId": "steel_plate",   "amount": 2 },
+      { "itemId": "power_cell",    "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_ion_thruster",
+    "displayName": "Ion Thruster",
+    "description": "Military-grade ion thruster with precision vectored nozzles.",
+    "type": "Module",
+    "moduleDefId": "engine_ion_thruster",
+    "itemCost": [
+      { "itemId": "thruster_core",  "amount": 3 },
+      { "itemId": "power_cell",     "amount": 2 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_pulse_cannon",
+    "displayName": "Pulse Cannon I",
+    "description": "Standard kinetic repeater. Reliable but unspectacular.",
+    "type": "Module",
+    "moduleDefId": "pulse_cannon_i",
+    "itemCost": [
+      { "itemId": "weapons_rack",  "amount": 1 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_arc_cannon",
+    "displayName": "Arc Cannon I",
+    "description": "Charged energy weapon that releases a spread burst on discharge.",
+    "type": "Module",
+    "moduleDefId": "arc_cannon_i",
+    "itemCost": [
+      { "itemId": "weapons_rack",  "amount": 2 },
+      { "itemId": "circuit_board", "amount": 1 },
+      { "itemId": "crystal_lens",  "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_scatter_rifle",
+    "displayName": "Scatter Rifle I",
+    "description": "Fires a burst of kinetic slugs in a tight cone. High close-range output.",
+    "type": "Module",
+    "moduleDefId": "scatter_rifle_i",
+    "itemCost": [
+      { "itemId": "weapons_rack",  "amount": 2 },
+      { "itemId": "circuit_board", "amount": 2 },
+      { "itemId": "titanium_alloy","amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_seeker",
+    "displayName": "Seeker I",
+    "description": "Lock-on missile system. Tracks targets through evasive maneuvers.",
+    "type": "Module",
+    "moduleDefId": "seeker_i",
+    "itemCost": [
+      { "itemId": "weapons_rack",  "amount": 3 },
+      { "itemId": "circuit_board", "amount": 2 },
+      { "itemId": "power_cell",    "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_kinetic_barrier",
+    "displayName": "Kinetic Barrier I",
+    "description": "Basic kinetic shield emitter. Absorbs physical impact.",
+    "type": "Module",
+    "moduleDefId": "shield_kinetic_barrier_i",
+    "itemCost": [
+      { "itemId": "circuit_board", "amount": 1 },
+      { "itemId": "power_cell",    "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_energy_veil",
+    "displayName": "Energy Veil I",
+    "description": "Low-power energy field that deflects directed energy weapons.",
+    "type": "Module",
+    "moduleDefId": "shield_energy_veil_i",
+    "itemCost": [
+      { "itemId": "circuit_board", "amount": 2 },
+      { "itemId": "power_cell",    "amount": 1 },
+      { "itemId": "crystal_lens",  "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_hardened_barrier",
+    "displayName": "Hardened Barrier",
+    "description": "Dense kinetic projector with reinforced emitter coils.",
+    "type": "Module",
+    "moduleDefId": "shield_hardened_barrier",
+    "itemCost": [
+      { "itemId": "circuit_board",  "amount": 2 },
+      { "itemId": "power_cell",     "amount": 2 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_phase_veil",
+    "displayName": "Phase Veil",
+    "description": "Resonant energy field tuned to deflect high-frequency weapon fire.",
+    "type": "Module",
+    "moduleDefId": "shield_phase_veil",
+    "itemCost": [
+      { "itemId": "circuit_board", "amount": 3 },
+      { "itemId": "power_cell",    "amount": 3 },
+      { "itemId": "crystal_lens",  "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_short_jump_drive",
+    "displayName": "Short-Jump Drive",
+    "description": "Rudimentary warp coil. Barely reaches nearby stations.",
+    "type": "Module",
+    "moduleDefId": "hyperdrive_short_jump",
+    "itemCost": [
+      { "itemId": "hull_frame",  "amount": 2 },
+      { "itemId": "power_cell",  "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_sector_drive",
+    "displayName": "Sector Drive",
+    "description": "Standard hyperdrive. Reaches the closest neighboring star systems.",
+    "type": "Module",
+    "moduleDefId": "hyperdrive_sector",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 3 },
+      { "itemId": "power_cell",    "amount": 2 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_warp_core",
+    "displayName": "Warp Core",
+    "description": "Folded-space drive capable of reaching most stellar objects.",
+    "type": "Module",
+    "moduleDefId": "hyperdrive_warp_core",
+    "itemCost": [
+      { "itemId": "hull_frame",   "amount": 4 },
+      { "itemId": "power_cell",   "amount": 3 },
+      { "itemId": "crystal_lens", "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_fold_engine",
+    "displayName": "Fold Engine",
+    "description": "Military-grade spatial fold drive. Near-instantaneous sector crossing.",
+    "type": "Module",
+    "moduleDefId": "hyperdrive_fold_engine",
+    "itemCost": [
+      { "itemId": "hull_frame",  "amount": 5 },
+      { "itemId": "power_cell", "amount": 4 },
+      { "itemId": "void_shard", "amount": 2 }
+    ]
+  },
+  {
     "id": "craft_sensor_aux",
     "displayName": "Sensor Suite",
-    "description": "Extends detection range significantly.",
+    "description": "Short-range sensor suite. Detects nearby contacts and deposits.",
     "type": "Module",
-    "moduleDefId": "aux_sensors",
+    "moduleDefId": "aux_basic_scanner",
     "itemCost": [
       { "itemId": "sensor_array",  "amount": 1 },
       { "itemId": "circuit_board", "amount": 1 }
     ]
+  },
+  {
+    "id": "craft_proximity_array",
+    "displayName": "Proximity Array",
+    "description": "Short-range gravimetric mapper. Reveals the nearest neighboring systems.",
+    "type": "Module",
+    "moduleDefId": "aux_proximity_array",
+    "itemCost": [
+      { "itemId": "sensor_array",  "amount": 1 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_long_range_array",
+    "displayName": "Long-Range Array",
+    "description": "Extended gravimetric mapper. Reliably spans the gap to adjacent systems.",
+    "type": "Module",
+    "moduleDefId": "aux_long_range_array",
+    "itemCost": [
+      { "itemId": "sensor_array",  "amount": 2 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_deep_scan_array",
+    "displayName": "Deep Scan Array",
+    "description": "Multi-band deep-space telescope. Maps a wide local neighborhood of systems.",
+    "type": "Module",
+    "moduleDefId": "aux_deep_scan_array",
+    "itemCost": [
+      { "itemId": "sensor_array", "amount": 2 },
+      { "itemId": "crystal_lens", "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_astrometric_sensor",
+    "displayName": "Astrometric Sensor",
+    "description": "Precision astrometric suite. Charts entire stellar neighborhoods at once.",
+    "type": "Module",
+    "moduleDefId": "aux_astrometric_sensor",
+    "itemCost": [
+      { "itemId": "sensor_array", "amount": 3 },
+      { "itemId": "crystal_lens", "amount": 3 },
+      { "itemId": "power_cell",   "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_repair_kit_i",
+    "displayName": "Repair Kit Mk.I",
+    "description": "Emergency patch kit. Restores a modest amount of hull.",
+    "type": "Module",
+    "moduleDefId": "repair_kit_i",
+    "itemCost": [ { "itemId": "steel_plate", "amount": 1 } ]
+  },
+  {
+    "id": "craft_repair_kit_ii",
+    "displayName": "Repair Kit Mk.II",
+    "description": "Field-issue nanite patch. Restores a solid amount of hull.",
+    "type": "Module",
+    "moduleDefId": "repair_kit_ii",
+    "itemCost": [
+      { "itemId": "steel_plate",   "amount": 2 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_docking_bay",
+    "displayName": "Docking Bay",
+    "description": "Prefabricated docking bay hardpoint. Attach to any station with open capacity to enable shipyard services.",
+    "type": "Hardpoint",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 6 },
+      { "itemId": "circuit_board", "amount": 3 }
+    ],
+    "hardpoint": {
+      "id": "docking_bay", "displayName": "Docking Bay", "isCore": false, "maxHull": 140.0,
+      "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 2
+    }
+  },
+  {
+    "id": "craft_weapon_battery",
+    "displayName": "Weapon Battery",
+    "description": "Prefabricated weapon hardpoint. Attach to any station with open capacity to add firepower.",
+    "type": "Hardpoint",
+    "itemCost": [
+      { "itemId": "hull_frame",   "amount": 5 },
+      { "itemId": "weapons_rack", "amount": 2 }
+    ],
+    "hardpoint": {
+      "id": "weapon_battery", "displayName": "Weapon Battery", "isCore": false, "maxHull": 100.0,
+      "wSlots": 2, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0
+    }
+  },
+  {
+    "id": "craft_sensor_array_hardpoint",
+    "displayName": "Sensor Array",
+    "description": "Prefabricated sensor hardpoint. Attach to any station with open capacity to extend detection range.",
+    "type": "Hardpoint",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 4 },
+      { "itemId": "sensor_array",  "amount": 2 }
+    ],
+    "hardpoint": {
+      "id": "sensor_array", "displayName": "Sensor Array", "isCore": false, "maxHull": 90.0,
+      "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 2
+    }
   }
 ]

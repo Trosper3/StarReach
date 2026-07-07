@@ -69,3 +69,72 @@ inline ModuleDef Aux_Omnisystem() {
     m.auxiliary.hasCloaking = true;
     return m;
 }
+
+// Sensor Array line: galaxy-map fog-of-war reveal range, distinct from the
+// Scanner line's combat sensorRange above (see AuxStats::mapSensorRange).
+// Deliberately its own aux item rather than a stat bolted onto Scanner —
+// ships only have 1 aux slot, so equipping for exploration vs. combat
+// awareness is a real choice. No baseline: with none of these equipped, a
+// ship sees nothing undiscovered beyond its home system on the galaxy map.
+inline ModuleDef Aux_ProximityArray() {
+    ModuleDef m;
+    m.id = "aux_proximity_array"; m.displayName = "Proximity Array";
+    m.description = "Short-range gravimetric mapper. Reveals the nearest neighboring systems.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Common;
+    m.auxiliary.mapSensorRange = 20000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_LongRangeArray() {
+    ModuleDef m;
+    m.id = "aux_long_range_array"; m.displayName = "Long-Range Array";
+    m.description = "Extended gravimetric mapper. Reliably spans the gap to adjacent systems.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Uncommon;
+    m.auxiliary.mapSensorRange = 60000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_DeepScanArray() {
+    ModuleDef m;
+    m.id = "aux_deep_scan_array"; m.displayName = "Deep Scan Array";
+    m.description = "Multi-band deep-space telescope. Maps a wide local neighborhood of systems.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Unique;
+    m.auxiliary.mapSensorRange = 300000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_AstrometricSensor() {
+    ModuleDef m;
+    m.id = "aux_astrometric_sensor"; m.displayName = "Astrometric Sensor";
+    m.description = "Precision astrometric suite. Charts entire stellar neighborhoods at once.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Remarkable;
+    m.auxiliary.mapSensorRange = 2000000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_StellarCartographySuite() {
+    ModuleDef m;
+    m.id = "aux_stellar_cartography_suite"; m.displayName = "Stellar Cartography Suite";
+    m.description = "Military-grade cartography array. Maps deep into the galaxy's structure.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Epic;
+    m.auxiliary.mapSensorRange = 10000000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_GalacticSurveyArray() {
+    ModuleDef m;
+    m.id = "aux_galactic_survey_array"; m.displayName = "Galactic Survey Array";
+    m.description = "Full-spectrum survey platform. Reveals the sweep of the galaxy around you.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Legendary;
+    m.auxiliary.mapSensorRange = 40000000.0f;
+    return m;
+}
+
+inline ModuleDef Aux_OmniscientSensorCore() {
+    ModuleDef m;
+    m.id = "aux_omniscient_sensor_core"; m.displayName = "Omniscient Sensor Core";
+    m.description = "Reality is legible. Reveals every system in the galaxy from wherever you stand.";
+    m.type = ModuleType::Auxiliary; m.grade = ModuleGrade::Mythic;
+    m.auxiliary.mapSensorRange = 150000000.0f;
+    return m;
+}

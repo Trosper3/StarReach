@@ -15,6 +15,7 @@ void ItemRegistry::Init() {
             d.id          = JL::Str(item, "id");
             d.displayName = JL::Str(item, "displayName");
             d.description = JL::Str(item, "description");
+            d.sellValue   = JL::Int(item, "sellValue", 5, 0, 100000);
             if (d.id.empty()) continue;
 
             if (item.contains("craftCost") && item["craftCost"].is_array()) {

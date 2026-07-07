@@ -2,8 +2,7 @@
 #include "modes/IGameMode.h"
 #include "Projectile.h"
 #include "Asteroid.h"
-#include "SystemMap.h"
-#include "GalacticMap.h"
+#include "GalaxyMap.h"
 #include "StorageMenu.h"
 #include "ModulesMenu.h"
 #include "BuildMenu.h"
@@ -14,6 +13,7 @@
 #include "core/PlayerStation.h"
 #include "core/SaveManager.h"
 #include "core/GameModeManager.h"
+#include "data/registry/UniverseRegistry.h"
 #include "shared/Entity.h"
 #include "engine/ResourceManager.h"
 #include "engine/LightingSystem.h"
@@ -194,6 +194,10 @@ struct CommsEntry {
 // no simulation) until someone warps back in.
 struct SystemWorld {
     unsigned int systemId = 1;
+    // Which galaxy systemId was generated in — every galaxy's StarSystemRegistry
+    // reuses the same 1..Count() id space, so systemId alone is ambiguous once
+    // more than one galaxy exists. See SpaceFlight::_worlds / WorldKey().
+    unsigned int galaxyId = 1;
     uint32_t     seed     = 0;      // content seed (planets/stations/asteroids/NPCs)
     float        age      = 0.0f;   // seconds simulated since generation (orbit sync)
 
@@ -255,10 +259,24 @@ private:
     Vector2     _shipPlacementPos;
 
     // ── Per-system worlds ────────────────────────────────────────────────────
-    // One SystemWorld per system occupied this session. `_w` is never null
-    // between OnEnter and OnExit and points at the local player's world.
-    std::unordered_map<unsigned int, std::unique_ptr<SystemWorld>> _worlds;
+    // One SystemWorld per system occupied this session, keyed by a composite
+    // (galaxyId, systemId) — not bare systemId, since every galaxy's
+    // StarSystemRegistry::Init() regenerates ids from 1..Count(), so the same
+    // numeric systemId means a different system in each galaxy. Worlds left
+    // behind after a cross-galaxy warp stay frozen in the map under their old
+    // key (same as how unoccupied systems within one galaxy already freeze),
+    // so returning to a previously-visited galaxy resumes it as left.
+    // `_w` is never null between OnEnter and OnExit and points at the local
+    // player's world.
+    std::unordered_map<uint64_t, std::unique_ptr<SystemWorld>> _worlds;
     SystemWorld* _w = nullptr;
+    static uint64_t WorldKey(unsigned int galaxyId, unsigned int systemId) {
+        return (uint64_t(galaxyId) << 32) | uint64_t(systemId);
+    }
+    static unsigned int WorldKeySystemId(uint64_t key) { return (unsigned int)(key & 0xFFFFFFFFu); }
+    static unsigned int WorldKeyGalaxyId(uint64_t key) { return (unsigned int)(key >> 32); }
+    // Both operate on the CURRENT galaxy (_currentGalaxyId) — every call site
+    // already only ever asks for systems within whichever galaxy is active.
     SystemWorld& GetOrCreateWorld(unsigned int systemId);
     SystemWorld& EnsureWorldGenerated(unsigned int systemId);
 
@@ -268,8 +286,7 @@ private:
     ecs::Entity  _playerEntity;
     PlayerMeta   _playerMeta;
 
-    SystemMap               _systemMap;
-    GalacticMap             _galacticMap;
+    GalaxyMap               _galaxyMap;
     StorageMenu             _storageMenu;
     ModulesMenu             _modulesMenu;
     ShipLoadout             _loadout;
@@ -300,10 +317,17 @@ private:
     void ApplyWorldSyncClient(const net::WorldSyncData& ws);
     net::WorldSyncData BuildWorldSync(const SystemWorld& world) const;
     void BeginWarpSequence(unsigned int targetSystemId);
+    // Cross-galaxy warp: targetGalaxyId's home system (id 1) is always the
+    // arrival point — see UniverseRegistry's id==1 convention.
+    void BeginGalaxyWarpSequence(unsigned int targetGalaxyId);
     void BeginLocalWarp(Vector2 targetPos);
     void UpdateWarpSequence(float dt);
     void DrawWarpParticles()   const;
-    void CommitWarpWorldSwitch(unsigned int targetSystemId);
+    // targetGalaxyId == 0 (default) means "same galaxy as current" — the
+    // existing cross-system-only warp path. A non-zero value re-Inits
+    // StarSystemRegistry for the new galaxy and resets galaxy-scoped state
+    // (_discoveredSystemIds) before switching systems.
+    void CommitWarpWorldSwitch(unsigned int targetSystemId, unsigned int targetGalaxyId = 0);
     void SpawnWarpParticle(Vector2 pos, Vector2 dir);
     void UpdateCollisions();
     void UpdateNpcShips(float dt);
@@ -365,12 +389,40 @@ private:
 
     bool                      _hasSensors  = false;
 
+    // Galaxy-map fog-of-war reveal radius — see AuxStats::mapSensorRange.
+    // Independent of _hasSensors (combat targeting); no baseline, 0 until a
+    // Sensor Array-line aux module is equipped.
+    float                     _mapSensorRange  = 0.0f;
+    // ModuleGrade+1 (Common=1..Mythic=7) of whichever equipped aux module
+    // provides _mapSensorRange; 0 with nothing equipped. Higher tiers reveal
+    // progressively richer intel about undiscovered-but-visible systems at
+    // the Galaxy tier (star class, planet estimate, occupancy...) on top of
+    // existence/distance — see GalaxyMap's PreviewSensorIntel — giving a
+    // reason to upgrade sensors beyond pure reveal range.
+    int                       _mapSensorTier   = 0;
+
     float                     _hyperdriveRange = 0.0f;
     std::vector<unsigned int> _discoveredIds;
 
     unsigned int              _currentSystemId     = 1;
     std::vector<unsigned int> _discoveredSystemIds;
-    uint32_t                  _gameSeed            = 0; // master galaxy seed (StarSystemRegistry)
+    uint32_t                  _gameSeed            = 0; // universe seed (UniverseRegistry / StarSystemRegistry)
+
+    // Which galaxy _currentSystemId belongs to. Defaults to 1 (home galaxy),
+    // which UniverseRegistry::Generate(1) special-cases to reuse _gameSeed
+    // directly — so single-galaxy sessions/saves behave exactly as before.
+    // _discoveredSystemIds is scoped to this galaxy only and is cleared on
+    // every galaxy change (crossing into a new one, or returning to an old
+    // one) — unlike _worlds, per-galaxy discovery/fog-of-war state isn't
+    // remembered across a visit; only the mutable world state itself is.
+    unsigned int              _currentGalaxyId     = 1;
+
+    // Unlike _discoveredSystemIds (scoped to one galaxy, cleared on every
+    // galaxy change), this tracks every galaxy id the player has ever warped
+    // into across the whole game — used by the Universe tier map to color
+    // galaxies visited (blue) vs. never-visited (orange). Always contains at
+    // least the home galaxy (1).
+    std::vector<unsigned int> _visitedGalaxyIds    = { 1 };
 
     // ── Warp sequence (galactic map -> new system, and in-system local warp) ──
     // TurnToFace is shared by both; _warpPhaseAfterTurn picks which flavor of
@@ -386,6 +438,9 @@ private:
     WarpPhase                 _warpPhaseAfterTurn = WarpPhase::FlyOut;
     float                     _warpPhaseTimer     = 0.0f;
     unsigned int              _warpTargetSystemId = 0;
+    // 0 = same galaxy as current (the common case); otherwise the target
+    // galaxy id, set by BeginGalaxyWarpSequence for a cross-galaxy warp.
+    unsigned int              _warpTargetGalaxyId = 0;
     Vector2                   _warpDir            = { 0.0f, -1.0f }; // unit direction of travel
     float                     _warpStartRot       = 0.0f;
     float                     _warpTargetRot      = 0.0f;
@@ -393,6 +448,16 @@ private:
     Vector2                   _warpFlyInStart     = {};
     Vector2                   _warpLocalTarget    = {};   // destination for LocalFly
     std::vector<WarpParticle> _warpParticles;
+
+    // Beacon-chaining: remaining hop ids (excluding the one currently in
+    // flight) for a multi-hop warp through already-discovered systems past
+    // the hyperdrive's single-jump range — see GalaxyMap::WarpChain(). Each
+    // hop plays out as a full, ordinary BeginWarpSequence cinematic; FlyIn's
+    // completion (UpdateWarpSequence) pops the next id and re-triggers
+    // BeginWarpSequence instead of returning to WarpPhase::None, so the chain
+    // reads as consecutive real jumps rather than one glossed-over trip.
+    // Empty for every other kind of warp (direct single-hop, galaxy, local).
+    std::vector<unsigned int> _warpChainQueue;
 
     bool  _playerDead  = false;
     float _deathTimer  = 0.0f;
@@ -408,6 +473,18 @@ private:
     std::unordered_map<uint32_t, float>         _remoteJoinGrace;
     // Host: which system each connected peer is currently in (networkId -> systemId).
     std::unordered_map<uint32_t, unsigned int>  _peerSystem;
+    // Host: which faction each connected peer plays as, learned from their
+    // Hello packet (see NetSession::newPeerFactions). Drives discovery
+    // pooling: peers sharing a faction ("party") see each other's discovered
+    // systems — see CommitWarpWorldSwitch and the pendingWarpNotifies/
+    // newPeerFactions handling in Update().
+    std::unordered_map<uint32_t, Faction>       _peerFaction;
+    // Host only: shared discovered-system-id sets for connected peers NOT on
+    // the host's own faction (kPlayerFaction), keyed by (uint8_t)Faction. The
+    // host's own faction's shared set is just _discoveredSystemIds itself —
+    // no separate entry needed since the host is always a member of its own
+    // faction's party.
+    std::unordered_map<uint8_t, std::vector<unsigned int>> _peerFactionDiscovered;
     // Server-authoritative projectiles rendered on client.
     std::vector<net::ProjectileSnapshot>        _remoteProjectiles;
     // True while TickBackgroundWorld simulates a world the local player isn't

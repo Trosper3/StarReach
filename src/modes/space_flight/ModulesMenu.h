@@ -1,6 +1,7 @@
 #pragma once
 #include "StorageMenu.h"
 #include "core/Module.h"
+#include "shared/entities/HealthComponent.h"
 #include <optional>
 #include <vector>
 
@@ -28,9 +29,11 @@ public:
     bool isOpen = false;
 
     void Open(ShipLoadout* loadout, std::vector<StorageItem>* storage,
-              int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots);
+              int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots,
+              HealthComponent* healTarget = nullptr);
     void Open(ShipLoadout* loadout, std::vector<StorageItem>* storage,
-              int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots);
+              int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots,
+              HealthComponent* healTarget = nullptr);
     void Close();
 
     // Returns true when a module was equipped or unequipped this frame
@@ -46,8 +49,9 @@ private:
 
     enum class DragSrc { None, Storage, ModSlot };
 
-    ShipLoadout*              _loadout  = nullptr;
-    std::vector<StorageItem>* _storage  = nullptr;
+    ShipLoadout*              _loadout    = nullptr;
+    std::vector<StorageItem>* _storage    = nullptr;
+    HealthComponent*          _healTarget = nullptr; // consumable repair-kit drops heal this
 
     // Hover tracking (written by Update, read by Draw)
     int   _hovModSlot     = -1;

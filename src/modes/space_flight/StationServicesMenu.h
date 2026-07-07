@@ -2,12 +2,14 @@
 #include "core/StorageItem.h"
 #include "shared/Entity.h"
 #include "raylib.h"
+#include <string>
 #include <vector>
 
-// The player's "enter station" menu — sell modules, pay to repair hull, or
-// merge duplicate modules into a higher grade with the engineer. Visually
-// styled to match the pause menu (SystemMap): bracket panels + chamfered
-// buttons via shared/ui/HudTheme.h.
+// The player's "enter station" menu — sell modules/materials/crafted items/
+// hardpoints, buy crafted items/modules/hardpoints for credits, pay to repair
+// hull (adjustable %), or merge duplicate modules into a higher grade with
+// the engineer. Visually styled to match the pause menu (SystemMap): bracket
+// panels + chamfered buttons via shared/ui/HudTheme.h.
 //
 // Call Open(player, storage) with the player's ecs::Entity (for hull) and
 // &_storageMenu.slots (the player's module inventory) — same pointer-sharing
@@ -23,7 +25,7 @@ public:
     void Draw() const;
 
 private:
-    enum class Screen { Main, Sell, Repair, Engineer };
+    enum class Screen { Main, Sell, Buy, Repair, Engineer };
     Screen _screen = Screen::Main;
 
     ecs::Entity*              _player  = nullptr;
@@ -33,13 +35,27 @@ private:
     int _selA = -1;
     int _selB = -1;
 
+    // Buy screen: which catalogue is shown, and its scroll offset.
+    enum class BuyTab { Crafts, Modules, Hardpoints };
+    BuyTab _buyTab    = BuyTab::Crafts;
+    int    _buyScroll = 0;
+
+    // Repair screen: percentage of missing hull to restore, adjustable via
+    // slider drag or typed exact value.
+    float       _repairPct        = 100.0f;
+    bool        _repairTextActive = false;
+    std::string _repairText       = "100";
+    bool        _repairDraggingSlider = false;
+
     void UpdateMain();
     void UpdateSell();
+    void UpdateBuy();
     void UpdateRepair();
     void UpdateEngineer();
 
     void DrawMain()     const;
     void DrawSell()     const;
+    void DrawBuy()      const;
     void DrawRepair()   const;
     void DrawEngineer() const;
 };

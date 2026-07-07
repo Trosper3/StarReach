@@ -12,4 +12,5 @@ struct ItemDef {
     std::string displayName;
     std::string description;
     std::vector<CraftIngredient> craftCost;
+    int         sellValue = 5;
 };

@@ -3,31 +3,36 @@
     "id": "steel_plate",
     "displayName": "Steel Plate",
     "description": "Forged iron plate for structural assembly",
-    "craftCost": [ { "materialId": "iron", "amount": 5 }, { "materialId": "carbon", "amount": 2 } ]
+    "craftCost": [ { "materialId": "iron", "amount": 5 }, { "materialId": "carbon", "amount": 2 } ],
+    "sellValue": 12
   },
   {
     "id": "titanium_alloy",
     "displayName": "Titanium Alloy",
     "description": "High-strength alloy for advanced construction",
-    "craftCost": [ { "materialId": "titanium", "amount": 4 }, { "materialId": "iron", "amount": 2 } ]
+    "craftCost": [ { "materialId": "titanium", "amount": 4 }, { "materialId": "iron", "amount": 2 } ],
+    "sellValue": 18
   },
   {
     "id": "circuit_board",
     "displayName": "Circuit Board",
     "description": "Electronic control substrate",
-    "craftCost": [ { "materialId": "silica", "amount": 3 }, { "materialId": "cobalt", "amount": 2 } ]
+    "craftCost": [ { "materialId": "silica", "amount": 3 }, { "materialId": "cobalt", "amount": 2 } ],
+    "sellValue": 18
   },
   {
     "id": "crystal_lens",
     "displayName": "Crystal Lens",
     "description": "Precision focusing element",
-    "craftCost": [ { "materialId": "crystite", "amount": 3 }, { "materialId": "silica", "amount": 1 } ]
+    "craftCost": [ { "materialId": "crystite", "amount": 3 }, { "materialId": "silica", "amount": 1 } ],
+    "sellValue": 25
   },
   {
     "id": "power_cell",
     "displayName": "Power Cell",
     "description": "Dense energy storage unit",
-    "craftCost": [ { "materialId": "cobalt", "amount": 4 }, { "materialId": "titanium", "amount": 2 } ]
+    "craftCost": [ { "materialId": "cobalt", "amount": 4 }, { "materialId": "titanium", "amount": 2 } ],
+    "sellValue": 26
   },
   {
     "id": "hull_frame",
@@ -37,7 +42,8 @@
       { "materialId": "iron",     "amount": 8 },
       { "materialId": "titanium", "amount": 4 },
       { "materialId": "carbon",   "amount": 3 }
-    ]
+    ],
+    "sellValue": 35
   },
   {
     "id": "sensor_array",
@@ -47,13 +53,15 @@
       { "materialId": "silica",   "amount": 4 },
       { "materialId": "cobalt",   "amount": 3 },
       { "materialId": "crystite", "amount": 2 }
-    ]
+    ],
+    "sellValue": 40
   },
   {
     "id": "thruster_core",
     "displayName": "Thruster Core",
     "description": "Precision propulsion assembly",
-    "craftCost": [ { "materialId": "titanium", "amount": 6 }, { "materialId": "cobalt", "amount": 3 } ]
+    "craftCost": [ { "materialId": "titanium", "amount": 6 }, { "materialId": "cobalt", "amount": 3 } ],
+    "sellValue": 36
   },
   {
     "id": "weapons_rack",
@@ -63,7 +71,8 @@
       { "materialId": "iron",     "amount": 4 },
       { "materialId": "cobalt",   "amount": 2 },
       { "materialId": "tungsten", "amount": 3 }
-    ]
+    ],
+    "sellValue": 33
   },
   {
     "id": "void_shard",
@@ -73,6 +82,7 @@
       { "materialId": "voidstone", "amount": 3 },
       { "materialId": "crystite",  "amount": 2 },
       { "materialId": "xenonite",  "amount": 1 }
-    ]
+    ],
+    "sellValue": 65
   }
 ]

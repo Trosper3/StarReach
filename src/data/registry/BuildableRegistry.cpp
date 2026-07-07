@@ -4,6 +4,23 @@
 std::vector<BuildableDef>                    BuildableRegistry::s_all;
 std::unordered_map<std::string, size_t>      BuildableRegistry::s_byId;
 
+// Mirrors PlayerStationRegistry.cpp's ParseHardpoint — same StationHardpointDef
+// shape, kept as a separate small static helper rather than shared, consistent
+// with this codebase's existing per-file duplication of small parse helpers.
+static StationHardpointDef ParseHardpointBlueprint(const nlohmann::json& h) {
+    StationHardpointDef d;
+    d.id          = JL::Str  (h, "id");
+    d.displayName = JL::Str  (h, "displayName");
+    d.isCore      = JL::Bool (h, "isCore",   false);
+    d.maxHull     = JL::Float(h, "maxHull",  100.f, 1.f, 10000.f);
+    d.wSlots      = JL::Int  (h, "wSlots",   0, 0, 20);
+    d.arSlots     = JL::Int  (h, "arSlots",  0, 0, 20);
+    d.shSlots     = JL::Int  (h, "shSlots",  0, 0, 20);
+    d.enSlots     = JL::Int  (h, "enSlots",  0, 0, 20);
+    d.auxSlots    = JL::Int  (h, "auxSlots", 0, 0, 20);
+    return d;
+}
+
 void BuildableRegistry::Init() {
     auto j = JL::LoadFile("config/buildables.json");
     if (j.is_array() && !j.empty()) {
@@ -19,7 +36,12 @@ void BuildableRegistry::Init() {
             if (d.id.empty()) continue;
 
             auto typeStr = JL::Str(item, "type", "Station");
-            d.type = (typeStr == "Module") ? BuildableType::Module : BuildableType::Station;
+            d.type = (typeStr == "Module")    ? BuildableType::Module
+                   : (typeStr == "Hardpoint") ? BuildableType::Hardpoint
+                                              : BuildableType::Station;
+
+            if (d.type == BuildableType::Hardpoint && item.contains("hardpoint") && item["hardpoint"].is_object())
+                d.hardpointDef = ParseHardpointBlueprint(item["hardpoint"]);
 
             if (item.contains("itemCost") && item["itemCost"].is_array()) {
                 for (const auto& c : item["itemCost"]) {
@@ -81,6 +103,38 @@ void BuildableRegistry::Init() {
             d.description = "Extends detection range significantly.";
             d.type = BuildableType::Module; d.moduleDefId = "aux_sensors";
             d.itemCost = { {"sensor_array",1}, {"circuit_board",1} };
+            s_all.push_back(d);
+        }
+        {
+            BuildableDef d;
+            d.id = "craft_proximity_array"; d.displayName = "Proximity Array";
+            d.description = "Short-range gravimetric mapper. Reveals the nearest neighboring systems.";
+            d.type = BuildableType::Module; d.moduleDefId = "aux_proximity_array";
+            d.itemCost = { {"sensor_array",1}, {"circuit_board",1} };
+            s_all.push_back(d);
+        }
+        {
+            BuildableDef d;
+            d.id = "craft_long_range_array"; d.displayName = "Long-Range Array";
+            d.description = "Extended gravimetric mapper. Reliably spans the gap to adjacent systems.";
+            d.type = BuildableType::Module; d.moduleDefId = "aux_long_range_array";
+            d.itemCost = { {"sensor_array",2}, {"circuit_board",1} };
+            s_all.push_back(d);
+        }
+        {
+            BuildableDef d;
+            d.id = "craft_deep_scan_array"; d.displayName = "Deep Scan Array";
+            d.description = "Multi-band deep-space telescope. Maps a wide local neighborhood of systems.";
+            d.type = BuildableType::Module; d.moduleDefId = "aux_deep_scan_array";
+            d.itemCost = { {"sensor_array",2}, {"crystal_lens",2} };
+            s_all.push_back(d);
+        }
+        {
+            BuildableDef d;
+            d.id = "craft_astrometric_sensor"; d.displayName = "Astrometric Sensor";
+            d.description = "Precision astrometric suite. Charts entire stellar neighborhoods at once.";
+            d.type = BuildableType::Module; d.moduleDefId = "aux_astrometric_sensor";
+            d.itemCost = { {"sensor_array",3}, {"crystal_lens",3}, {"power_cell",2} };
             s_all.push_back(d);
         }
     }

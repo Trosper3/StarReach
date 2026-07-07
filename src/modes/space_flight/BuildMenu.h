@@ -31,7 +31,7 @@ private:
 
     std::vector<StorageItem>* _storage = nullptr;
 
-    int _tab = 0;   // 0=Stations, 1=Modules, 2=Craft
+    int _tab = 0;   // 0=Stations, 1=Modules, 2=Hardpoints, 3=Craft
     int _selIdx = -1;
     int _scroll = 0;   // Added: Tracks vertical scrolling position in pixels
 
@@ -50,6 +50,9 @@ private:
         const std::string& resultId, bool isModule) const;
     void DoCraftItem(const ItemDef& item);
     void DoSpendItems(const std::vector<BuildIngredient>& cost);
+    // Finds the first Empty slot in _storage and fills it. Used for crafted
+    // Module/Hardpoint results, which are single non-stackable items.
+    bool PlaceInFirstEmptySlot(const StorageItem& item);
 
     bool        _errorOpen = false;
 

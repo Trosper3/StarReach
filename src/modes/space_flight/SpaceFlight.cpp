@@ -632,7 +632,13 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
     float minStation = std::max(1500.0f, _w->sun.gravRange + 600.0f);
     float maxStation = std::max(3500.0f, _w->sun.gravRange + 2500.0f);
 
-    int stationCount = GetRandomValue(1, 10);
+    // Most systems are uncontrolled (no station at all); a minority are
+    // controlled by a single faction and get exactly one station belonging
+    // to it — see StarSystemRegistry::Generate's control roll
+    // (StarSystem::isControlled/controllingFaction), which replaces the old
+    // per-station independent "1-10 stations, id-modulo faction" scheme.
+    auto sys = StarSystemRegistry::ById(_w->systemId);
+    int stationCount = (sys && sys->isControlled) ? 1 : 0;
     for (int attempt = 0; attempt < 300 && (int)_w->stations.size() < stationCount; ++attempt) {
         float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
         float dist = minStation + (float)GetRandomValue(0, (int)(maxStation - minStation));
@@ -645,7 +651,7 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
             st.position = pos;
             st.radius   = StationDrawRadius;
             st.id       = nextId++;
-            st.faction  = static_cast<Faction>(st.id % static_cast<int>(Faction::COUNT));
+            st.faction  = sys->controllingFaction;
             const auto& stTypes = StationTypeRegistry::All();
             const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
             st.stationTypeId = typeDef.id;
@@ -658,11 +664,13 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
 }
 
 SystemWorld& SpaceFlight::GetOrCreateWorld(unsigned int systemId) {
-    auto it = _worlds.find(systemId);
+    uint64_t key = WorldKey(_currentGalaxyId, systemId);
+    auto it = _worlds.find(key);
     if (it == _worlds.end()) {
         auto w = std::make_unique<SystemWorld>();
         w->systemId = systemId;
-        it = _worlds.emplace(systemId, std::move(w)).first;
+        w->galaxyId = _currentGalaxyId;
+        it = _worlds.emplace(key, std::move(w)).first;
     }
     return *it->second;
 }
@@ -673,7 +681,7 @@ SystemWorld& SpaceFlight::GetOrCreateWorld(unsigned int systemId) {
 // restored and the displayed sun corona re-baked, since SpawnPlanetsAndStations
 // overwrote the shared _sunCorona texture with the new world's sun.
 SystemWorld& SpaceFlight::EnsureWorldGenerated(unsigned int systemId) {
-    bool existed = _worlds.find(systemId) != _worlds.end();
+    bool existed = _worlds.find(WorldKey(_currentGalaxyId, systemId)) != _worlds.end();
     SystemWorld& world = GetOrCreateWorld(systemId);
     if (!existed) {
         auto sys = StarSystemRegistry::ById(systemId);
@@ -700,6 +708,7 @@ net::WorldSyncData SpaceFlight::BuildWorldSync(const SystemWorld& world) const {
     ws.systemId  = world.systemId;
     ws.worldSeed = world.seed;
     ws.gameSeed  = _gameSeed;
+    ws.galaxyId  = _currentGalaxyId;
     ws.worldAge  = world.age;
     for (const SpaceStation& st : world.stations)
         if (!st.alive || st.hull < st.maxHull)
@@ -1688,17 +1697,32 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    // Block 2: hostile NPC projectiles hit non-self NPCs
+    // Block 2: NPC-fired projectiles hit any other NPC ship whose actual
+    // (pairwise, DiplomaticRegistry) faction relation to the shooter is
+    // Hostile — independent of either ship's relation to the player.
+    //
+    // Replaces the old pair of blocks that gated on NpcMeta::faction (the
+    // 3-value Friendly/Neutral/Hostile bucket relative to the *player*):
+    // two ships whose actual factions are mutually hostile to each other
+    // (e.g. Automa Concord vs. Meridian Star Corps) but who happen to share
+    // the same player-relative bucket (both Neutral-to-player, say) matched
+    // neither block, so they'd correctly target and fire at each other via
+    // the pairwise-aware AI logic above, yet their shots never applied
+    // damage. The AI targeting code already used DiplomaticRegistry for
+    // exactly this reason; this block now matches it.
     for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer || p.ownerId == 0) continue;
-        bool fromHostile = false;
+        Faction shooterFaction = Faction::Merchant;
+        bool    foundShooter   = false;
         for (size_t j = 0; j < _w->npcMeta.size(); ++j)
-            if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction == NpcFaction::Hostile) { fromHostile = true; break; }
-        if (!fromHostile) continue;
+            if (_w->npcMeta[j].id == p.ownerId) { shooterFaction = _w->npcMeta[j].npcFaction; foundShooter = true; break; }
+        if (!foundShooter) continue;
+
         for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
             NpcMeta&     m = _w->npcMeta[i];
             ecs::Entity& e = _w->entities[i];
             if (!m.alive || m.id == p.ownerId) continue;
+            if (DiplomaticRegistry::Get(shooterFaction, m.npcFaction) != Relation::Hostile) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
                 float dmg = p.damage;
@@ -1723,34 +1747,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    // Block 3: friendly/neutral NPC projectiles hit hostile NPCs
-    for (Projectile& p : _w->projectiles) {
-        if (!p.alive || p.fromPlayer || p.ownerId == 0) continue;
-        bool shooterIsNonHostile = false;
-        for (size_t j = 0; j < _w->npcMeta.size(); ++j)
-            if (_w->npcMeta[j].id == p.ownerId && _w->npcMeta[j].faction != NpcFaction::Hostile) { shooterIsNonHostile = true; break; }
-        if (!shooterIsNonHostile) continue;
-        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
-            NpcMeta&     m = _w->npcMeta[i];
-            ecs::Entity& e = _w->entities[i];
-            if (!m.alive || m.faction != NpcFaction::Hostile) continue;
-            if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
-                p.alive = false;
-                e.health.currentHull = std::max(0.0f, e.health.currentHull - p.damage);
-                if (m.aiState == NpcAiState::Patrol) m.aiState = NpcAiState::Chase;
-                if (e.health.currentHull <= 0.0f) {
-                    m.alive = false;
-                    _w->npcFreeSlots.push_back(i);
-                    if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
-                    SpawnLootDrop(e.transform.position, m.faction);
-                    AddCommsMessage(m.shipTypeName + " destroyed.");
-                }
-                break;
-            }
-        }
-    }
-
-    // Block 4: hostile/retaliating NPC projectiles hit player — skip non-hostile non-retaliating NPC shots and station shots
+    // Block 3: hostile/retaliating NPC projectiles hit player — skip non-hostile non-retaliating NPC shots and station shots
     for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer) continue;
         if (p.ownerId != 0) {
@@ -1780,7 +1777,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    // Block 5: Hostile NPC projectiles hitting Player Station Hardpoints
+    // Block 4: Hostile NPC projectiles hitting Player Station Hardpoints
     // (player-built stations belong to the player's world — skip in background)
     for (Projectile& p : _w->projectiles) {
         if (_bgTick) break;
@@ -1834,7 +1831,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    // Block 6: in-world station projectiles hit NPCs and player
+    // Block 5: in-world station projectiles hit NPCs and player
     for (Projectile& p : _w->projectiles) {
         if (!p.alive || p.fromPlayer) continue;
         SpaceStation* stShooter = nullptr;
@@ -1878,7 +1875,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         }
     }
 
-    // Block 7: any projectile hits in-world NPC station hardpoints
+    // Block 6: any projectile hits in-world NPC station hardpoints
     for (Projectile& p : _w->projectiles) {
         if (!p.alive) continue;
         for (SpaceStation& st : _w->stations) {
@@ -3133,7 +3130,7 @@ void SpaceFlight::DrawHUD() const {
     DrawTextEx(_hudFontVal, "[ESC] MAP", { (float)(hx + hw) - escMapTs.x - 8.0f, (float)(hy + HudH - 15) },
         11.0f, 1.0f, HudLabel);
 
-    bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
+    bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     if (!menuOpen && mouse.y < hy) {
@@ -3362,6 +3359,18 @@ void SpaceFlight::ApplyLoadout() {
     for (const auto& ax : _loadout.aux)
         if (ax && ax->auxiliary.hasSensors) { _hasSensors = true; break; }
 
+    // Galaxy-map fog reveal radius — deliberately independent of _hasSensors/
+    // combat sensorRange above (see AuxStats::mapSensorRange's comment). No
+    // baseline: a ship with nothing equipped here sees nothing beyond its
+    // home system, by design — see GalaxyMap's undiscovered-system gating.
+    _mapSensorRange = 0.0f;
+    _mapSensorTier  = 0;
+    for (const auto& ax : _loadout.aux)
+        if (ax && ax->auxiliary.mapSensorRange > _mapSensorRange) {
+            _mapSensorRange = ax->auxiliary.mapSensorRange;
+            _mapSensorTier  = (int)ax->grade + 1;
+        }
+
     _hyperdriveRange = 0.0f;
     if (_loadout.hyperdrive && _loadout.hyperdrive->engine.isHyperdrive)
         _hyperdriveRange = _loadout.hyperdrive->engine.hyperdriveRange;
@@ -3549,6 +3558,8 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     gs.currentSystemId      = _currentSystemId;
     gs.discoveredSystemIds  = _discoveredSystemIds;
     gs.gameSeed             = _gameSeed;
+    gs.currentGalaxyId      = _currentGalaxyId;
+    gs.visitedGalaxyIds     = _visitedGalaxyIds;
     gs.hasWorldState = true;
     return gs;
 }
@@ -3704,12 +3715,16 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
 void SpaceFlight::OnEnter() {
     ModuleRegistry::Init();
 
-    // Fresh session: drop any prior worlds and start pointed at system 1. If a
-    // save load changes _currentSystemId below, the world map is re-keyed there.
+    // Fresh session: drop any prior worlds and start pointed at galaxy 1 /
+    // system 1. If a save load changes _currentGalaxyId/_currentSystemId
+    // below, the world map is re-keyed there.
     _worlds.clear();
+    _currentGalaxyId = 1;
     _currentSystemId = 1;
     _w = &GetOrCreateWorld(_currentSystemId);
     _peerSystem.clear();
+    _peerFaction.clear();
+    _peerFactionDiscovered.clear();
     _bgTick = false;
 
     auto& cfg = FleetManager::Get().PlayerShip;
@@ -3793,18 +3808,25 @@ void SpaceFlight::OnEnter() {
     _discoveredIds.clear();
     _currentSystemId = 1;
     _discoveredSystemIds.clear();
+    _visitedGalaxyIds.assign({ 1 });
 
-    // ── Galaxy seed: derive (New Game) or restore (Load) before anything
-    // touches StarSystemRegistry — every system's position/seed is derived
-    // from this single master seed.
+    // ── Universe/galaxy seed: derive (New Game) or restore (Load) before
+    // anything touches StarSystemRegistry — every system's position/seed is
+    // derived from the current galaxy's seed, which is itself derived from
+    // this one master (universe) seed via UniverseRegistry. currentGalaxyId
+    // defaults to 1 (home galaxy), which UniverseRegistry::Generate(1) always
+    // resolves back to _gameSeed unmodified, so single-galaxy saves/behavior
+    // are unaffected.
     if (didLoad) {
-        _gameSeed = gs.gameSeed != 0 ? gs.gameSeed : 1u;
+        _gameSeed        = gs.gameSeed != 0 ? gs.gameSeed : 1u;
+        _currentGalaxyId = gs.currentGalaxyId != 0 ? gs.currentGalaxyId : 1u;
     } else {
         _gameSeed = cfg.GalaxySeedInput.empty()
             ? (uint32_t)GetRandomValue(1, 2147483647)
             : StarSystemRegistry::HashSeedString(cfg.GalaxySeedInput);
     }
-    StarSystemRegistry::Init(_gameSeed);
+    UniverseRegistry::Init(_gameSeed);
+    StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
 
     // ── Loadout: restore from save, or fall back to default starter kit ───────
     if (didLoad && gs.hasWorldState && !gs.engineId.empty()) {
@@ -3820,12 +3842,15 @@ void SpaceFlight::OnEnter() {
         _discoveredIds        = gs.discoveredIds;
         _currentSystemId      = gs.currentSystemId;
         _discoveredSystemIds  = gs.discoveredSystemIds;
+        if (!gs.visitedGalaxyIds.empty()) _visitedGalaxyIds = gs.visitedGalaxyIds;
     }
     else {
         _loadout.engine = Engine_Thruster_I();
         _loadout.armor  = Armor_HullPatch();
 		_loadout.weapons[0] = Weapon_PulseCannon_I();
 		_loadout.shields[0] = Shield_KineticBarrier_I();
+        // No hyperdrive or aux module equipped by default — the player must
+        // craft or buy a hyperdrive/sensors at a station before warping.
     }
     // Reset hull before ApplyLoadout so a dead-state from a prior session doesn't
     // carry over via its min(currentHull, maxHull) clamp.
@@ -3847,8 +3872,13 @@ void SpaceFlight::OnEnter() {
             == _discoveredSystemIds.end())
         _discoveredSystemIds.push_back(_currentSystemId);
 
-    // A loaded save may have moved us to another system — re-key the world map.
-    if (_w->systemId != _currentSystemId) {
+    // Always mark the current galaxy as visited
+    if (std::find(_visitedGalaxyIds.begin(), _visitedGalaxyIds.end(), _currentGalaxyId)
+            == _visitedGalaxyIds.end())
+        _visitedGalaxyIds.push_back(_currentGalaxyId);
+
+    // A loaded save may have moved us to another system/galaxy — re-key the world map.
+    if (_w->systemId != _currentSystemId || _w->galaxyId != _currentGalaxyId) {
         _worlds.clear();
         _w = &GetOrCreateWorld(_currentSystemId);
     }
@@ -3873,13 +3903,8 @@ void SpaceFlight::OnEnter() {
         }
     }
     else {
-        auto PutInStorage = [&](int idx, ModuleDef m) {
-            StorageItem& slot = _storageMenu.slots[idx];
-            slot.type = StorageItemType::Module;
-            slot.module = m;
-            slot.displayName = m.displayName;
-        };
-        PutInStorage(0, Hyperdrive_ShortJump());
+        // No starter modules seeded into storage — the player must craft or
+        // buy a hyperdrive (and other module types) at a station.
     }
 
     if (_planetBaseTex.id > 0)     { UnloadTexture(_planetBaseTex);     _planetBaseTex     = {}; }
@@ -4016,6 +4041,7 @@ void SpaceFlight::BeginWarpSequence(unsigned int targetSystemId) {
     }
 
     _warpTargetSystemId  = targetSystemId;
+    _warpTargetGalaxyId  = 0; // same-galaxy warp
     _warpDir             = dir;
     _warpStartRot        = _playerEntity.transform.rotation;
     _warpTargetRot       = atan2f(dir.y, dir.x) * RAD2DEG + 90.0f;
@@ -4025,6 +4051,34 @@ void SpaceFlight::BeginWarpSequence(unsigned int targetSystemId) {
     _warpPhaseAfterTurn   = WarpPhase::FlyOut;
     _warpPhase            = WarpPhase::TurnToFace;
     _playerMeta.thrusting = false;
+}
+
+// Cross-galaxy warp: arrives at targetGalaxyId's home system (id 1, always
+// populated — see UniverseRegistry's id==1 convention). The turn direction is
+// cosmetic — current/target galaxies live in different in-game coordinate
+// spaces, so there's no single "vector toward the destination" the way an
+// in-galaxy warp has; using the universe-space delta between the two
+// galaxies' icon positions still gives a deterministic, seed-consistent
+// facing rather than an arbitrary one.
+void SpaceFlight::BeginGalaxyWarpSequence(unsigned int targetGalaxyId) {
+    Vector2 curPos = UniverseRegistry::Generate(_currentGalaxyId).position;
+    Vector2 tgtPos = UniverseRegistry::Generate(targetGalaxyId).position;
+    Vector2 delta  = Vector2Subtract(tgtPos, curPos);
+    float   len    = Vector2Length(delta);
+    Vector2 dir    = (len > 0.01f) ? Vector2Scale(delta, 1.0f / len) : Vector2{ 0.0f, -1.0f };
+
+    _warpTargetSystemId  = 1; // every galaxy's home/arrival system
+    _warpTargetGalaxyId  = targetGalaxyId;
+    _warpDir             = dir;
+    _warpStartRot        = _playerEntity.transform.rotation;
+    _warpTargetRot       = atan2f(dir.y, dir.x) * RAD2DEG + 90.0f;
+    _warpFadeAlpha       = 0.0f;
+    _warpParticles.clear();
+    _warpPhaseTimer       = 0.0f;
+    _warpPhaseAfterTurn   = WarpPhase::FlyOut;
+    _warpPhase            = WarpPhase::TurnToFace;
+    _playerMeta.thrusting = false;
+    _warpChainQueue.clear(); // cross-galaxy jumps are never part of a beacon chain
 }
 
 void SpaceFlight::BeginLocalWarp(Vector2 targetPos) {
@@ -4042,9 +4096,30 @@ void SpaceFlight::BeginLocalWarp(Vector2 targetPos) {
     _warpPhaseAfterTurn   = WarpPhase::LocalFly;
     _warpPhase            = WarpPhase::TurnToFace;
     _playerMeta.thrusting = false;
+    _warpChainQueue.clear(); // in-system dashes are never part of a beacon chain
 }
 
-void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId) {
+void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId, unsigned int targetGalaxyId) {
+    bool crossingGalaxy = (targetGalaxyId != 0 && targetGalaxyId != _currentGalaxyId);
+    if (crossingGalaxy) {
+        // Re-point StarSystemRegistry at the new galaxy before anything below
+        // looks up targetSystemId — it only means something in this galaxy's
+        // id space. _worlds/GetOrCreateWorld pick up _currentGalaxyId
+        // automatically, so a later re-visit to the old galaxy still resumes
+        // its systems as left (see the _worlds comment in SpaceFlight.h).
+        _currentGalaxyId = targetGalaxyId;
+        StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
+        // Per-galaxy discovery/fog-of-war isn't remembered across a visit
+        // (unlike mutable world state) — see _currentGalaxyId's comment.
+        _discoveredSystemIds.clear();
+        // Unlike discovery, "visited" is remembered forever (see
+        // _visitedGalaxyIds's comment) — this is what lets the Universe tier
+        // map color it blue on every future look, not just this visit.
+        if (std::find(_visitedGalaxyIds.begin(), _visitedGalaxyIds.end(), targetGalaxyId)
+                == _visitedGalaxyIds.end())
+            _visitedGalaxyIds.push_back(targetGalaxyId);
+    }
+
     auto sys = StarSystemRegistry::ById(targetSystemId);
     if (!sys) return;
 
@@ -4062,8 +4137,20 @@ void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId) {
 
     _currentSystemId = targetSystemId;
     if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), targetSystemId)
-            == _discoveredSystemIds.end())
+            == _discoveredSystemIds.end()) {
         _discoveredSystemIds.push_back(targetSystemId);
+        // Discovery pooling: the host is always a member of its own faction's
+        // party, so its own new discoveries go out to every connected peer
+        // sharing kPlayerFaction — the mirror image of the pendingWarpNotifies
+        // handling above, which pools a *peer's* discoveries the same way.
+        if (net::Game().IsHost()) {
+            std::vector<uint32_t> targets;
+            for (const auto& [otherId, otherFaction] : _peerFaction)
+                if (otherFaction == kPlayerFaction) targets.push_back(otherId);
+            if (!targets.empty())
+                net::Game().HostBroadcastSystemDiscovered(targets, targetSystemId);
+        }
+    }
     _discoveredIds.clear();
 
     // Targeting state points at the old world's NPCs; ids restart per world.
@@ -4084,9 +4171,18 @@ void SpaceFlight::CommitWarpWorldSwitch(unsigned int targetSystemId) {
 // that predate our arrival are visible. NPCs, asteroid state and projectiles
 // need nothing here — they reconcile from the first Snapshot that follows.
 void SpaceFlight::ApplyWorldSyncClient(const net::WorldSyncData& ws) {
+    // The host is authoritative for which galaxy is current; the client just
+    // follows along. Per-galaxy discovery state doesn't carry across a galaxy
+    // change (same rule as CommitWarpWorldSwitch's cross-galaxy path).
+    if (ws.galaxyId != _currentGalaxyId) _discoveredSystemIds.clear();
     _currentSystemId = ws.systemId;
     _gameSeed        = ws.gameSeed;
-    StarSystemRegistry::Init(_gameSeed);
+    _currentGalaxyId = ws.galaxyId;
+    if (std::find(_visitedGalaxyIds.begin(), _visitedGalaxyIds.end(), ws.galaxyId)
+            == _visitedGalaxyIds.end())
+        _visitedGalaxyIds.push_back(ws.galaxyId);
+    UniverseRegistry::Init(_gameSeed);
+    StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
 
     // Clients only ever track the system they're in — start it clean.
     _worlds.clear();
@@ -4179,7 +4275,7 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
                 _warpPhaseTimer = 0.0f;
                 break;
             }
-            CommitWarpWorldSwitch(_warpTargetSystemId);
+            CommitWarpWorldSwitch(_warpTargetSystemId, _warpTargetGalaxyId);
             _warpParticles.clear();
             _warpFlyInStart = Vector2Subtract(_w->playerSpawnPos, Vector2Scale(_warpDir, kWarpArriveOffset));
             _playerEntity.transform.position = _warpFlyInStart;
@@ -4201,6 +4297,7 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
             net::Game().Shutdown();
             GameManager::Get().TransitionTo(GameMode::MainMenu);
             _warpPhase = WarpPhase::None;
+            _warpChainQueue.clear(); // abandon any remaining hops — bailing to the main menu
             break;
         }
         if (net::Game().pendingWorldSync.has_value()) {
@@ -4233,8 +4330,19 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
             _camera.target  = _playerEntity.transform.position;
             _warpFadeAlpha  = 0.0f;
             _warpParticles.clear();
-            _warpPhase      = WarpPhase::None;
-            _warpPhaseTimer = 0.0f;
+            if (!_warpChainQueue.empty()) {
+                // Beacon chain: pop the next waypoint and re-trigger the full
+                // TurnToFace->FlyOut->FadeOut->FlyIn cinematic from here —
+                // BeginWarpSequence reads _currentSystemId (already updated by
+                // CommitWarpWorldSwitch above) as the "from" point, so each
+                // hop's turn direction is relative to the system just entered.
+                unsigned int nextId = _warpChainQueue.front();
+                _warpChainQueue.erase(_warpChainQueue.begin());
+                BeginWarpSequence(nextId);
+            } else {
+                _warpPhase      = WarpPhase::None;
+                _warpPhaseTimer = 0.0f;
+            }
         }
         break;
     }
@@ -4287,12 +4395,26 @@ void SpaceFlight::Update(float dt) {
         }
         net::Game().newPeerIds.clear();
 
+        // Hello arrives as a follow-up packet, usually a tick or more after
+        // the ENet connect event that populated newPeerIds above — so a
+        // peer's faction (and the faction-scoped discovery catch-up it
+        // unlocks) is learned here, separately and slightly later.
+        for (const auto& [peerId, faction] : net::Game().newPeerFactions) {
+            _peerFaction[peerId] = faction;
+            const std::vector<unsigned int>& pool =
+                (faction == kPlayerFaction) ? _discoveredSystemIds
+                                            : _peerFactionDiscovered[(uint8_t)faction];
+            net::Game().HostSendDiscoverySync(peerId, pool);
+        }
+        net::Game().newPeerFactions.clear();
+
         // Disconnected peers: drop their state so their system can freeze.
         for (uint32_t peerId : net::Game().disconnectedPeerIds) {
             _remoteEntities.erase(peerId);
             _remoteFireCooldown.erase(peerId);
             _remoteJoinGrace.erase(peerId);
             _peerSystem.erase(peerId);
+            _peerFaction.erase(peerId);
         }
         net::Game().disconnectedPeerIds.clear();
 
@@ -4305,6 +4427,29 @@ void SpaceFlight::Update(float dt) {
             _remoteEntities.erase(peerId);    // re-created at the arrival position
             _remoteJoinGrace[peerId] = 5.0f;  // arrival grace, same as a fresh join
             net::Game().HostSendWorldSync(peerId, BuildWorldSync(world));
+
+            // Discovery pooling (party = same faction): merge sysId into the
+            // discovering peer's faction's shared set and tell every OTHER
+            // connected peer sharing that faction — the peer that just
+            // arrived already knows, so it's excluded from the broadcast.
+            // Defaults to the host's own faction if Hello hasn't arrived yet
+            // (rare race right after a fresh join); harmless either way since
+            // the peer's real faction gets corrected the moment Hello lands.
+            auto factionIt = _peerFaction.find(peerId);
+            Faction pf = (factionIt != _peerFaction.end()) ? factionIt->second : kPlayerFaction;
+            bool isHostFaction = (pf == kPlayerFaction);
+            std::vector<unsigned int>& pool =
+                isHostFaction ? _discoveredSystemIds : _peerFactionDiscovered[(uint8_t)pf];
+            bool isNew = std::find(pool.begin(), pool.end(), sysId) == pool.end();
+            if (isNew) pool.push_back(sysId);
+
+            if (isNew) {
+                std::vector<uint32_t> targets;
+                for (const auto& [otherId, otherFaction] : _peerFaction)
+                    if (otherId != peerId && otherFaction == pf) targets.push_back(otherId);
+                if (!targets.empty())
+                    net::Game().HostBroadcastSystemDiscovered(targets, sysId);
+            }
         }
         net::Game().pendingWarpNotifies.clear();
 
@@ -4357,9 +4502,14 @@ void SpaceFlight::Update(float dt) {
         net::Game().pendingInputs.clear();
 
         // Simulate every other occupied system; unoccupied worlds stay frozen
-        // in memory (state preserved, no ticking) until someone returns.
-        for (auto& [sysId, worldPtr] : _worlds) {
+        // in memory (state preserved, no ticking) until someone returns. Worlds
+        // left behind in a previously-visited galaxy are always skipped here —
+        // _peerSystem only ever tracks systems within _currentGalaxyId, since a
+        // cross-galaxy warp moves the whole party together.
+        for (auto& [key, worldPtr] : _worlds) {
             if (worldPtr.get() == _w) continue;   // main Update path ticks this one
+            if (WorldKeyGalaxyId(key) != _currentGalaxyId) continue;
+            unsigned int sysId = WorldKeySystemId(key);
             bool occupied = false;
             for (const auto& [peerId, ps] : _peerSystem)
                 if (ps == sysId) { occupied = true; break; }
@@ -4371,7 +4521,9 @@ void SpaceFlight::Update(float dt) {
         if (_netTickAccum >= 0.05f) {
             _netTickAccum = 0.0f;
 
-            for (auto& [sysId, worldPtr] : _worlds) {
+            for (auto& [key, worldPtr] : _worlds) {
+                if (WorldKeyGalaxyId(key) != _currentGalaxyId) continue; // frozen, previously-visited galaxy
+                unsigned int sysId = WorldKeySystemId(key);
                 SystemWorld& world = *worldPtr;
 
                 std::vector<uint32_t> occupants;
@@ -4452,6 +4604,24 @@ void SpaceFlight::Update(float dt) {
                 if (st.id == deadId) { st.alive = false; break; }
         }
         net::Game().pendingStationDeads.clear();
+
+        // Discovery pooling: merge in whatever the host says our faction's
+        // party has already found — a one-time bulk catch-up (DiscoverySync,
+        // sent right after our Hello reveals our faction) plus any live
+        // SystemDiscovered updates from faction-mates warping since then.
+        if (net::Game().pendingDiscoverySync.has_value()) {
+            for (unsigned int id : *net::Game().pendingDiscoverySync)
+                if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), id)
+                        == _discoveredSystemIds.end())
+                    _discoveredSystemIds.push_back(id);
+            net::Game().pendingDiscoverySync.reset();
+        }
+        for (unsigned int id : net::Game().pendingSystemDiscoveries) {
+            if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), id)
+                    == _discoveredSystemIds.end())
+                _discoveredSystemIds.push_back(id);
+        }
+        net::Game().pendingSystemDiscoveries.clear();
     }
 
     // ── Client: apply WorldSync then lerp remote snapshots ────────────────────
@@ -4651,7 +4821,7 @@ void SpaceFlight::Update(float dt) {
     // ── ADDED: INPUT GUARD SUPPRESSION ───────────────────────────────────────
     static bool blockFireUntilRelease = false;
 
-    if (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
+    if (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen ||
         _stationServicesMenu.isOpen) {
@@ -4698,15 +4868,11 @@ void SpaceFlight::Update(float dt) {
         else if (_localMapOpen) {
             _localMapOpen = false;
         }
-        else if (_galacticMap.isOpen) {
-            _galacticMap.Close();
-            _systemMap.Open();
+        else if (_galaxyMap.isOpen) {
+            if (!_galaxyMap.IsPickerOpen()) _galaxyMap.Close();
         }
-        else if (!_systemMap.isOpen) {
-            _systemMap.Open();
-        }
-        else if (!_systemMap.IsPickerOpen()) {
-            _systemMap.Close();
+        else {
+            _galaxyMap.Open();
         }
     }
 
@@ -4719,49 +4885,15 @@ void SpaceFlight::Update(float dt) {
         return;
     }
 
-    if (_galacticMap.isOpen) {
-        {
-            GalacticMapData mapData;
-            mapData.hyperdriveRange     = _hyperdriveRange;
-            mapData.currentSystemId     = _currentSystemId;
-            mapData.discoveredSystemIds = _discoveredSystemIds;
-            auto curSys = StarSystemRegistry::ById(_currentSystemId);
-            mapData.currentSystemPos = curSys ? curSys->galacticPos : Vector2{};
-            _galacticMap.SetMapData(mapData);
-        }
-
-        GalacticMapAction gAction = _galacticMap.Update(dt);
-
-        if (gAction == GalacticMapAction::WarpToSystem) {
-            unsigned int targetId = _galacticMap.WarpTargetId();
-            if (StarSystemRegistry::ById(targetId)) {
-                _galacticMap.Close();
-                BeginWarpSequence(targetId);   // cinematic; actual system switch happens mid-sequence
-            } else {
-                _galacticMap.Close();
-            }
-            return;
-        }
-        if (gAction == GalacticMapAction::OpenSystemMap) {
-            _galacticMap.Close();
-            _systemMap.Open();
-            return;
-        }
-        if (gAction == GalacticMapAction::GoMainMenu) {
-            if (net::Game().IsHost()) net::Game().BroadcastServerClosing();
-            net::Game().Shutdown();
-            GameManager::Get().TransitionTo(GameMode::MainMenu);
-            return;
-        }
-        return;
-    }
-
-    if (_systemMap.isOpen) {
-        // Feed current world data to the map
+    if (_galaxyMap.isOpen) {
+        // Feed current world + galaxy data to the map
         {
             SystemMapData mapData;
             mapData.playerPos       = _playerEntity.transform.position;
             mapData.hyperdriveRange = _hyperdriveRange;
+            mapData.mapSensorRange  = _mapSensorRange;
+            mapData.mapSensorTier   = _mapSensorTier;
+            mapData.playerFaction   = kPlayerFaction;
             for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) mapData.wingmanCount++;
             for (const SpacePlanet& p : _w->planets) {
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) != _discoveredIds.end();
@@ -4772,31 +4904,78 @@ void SpaceFlight::Update(float dt) {
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), s.id) != _discoveredIds.end();
                 mapData.blips.push_back({ s.id, s.position, s.radius, false, disc });
             }
-            _systemMap.SetMapData(mapData);
+            // Player-built stations (space stations, mining stations, defense
+            // platforms, ...) — always "discovered" since the player built them.
+            for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                if (!ps.alive) continue;
+                const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
+                float rad = def ? def->radius : 120.0f;
+                mapData.blips.push_back({ ps.id, ps.position, rad, false, true });
+            }
+            mapData.hasSun  = _w->sun.active;
+            mapData.sunCore = _w->sun.coreColor;
+            mapData.sunGlow = _w->sun.outerGlow;
+            mapData.currentSystemId     = _currentSystemId;
+            mapData.discoveredSystemIds = _discoveredSystemIds;
+            mapData.currentGalaxyId     = _currentGalaxyId;
+            mapData.visitedGalaxyIds    = _visitedGalaxyIds;
+            auto curSys = StarSystemRegistry::ById(_currentSystemId);
+            mapData.currentSystemPos = curSys ? curSys->galacticPos : Vector2{};
+            _galaxyMap.SetMapData(mapData);
         }
 
-        MapAction action = _systemMap.Update(dt);
+        MapAction action = _galaxyMap.Update(dt);
 
         if (action == MapAction::WarpTo) {
-            _systemMap.Close();
-            BeginLocalWarp(_systemMap.WarpTarget());
+            _galaxyMap.Close();
+            BeginLocalWarp(_galaxyMap.WarpTarget());
             return;
         }
-        if (action == MapAction::OpenGalacticMap) {
-            _systemMap.Close();
-            _galacticMap.Open();
+        if (action == MapAction::WarpToSystem) {
+            unsigned int targetId = _galaxyMap.WarpTargetId();
+            std::vector<unsigned int> chain = _galaxyMap.WarpChain();
+            _galaxyMap.Close();
+            if (StarSystemRegistry::ById(targetId)) {
+                // chain.size() > 1 is a beacon-chained warp (see GalaxyMap::
+                // ComputeChainPath): hop through the intermediate discovered
+                // systems first, playing a full cinematic per hop, then arrive
+                // at targetId. A direct in-range warp reports a 1-element (or
+                // empty, for older callers) chain, so this is a no-op then.
+                _warpChainQueue.assign(chain.size() > 1 ? chain.begin() + 1 : chain.end(),
+                                        chain.end());
+                BeginWarpSequence(chain.empty() ? targetId : chain.front());
+            }
+            return;
+        }
+        if (action == MapAction::WarpToGalaxy) {
+            unsigned int targetGalaxyId = _galaxyMap.WarpTargetGalaxyId();
+            _galaxyMap.Close();
+            // StarSystemRegistry/_currentGalaxyId is per-process global state, not
+            // per-peer — a client switching it would only affect their own view (never
+            // the host's), so clients simply can't initiate this. A host CAN switch it
+            // safely only when nobody else is connected: any peer currently tracked in
+            // _peerSystem lives in a system keyed to the galaxy being left behind, and
+            // once _currentGalaxyId moves on, this file's per-tick loops stop
+            // ticking/syncing that (now foreign-galaxy) world, silently stranding them.
+            // Full multiplayer support (forcing connected peers to follow, or handing
+            // off) is a bigger follow-on piece, not part of this phase.
+            bool otherPeersConnected = net::Game().IsHost() && !_peerSystem.empty();
+            if (targetGalaxyId != 0 && targetGalaxyId != _currentGalaxyId &&
+                !net::Game().IsClient() && !otherPeersConnected)
+                BeginGalaxyWarpSequence(targetGalaxyId);  // cinematic; actual switch happens mid-sequence
             return;
         }
         if (action == MapAction::OpenModules) {
-            _systemMap.Close();
+            _galaxyMap.Close();
             _modulesMenu.Open(&_loadout, &_storageMenu.slots,
                 _playerMeta.weaponSlots, _playerMeta.armorSlots,
                 _playerMeta.shieldSlots, _playerMeta.engineSlots,
-                _playerMeta.hyperdriveSlots, _playerMeta.auxSlots);
+                _playerMeta.hyperdriveSlots, _playerMeta.auxSlots,
+                &_playerEntity.health);
             return;
         }
         if (action == MapAction::OpenStorage) {
-            _systemMap.Close();
+            _galaxyMap.Close();
             _storageMenu.Open((int)_storageMenu.slots.size());
             return;
         }
@@ -4804,7 +4983,7 @@ void SpaceFlight::Update(float dt) {
             int wingCount = 0;
             for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) wingCount++;
             if (wingCount > 0) {
-                _systemMap.Close();
+                _galaxyMap.Close();
                 _escortMenuOpen = true;
                 _escortMenuSelId = 0;
                 for (const NpcMeta& n : _w->npcMeta)
@@ -4813,7 +4992,7 @@ void SpaceFlight::Update(float dt) {
             return;
         }
         if (action == MapAction::OpenRanks) {
-            _systemMap.Close();
+            _galaxyMap.Close();
             _ranksMenuOpen = true;
             return;
         }
@@ -4826,12 +5005,12 @@ void SpaceFlight::Update(float dt) {
         if (action == MapAction::SaveToFile) {
             auto gs = BuildWorldState();
             SaveManager::Get().SaveGameToPath(gs,
-                _systemMap.SavePath(), _systemMap.SaveDisplayName());
-            _systemMap.AckSave();
+                _galaxyMap.SavePath(), _galaxyMap.SaveDisplayName());
+            _galaxyMap.AckSave();
         }
         if (action == MapAction::LoadGame) {
             SaveManager::GameState gs;
-            if (SaveManager::Get().LoadGame(_systemMap.LoadFilename(), gs)) {
+            if (SaveManager::Get().LoadGame(_galaxyMap.LoadFilename(), gs)) {
                 if (gs.shipTypeId != _playerMeta.defId) {
                     if (const auto* defPtr = ecs::ShipRegistry::ShipById(gs.shipTypeId)) {
                         const ecs::ShipDef& def    = *defPtr;
@@ -4867,8 +5046,12 @@ void SpaceFlight::Update(float dt) {
                 _discoveredIds.clear();
                 _discoveredSystemIds.clear();
                 _currentSystemId = 1;
+                _currentGalaxyId = 1;
+                _visitedGalaxyIds.assign({ 1 });
                 _gameSeed        = gs.gameSeed != 0 ? gs.gameSeed : 1u;
-                StarSystemRegistry::Init(_gameSeed);
+                UniverseRegistry::Init(_gameSeed);
+                if (gs.hasWorldState) _currentGalaxyId = gs.currentGalaxyId != 0 ? gs.currentGalaxyId : 1u;
+                StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
                 if (gs.hasWorldState && !gs.engineId.empty()) {
                     for (int i = 0; i < _playerMeta.weaponSlots && i < (int)gs.weaponIds.size(); ++i)
                         _loadout.weapons[i] = ModuleById(gs.weaponIds[i]);
@@ -4882,10 +5065,14 @@ void SpaceFlight::Update(float dt) {
                     _discoveredIds       = gs.discoveredIds;
                     _currentSystemId     = gs.currentSystemId;
                     _discoveredSystemIds = gs.discoveredSystemIds;
+                    if (!gs.visitedGalaxyIds.empty()) _visitedGalaxyIds = gs.visitedGalaxyIds;
                 }
                 if (std::find(_discoveredSystemIds.begin(), _discoveredSystemIds.end(), _currentSystemId)
                         == _discoveredSystemIds.end())
                     _discoveredSystemIds.push_back(_currentSystemId);
+                if (std::find(_visitedGalaxyIds.begin(), _visitedGalaxyIds.end(), _currentGalaxyId)
+                        == _visitedGalaxyIds.end())
+                    _visitedGalaxyIds.push_back(_currentGalaxyId);
                 // Loading replaces the whole world set; re-key to the saved system.
                 _worlds.clear();
                 _w = &GetOrCreateWorld(_currentSystemId);
@@ -4947,7 +5134,7 @@ void SpaceFlight::Update(float dt) {
                 }
                 InitStars();
             }
-            _systemMap.Close();
+            _galaxyMap.Close();
         }
         return;
     }
@@ -5347,7 +5534,8 @@ void SpaceFlight::Update(float dt) {
                 _escortModuleNpcId = _w->npcMeta[selIdx].id;
                 _modulesMenu.Open(&_w->npcMeta[selIdx].loadout, &_storageMenu.slots,
                     NpcMeta::WSlots, NpcMeta::ArSlots,
-                    NpcMeta::ShSlots, NpcMeta::EnSlots, 0);
+                    NpcMeta::ShSlots, NpcMeta::EnSlots, 0,
+                    &_w->entities[selIdx].health);
             }
             else if (CheckCollisionPointRec(m2, dismissBtn)) {
                 _w->npcMeta[selIdx].wingman     = false;
@@ -5408,7 +5596,7 @@ void SpaceFlight::Update(float dt) {
     Vector2 mousePos = GetMousePosition();
     int hy = GetScreenHeight() - HudH - 6;
 
-    bool clickedHudBtn = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen || _ranksMenuOpen || (mousePos.y >= hy);
+    bool clickedHudBtn = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen || _ranksMenuOpen || (mousePos.y >= hy);
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         Rectangle enterBtn, buildBtn, commsBtn;
@@ -5741,8 +5929,8 @@ void SpaceFlight::Update(float dt) {
 
     UpdateTarget();
 
-    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen ||
-                       _galacticMap.isOpen || _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
+    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
+                       _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
                        _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
                        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
     if (!anyMenuOpen) {
@@ -5960,12 +6148,25 @@ void SpaceFlight::AdvanceProjectilesAndAsteroids(float dt) {
 // the local player in the active world, or a remote occupant in a background
 // world. Also erases dead projectiles/asteroids for the ticked world.
 void SpaceFlight::CullAndRespawnAround(float dt, Vector2 anchor) {
+    // Compute the half-diagonal of the visible world area so spawns never
+    // appear inside the camera frustum regardless of zoom level. Cull
+    // distances below are derived from this too (floored at the old fixed
+    // values) — at low zoom the visible area can exceed a fixed cull radius,
+    // which used to destroy every asteroid/NPC the instant it spawned just
+    // outside the view (zoomed all the way out, nothing could ever spawn).
+    float halfW     = (float)GetScreenWidth()  / (2.0f * _cameraZoom);
+    float halfH     = (float)GetScreenHeight() / (2.0f * _cameraZoom);
+    float viewEdge  = sqrtf(halfW * halfW + halfH * halfH) + 150.0f;
+
+    float asteroidCullDist = std::max(2800.0f, viewEdge + 1800.0f);
+    float npcCullDist      = std::max(3000.0f, viewEdge + 1800.0f);
+
     for (Asteroid& a : _w->asteroids)
-        if (a.alive && Vector2Distance(anchor, a.position) > 2800.0f)
+        if (a.alive && Vector2Distance(anchor, a.position) > asteroidCullDist)
             a.alive = false;
     for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci)
         if (_w->npcMeta[ci].alive && !_w->npcMeta[ci].wingman &&
-            Vector2Distance(anchor, _w->entities[ci].transform.position) > 3000.0f) {
+            Vector2Distance(anchor, _w->entities[ci].transform.position) > npcCullDist) {
             _w->npcMeta[ci].alive = false;
             _w->npcFreeSlots.push_back(ci);
         }
@@ -5980,12 +6181,6 @@ void SpaceFlight::CullAndRespawnAround(float dt, Vector2 anchor) {
     _w->respawnTimer -= dt;
     if (_w->respawnTimer <= 0.0f) {
         _w->respawnTimer = 5.0f;
-
-        // Compute the half-diagonal of the visible world area so spawns never
-        // appear inside the camera frustum regardless of zoom level.
-        float halfW     = (float)GetScreenWidth()  / (2.0f * _cameraZoom);
-        float halfH     = (float)GetScreenHeight() / (2.0f * _cameraZoom);
-        float viewEdge  = sqrtf(halfW * halfW + halfH * halfH) + 150.0f;
 
         int liveAsteroids = (int)std::count_if(_w->asteroids.begin(), _w->asteroids.end(),
             [](const Asteroid& a) { return a.alive; });
@@ -6077,7 +6272,7 @@ void SpaceFlight::TickBackgroundWorld(float dt, SystemWorld& world) {
 }
 
 void SpaceFlight::Draw() {
-    bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _systemMap.isOpen || _galacticMap.isOpen ||
+    bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     Vector2 mouse = GetMousePosition();
@@ -6557,8 +6752,7 @@ void SpaceFlight::Draw() {
             (int)(noBtn.y + 10), 12, hovN ? WHITE : Color{ 200,80,80,220 });
     }
 
-    if (_systemMap.isOpen)   _systemMap.Draw();
-    if (_galacticMap.isOpen) _galacticMap.Draw();
+    if (_galaxyMap.isOpen) _galaxyMap.Draw();
 
     // ── Client sync overlay ───────────────────────────────────────────────────
     if (!_worldSynced) {
@@ -6660,4 +6854,4 @@ void SpaceFlight::OnExit() {
     if (_hudFontUi.texture.id  > 0) { UnloadFont(_hudFontUi);  _hudFontUi  = {}; }
     if (_hudFontVal.texture.id > 0) { UnloadFont(_hudFontVal); _hudFontVal = {}; }
     _lighting.Shutdown();
-}
+} 

@@ -71,9 +71,10 @@ bool NetSession::StartHost(uint16_t port) {
     return true;
 }
 
-bool NetSession::StartClient(const std::string& hostAddress, uint16_t port) {
+bool NetSession::StartClient(const std::string& hostAddress, uint16_t port, Faction faction) {
     if (_role != NetRole::Offline) Shutdown();
     if (!EnetAcquire()) return false;
+    _localFaction = faction;
 
     _host = enet_host_create(nullptr /*client*/, 1, kChannelCount, 0, 0);
     if (!_host) {
@@ -131,6 +132,9 @@ void NetSession::Shutdown() {
     pendingWorldSync.reset();
     pendingWarpNotifies.clear();
     pendingStationDeads.clear();
+    newPeerFactions.clear();
+    pendingDiscoverySync.reset();
+    pendingSystemDiscoveries.clear();
 }
 
 void NetSession::Poll(float /*dt*/) {
@@ -154,7 +158,7 @@ void NetSession::Poll(float /*dt*/) {
             } else {
                 // Client's connection to the host succeeded at the ENet level;
                 // send Hello and wait for Welcome before marking connected.
-                auto pkt = EncodeHello();
+                auto pkt = EncodeHello(_localFaction);
                 ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(),
                                                    ENET_PACKET_FLAG_RELIABLE);
                 enet_peer_send(event.peer, kChannelReliable, p);
@@ -193,9 +197,12 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
     switch (type) {
 
     case MsgType::Hello: {
-        // Host validates the joining client's protocol version.
+        // Host validates the joining client's protocol version and records
+        // their faction (for discovery pooling — see SpaceFlight's
+        // _peerFaction/_peerFactionDiscovered).
         uint16_t version = 0;
-        if (!DecodeHello(r, version)) break;
+        Faction  faction = Faction::Republic;
+        if (!DecodeHello(r, version, faction)) break;
         if (version != kProtocolVersion) {
             auto pkt = EncodeReject(RejectReason::ProtocolMismatch);
             ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(),
@@ -203,6 +210,8 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
             enet_peer_send(from, kChannelReliable, p);
             std::printf("[net] rejected client (protocol %u != %u)\n",
                         version, kProtocolVersion);
+        } else {
+            newPeerFactions.push_back({ GetPeerId(from), faction });
         }
         break;
     }
@@ -278,6 +287,18 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
     case MsgType::WorldSync: {
         WorldSyncData ws;
         if (DecodeWorldSync(r, ws)) pendingWorldSync = ws;
+        break;
+    }
+
+    case MsgType::DiscoverySync: {
+        std::vector<uint32_t> ids;
+        if (DecodeDiscoverySync(r, ids)) pendingDiscoverySync = std::move(ids);
+        break;
+    }
+
+    case MsgType::SystemDiscovered: {
+        uint32_t sysId = 0;
+        if (DecodeSystemDiscovered(r, sysId)) pendingSystemDiscoveries.push_back(sysId);
         break;
     }
 
@@ -371,6 +392,42 @@ void NetSession::HostSendWorldSync(uint32_t peerId, const WorldSyncData& ws) {
         }
     }
     enet_packet_destroy(p);  // no matching peer; discard
+}
+
+void NetSession::HostSendDiscoverySync(uint32_t peerId, const std::vector<uint32_t>& systemIds) {
+    if (_role != NetRole::Host || !_host) return;
+
+    auto pkt = EncodeDiscoverySync(systemIds);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    for (size_t i = 0; i < _host->peerCount; ++i) {
+        ENetPeer* peer = &_host->peers[i];
+        if (peer->state == ENET_PEER_STATE_CONNECTED && GetPeerId(peer) == peerId) {
+            enet_peer_send(peer, kChannelReliable, p);
+            return;
+        }
+    }
+    enet_packet_destroy(p);  // no matching peer; discard
+}
+
+void NetSession::HostBroadcastSystemDiscovered(const std::vector<uint32_t>& peerIds, uint32_t systemId) {
+    if (_role != NetRole::Host || !_host || peerIds.empty()) return;
+
+    auto pkt = EncodeSystemDiscovered(systemId);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    bool sent = false;
+    for (size_t i = 0; i < _host->peerCount; ++i) {
+        ENetPeer* peer = &_host->peers[i];
+        if (peer->state != ENET_PEER_STATE_CONNECTED) continue;
+        uint32_t id = GetPeerId(peer);
+        for (uint32_t want : peerIds) {
+            if (want == id) {
+                enet_peer_send(peer, kChannelReliable, p);
+                sent = true;
+                break;
+            }
+        }
+    }
+    if (!sent) enet_packet_destroy(p);  // nobody matched; don't leak the packet
 }
 
 void NetSession::ClientSendInput(const InputCommand& cmd) {

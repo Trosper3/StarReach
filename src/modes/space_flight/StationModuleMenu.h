@@ -30,11 +30,18 @@ private:
     int                       _storageScroll = 0;
 
     // Drag state
-    enum class DragSrc { None, Storage, Slot };
-    DragSrc   _dragSrc  = DragSrc::None;
-    int       _dragIdx  = -1;
-    ModuleDef _dragMod;
+    enum class DragSrc  { None, Storage, Slot };
+    enum class DragKind { Module, Hardpoint };
+    DragSrc  _dragSrc  = DragSrc::None;
+    DragKind _dragKind = DragKind::Module;
+    int      _dragIdx  = -1;
+    ModuleDef           _dragMod;
+    StationHardpointDef _dragHp;
     bool      _dragging = false;
+
+    // True while this station has room for another hardpoint (see
+    // PlayerStationDef::maxHardpoints). Gates the "ATTACH HARDPOINT" drop row.
+    bool CanAttachHardpoint() const;
 
     struct SlotRef {
         Rectangle  rect;
