@@ -79,10 +79,16 @@ bool SaveManager::SaveGameToPath(const GameState& gs, const std::string& path,
     // ── Galactic state ────────────────────────────────────────────────────────
     data["currentSystemId"] = gs.currentSystemId;
     data["gameSeed"]        = gs.gameSeed;
+    data["currentGalaxyId"] = gs.currentGalaxyId;
     {
         json arr = json::array();
         for (unsigned int id : gs.discoveredSystemIds) arr.push_back(id);
         data["discoveredSystems"] = arr;
+    }
+    {
+        json arr = json::array();
+        for (unsigned int id : gs.visitedGalaxyIds) arr.push_back(id);
+        data["visitedGalaxies"] = arr;
     }
 
     // ── Storage ──────────────────────────────────────────────────────────────
@@ -271,10 +277,15 @@ bool SaveManager::LoadGame(const std::string& filename, GameState& out) {
     // ── Galactic state ────────────────────────────────────────────────────────
     out.currentSystemId = data.value("currentSystemId", 1u);
     out.gameSeed         = data.value("gameSeed", 1u); // old saves: fixed fallback seed
+    out.currentGalaxyId  = data.value("currentGalaxyId", 0u); // old saves: 0 -> home galaxy
     out.discoveredSystemIds.clear();
     if (data.contains("discoveredSystems") && data["discoveredSystems"].is_array())
         for (const auto& d : data["discoveredSystems"])
             out.discoveredSystemIds.push_back(d.get<unsigned int>());
+    out.visitedGalaxyIds.clear();
+    if (data.contains("visitedGalaxies") && data["visitedGalaxies"].is_array())
+        for (const auto& d : data["visitedGalaxies"])
+            out.visitedGalaxyIds.push_back(d.get<unsigned int>());
 
     // ── Storage ──────────────────────────────────────────────────────────────
     out.storage.clear();

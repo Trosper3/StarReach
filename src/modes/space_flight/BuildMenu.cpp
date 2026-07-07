@@ -117,6 +117,14 @@ void BuildMenu::DoSpendItems(const std::vector<BuildIngredient>& cost) {
         RemoveFromStorage(ing.itemId, ing.amount);
 }
 
+bool BuildMenu::PlaceInFirstEmptySlot(const StorageItem& item) {
+    if (!_storage) return false;
+    for (StorageItem& s : *_storage) {
+        if (s.type == StorageItemType::Empty) { s = item; return true; }
+    }
+    return false;
+}
+
 const char* BuildMenu::ItemName(const std::string& itemId) {
     const ItemDef* def = ItemRegistry::ById(itemId);
     return def ? def->displayName.c_str() : itemId.c_str();
@@ -185,8 +193,8 @@ void BuildMenu::Update() {
 
     // Tabs
     int tabY = py + 32;
-    int tabW = PanelW / 3;
-    for (int i = 0; i < 3; ++i) {
+    int tabW = PanelW / 4;
+    for (int i = 0; i < 4; ++i) {
         Rectangle r = { (float)(px + i * tabW), (float)tabY, (float)tabW, (float)TabH };
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(m, r)) {
             _tab = i;
@@ -208,8 +216,9 @@ void BuildMenu::Update() {
 
     // Clamp scroll bounds dynamically depending on active tab contents
     int maxScroll = 0;
-    if (_tab == 0 || _tab == 1) {
-        BuildableType wantType = (_tab == 0) ? BuildableType::Station : BuildableType::Module;
+    if (_tab == 0 || _tab == 1 || _tab == 2) {
+        BuildableType wantType = (_tab == 0) ? BuildableType::Station
+                                : (_tab == 1) ? BuildableType::Module : BuildableType::Hardpoint;
         auto items = BuildableRegistry::ByType(wantType);
         int totalH = (int)items.size() * (ItemH + 4) - 4;
         if (totalH > listH) maxScroll = totalH - listH;
@@ -222,8 +231,9 @@ void BuildMenu::Update() {
     if (_scroll > maxScroll) _scroll = maxScroll;
     if (_scroll < 0) _scroll = 0;
 
-    if (_tab == 0 || _tab == 1) {
-        BuildableType wantType = (_tab == 0) ? BuildableType::Station : BuildableType::Module;
+    if (_tab == 0 || _tab == 1 || _tab == 2) {
+        BuildableType wantType = (_tab == 0) ? BuildableType::Station
+                                : (_tab == 1) ? BuildableType::Module : BuildableType::Hardpoint;
         auto items = BuildableRegistry::ByType(wantType);
 
         // Item row clicks (modified to incorporate _scroll and handle out-of-bounds skipping)
@@ -245,12 +255,12 @@ void BuildMenu::Update() {
             if (canAfford && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) &&
                 CheckCollisionPointRec(m, buildBtn)) {
                 if (_tab == 0) {
-                    // REMOVED: DoSpendItems(items[_selIdx].itemCost); 
+                    // REMOVED: DoSpendItems(items[_selIdx].itemCost);
                     // We do not spend items here anymore! We pass the request along untouched.
                     pendingBuildId = items[_selIdx].stationDefId;
                     Close();
                 }
-                else {
+                else if (_tab == 1) {
                     auto modOpt = ModuleRegistry::ById(items[_selIdx].moduleDefId);
                     if (modOpt.has_value()) {
                         if (!CanFitResult(items[_selIdx].itemCost,
@@ -259,8 +269,23 @@ void BuildMenu::Update() {
                         }
                         else {
                             DoSpendItems(items[_selIdx].itemCost);
-                            pendingBuildId = "module:" + items[_selIdx].moduleDefId;
+                            PlaceInFirstEmptySlot(StorageItem{
+                                StorageItemType::Module, modOpt->displayName, "", 0, *modOpt });
                         }
+                    }
+                    _selIdx = -1;
+                }
+                else {
+                    // Hardpoint tab: crafted blueprint lands in storage, later
+                    // dragged onto a built station's "ATTACH HARDPOINT" slot.
+                    if (!CanFitResult(items[_selIdx].itemCost, items[_selIdx].id, true)) {
+                        _errorOpen = true;
+                    }
+                    else {
+                        DoSpendItems(items[_selIdx].itemCost);
+                        PlaceInFirstEmptySlot(StorageItem{
+                            StorageItemType::Hardpoint, items[_selIdx].displayName, "", 0,
+                            ModuleDef{}, items[_selIdx].hardpointDef });
                     }
                     _selIdx = -1;
                 }
@@ -320,9 +345,9 @@ void BuildMenu::Draw() const {
     DrawText("X", (int)(closeBtn.x + 7), (int)(closeBtn.y + 5), 12, hovX ? WHITE : TxtDim);
 
     // Tabs
-    const char* tabLabels[] = { "STATIONS", "MODULES", "CRAFT" };
-    int tabY = py + 32, tabW = PanelW / 3;
-    for (int i = 0; i < 3; ++i) {
+    const char* tabLabels[] = { "STATIONS", "MODULES", "HARDPOINTS", "CRAFT" };
+    int tabY = py + 32, tabW = PanelW / 4;
+    for (int i = 0; i < 4; ++i) {
         Rectangle r = { (float)(px + i * tabW),(float)tabY,(float)tabW,(float)TabH };
         bool active = (_tab == i);
         DrawRectangleRec(r, active ? TabActive : TabIdle);
@@ -338,8 +363,9 @@ void BuildMenu::Draw() const {
 
     BeginScissorMode(px, listY, PanelW, listH);
 
-    if (_tab == 0 || _tab == 1) {
-        BuildableType wantType = (_tab == 0) ? BuildableType::Station : BuildableType::Module;
+    if (_tab == 0 || _tab == 1 || _tab == 2) {
+        BuildableType wantType = (_tab == 0) ? BuildableType::Station
+                                : (_tab == 1) ? BuildableType::Module : BuildableType::Hardpoint;
         auto items = BuildableRegistry::ByType(wantType);
 
         for (int i = 0; i < (int)items.size(); ++i) {
@@ -420,8 +446,9 @@ void BuildMenu::Draw() const {
     EndScissorMode();
 
     // BUILD / PLACE button
-    if (_tab == 0 || _tab == 1) {
-        BuildableType wantType = (_tab == 0) ? BuildableType::Station : BuildableType::Module;
+    if (_tab == 0 || _tab == 1 || _tab == 2) {
+        BuildableType wantType = (_tab == 0) ? BuildableType::Station
+                                : (_tab == 1) ? BuildableType::Module : BuildableType::Hardpoint;
         auto items = BuildableRegistry::ByType(wantType);
         bool hasSel = (_selIdx >= 0 && _selIdx < (int)items.size());
         bool canAff = hasSel && CanAffordBuild(items[_selIdx].itemCost);

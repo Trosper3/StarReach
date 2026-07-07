@@ -19,6 +19,7 @@ void MaterialRegistry::Init() {
             d.id          = s_strings[s_strings.size() - 2].c_str();
             d.displayName = s_strings[s_strings.size() - 1].c_str();
             d.hudColor    = JL::Clr(item, "color", { 180, 180, 180, 255 });
+            d.sellValue   = JL::Int(item, "sellValue", 5, 0, 100000);
             if (d.id[0] == '\0') continue;
             s_all.push_back(d);
         }

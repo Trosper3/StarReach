@@ -6,6 +6,7 @@
 #include "data/modules/EngineDefs.h"
 #include "data/modules/HyperdriveDefs.h"
 #include "data/modules/AuxDefs.h"
+#include "data/modules/ConsumableDefs.h"
 #include "raylib.h"
 
 std::vector<ModuleDef>                  ModuleRegistry::s_all;
@@ -19,6 +20,7 @@ static ModuleType ParseModuleType(const std::string& s) {
     if (s == "Engine")     return ModuleType::Engine;
     if (s == "Hyperdrive") return ModuleType::Hyperdrive;
     if (s == "Auxiliary")  return ModuleType::Auxiliary;
+    if (s == "Consumable") return ModuleType::Consumable;
     return ModuleType::Weapon;
 }
 
@@ -77,7 +79,10 @@ static void LoadEngine(ModuleDef& m, const nlohmann::json& e) {
 
 static void LoadHyperdrive(ModuleDef& m, const nlohmann::json& h) {
     m.engine.isHyperdrive    = true;
-    m.engine.hyperdriveRange = JL::Float(h, "range", 3000.f, 0.f, 2000000.f);
+    // Upper bound covers the Mythic "anywhere in the universe" tier
+    // (Singularity Core / Cosmic Fold Drive, 6,000,000,000u) — see
+    // HyperdriveDefs.h / UniverseRegistry::kUniverseSpan.
+    m.engine.hyperdriveRange = JL::Float(h, "range", 3000.f, 0.f, 10000000000.f);
 }
 
 static void LoadAux(ModuleDef& m, const nlohmann::json& a) {
@@ -86,6 +91,13 @@ static void LoadAux(ModuleDef& m, const nlohmann::json& a) {
     m.auxiliary.hasCloaking       = JL::Bool (a, "hasCloaking",       false);
     m.auxiliary.materialFindBonus = JL::Float(a, "materialFindBonus", 0.f, 0.f,     2.f);
     m.auxiliary.hasLockOnJammer   = JL::Bool (a, "hasLockOnJammer",   false);
+    // Galaxy-map fog reveal radius — see AuxStats::mapSensorRange. Upper
+    // bound covers the Omniscient Sensor Core's whole-galaxy tier (150,000,000u).
+    m.auxiliary.mapSensorRange    = JL::Float(a, "mapSensorRange",    0.f, 0.f, 200000000.f);
+}
+
+static void LoadConsumable(ModuleDef& m, const nlohmann::json& c) {
+    m.consumable.healAmount = JL::Float(c, "healAmount", 50.f, 0.f, 100000.f);
 }
 
 // ── Registry init ─────────────────────────────────────────────────────────────
@@ -108,6 +120,7 @@ void ModuleRegistry::Init() {
             if (m.type == ModuleType::Engine     && item.contains("engine"))     LoadEngine   (m, item["engine"]);
             if (m.type == ModuleType::Hyperdrive && item.contains("hyperdrive")) LoadHyperdrive(m, item["hyperdrive"]);
             if (m.type == ModuleType::Auxiliary  && item.contains("aux"))        LoadAux      (m, item["aux"]);
+            if (m.type == ModuleType::Consumable && item.contains("consumable")) LoadConsumable(m, item["consumable"]);
             if (m.type == ModuleType::Armor      && item.contains("armor"))
                 m.armor.hullBonus = JL::Float(item["armor"], "hullBonus", 50.f, 0.f, 10000.f);
 
@@ -129,8 +142,15 @@ void ModuleRegistry::Init() {
             Engine_IonThruster(), Engine_GraviticEngine(), Engine_QuantumDrive(), Engine_VoidEngine(),
             Hyperdrive_ShortJump(), Hyperdrive_SectorDrive(), Hyperdrive_WarpCore(),
             Hyperdrive_FoldEngine(), Hyperdrive_QuantumLeap(), Hyperdrive_VoidPiercer(), Hyperdrive_Singularity(),
+            Hyperdrive_CosmicFold(),
             Aux_BasicScanner(), Aux_MaterialProbe(), Aux_EnhancedScanner(),
             Aux_EcmJammer(), Aux_StealthCore(), Aux_ReconSuite(), Aux_Omnisystem(),
+            Aux_ProximityArray(), Aux_LongRangeArray(), Aux_DeepScanArray(),
+            Aux_AstrometricSensor(), Aux_StellarCartographySuite(),
+            Aux_GalacticSurveyArray(), Aux_OmniscientSensorCore(),
+            Consumable_RepairKit_I(), Consumable_RepairKit_II(), Consumable_RepairKit_III(),
+            Consumable_RepairKit_IV(), Consumable_RepairKit_V(), Consumable_RepairKit_VI(),
+            Consumable_RepairKit_VII(),
         };
     }
 

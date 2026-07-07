@@ -316,10 +316,10 @@
   {
     "id": "hyperdrive_sector",
     "displayName": "Sector Drive",
-    "description": "Standard hyperdrive. Reliable mid-range jump capability.",
+    "description": "Standard hyperdrive. Reaches the closest neighboring star systems.",
     "type": "Hyperdrive",
     "grade": "Uncommon",
-    "hyperdrive": { "range": 7500.0 }
+    "hyperdrive": { "range": 50000.0 }
   },
   {
     "id": "hyperdrive_warp_core",
@@ -327,7 +327,7 @@
     "description": "Folded-space drive capable of reaching most stellar objects.",
     "type": "Hyperdrive",
     "grade": "Unique",
-    "hyperdrive": { "range": 15000.0 }
+    "hyperdrive": { "range": 300000.0 }
   },
   {
     "id": "hyperdrive_fold_engine",
@@ -335,7 +335,7 @@
     "description": "Military-grade spatial fold drive. Near-instantaneous sector crossing.",
     "type": "Hyperdrive",
     "grade": "Remarkable",
-    "hyperdrive": { "range": 30000.0 }
+    "hyperdrive": { "range": 2000000.0 }
   },
   {
     "id": "hyperdrive_quantum_leap",
@@ -343,23 +343,31 @@
     "description": "Quantum tunneling matrix. Traverses extreme distances effortlessly.",
     "type": "Hyperdrive",
     "grade": "Epic",
-    "hyperdrive": { "range": 60000.0 }
+    "hyperdrive": { "range": 10000000.0 }
   },
   {
     "id": "hyperdrive_void_piercer",
     "displayName": "Void Piercer",
-    "description": "Tears through the void itself. No known range limit.",
+    "description": "Tears through the void itself, navigating by charted beacons to reach the nearest neighboring galaxies.",
     "type": "Hyperdrive",
     "grade": "Legendary",
-    "hyperdrive": { "range": 100000.0 }
+    "hyperdrive": { "range": 50000000.0 }
   },
   {
     "id": "hyperdrive_singularity",
     "displayName": "Singularity Core",
-    "description": "Reality is a suggestion. Instantaneous travel to any location.",
+    "description": "Reality is a suggestion. Instantaneous travel to any charted location in the universe.",
     "type": "Hyperdrive",
     "grade": "Mythic",
-    "hyperdrive": { "range": 1000000.0 }
+    "hyperdrive": { "range": 6000000000.0 }
+  },
+  {
+    "id": "hyperdrive_cosmic_fold",
+    "displayName": "Cosmic Fold Drive",
+    "description": "Folds space across galaxies, riding pre-loaded charts from beacon to beacon. The stars themselves become stepping stones.",
+    "type": "Hyperdrive",
+    "grade": "Mythic",
+    "hyperdrive": { "range": 6000000000.0 }
   },
 
   {
@@ -423,5 +431,117 @@
       "hasLockOnJammer": true,
       "hasCloaking": true
     }
+  },
+  {
+    "id": "aux_proximity_array",
+    "displayName": "Proximity Array",
+    "description": "Short-range gravimetric mapper. Reveals the nearest neighboring systems.",
+    "type": "Auxiliary",
+    "grade": "Common",
+    "aux": { "mapSensorRange": 20000.0 }
+  },
+  {
+    "id": "aux_long_range_array",
+    "displayName": "Long-Range Array",
+    "description": "Extended gravimetric mapper. Reliably spans the gap to adjacent systems.",
+    "type": "Auxiliary",
+    "grade": "Uncommon",
+    "aux": { "mapSensorRange": 60000.0 }
+  },
+  {
+    "id": "aux_deep_scan_array",
+    "displayName": "Deep Scan Array",
+    "description": "Multi-band deep-space telescope. Maps a wide local neighborhood of systems.",
+    "type": "Auxiliary",
+    "grade": "Unique",
+    "aux": { "mapSensorRange": 300000.0 }
+  },
+  {
+    "id": "aux_astrometric_sensor",
+    "displayName": "Astrometric Sensor",
+    "description": "Precision astrometric suite. Charts entire stellar neighborhoods at once.",
+    "type": "Auxiliary",
+    "grade": "Remarkable",
+    "aux": { "mapSensorRange": 2000000.0 }
+  },
+  {
+    "id": "aux_stellar_cartography_suite",
+    "displayName": "Stellar Cartography Suite",
+    "description": "Military-grade cartography array. Maps deep into the galaxy's structure.",
+    "type": "Auxiliary",
+    "grade": "Epic",
+    "aux": { "mapSensorRange": 10000000.0 }
+  },
+  {
+    "id": "aux_galactic_survey_array",
+    "displayName": "Galactic Survey Array",
+    "description": "Full-spectrum survey platform. Reveals the sweep of the galaxy around you.",
+    "type": "Auxiliary",
+    "grade": "Legendary",
+    "aux": { "mapSensorRange": 40000000.0 }
+  },
+  {
+    "id": "aux_omniscient_sensor_core",
+    "displayName": "Omniscient Sensor Core",
+    "description": "Reality is legible. Reveals every system in the galaxy from wherever you stand.",
+    "type": "Auxiliary",
+    "grade": "Mythic",
+    "aux": { "mapSensorRange": 150000000.0 }
+  },
+  {
+    "id": "repair_kit_i",
+    "displayName": "Repair Kit Mk.I",
+    "description": "Emergency patch kit. Restores a modest amount of hull.",
+    "type": "Consumable",
+    "grade": "Common",
+    "consumable": { "healAmount": 40.0 }
+  },
+  {
+    "id": "repair_kit_ii",
+    "displayName": "Repair Kit Mk.II",
+    "description": "Field-issue nanite patch. Restores a solid amount of hull.",
+    "type": "Consumable",
+    "grade": "Uncommon",
+    "consumable": { "healAmount": 100.0 }
+  },
+  {
+    "id": "repair_kit_iii",
+    "displayName": "Repair Kit Mk.III",
+    "description": "Advanced auto-welding rig. Restores a significant amount of hull.",
+    "type": "Consumable",
+    "grade": "Unique",
+    "consumable": { "healAmount": 220.0 }
+  },
+  {
+    "id": "repair_kit_iv",
+    "displayName": "Repair Kit Mk.IV",
+    "description": "Military nanite reconstructor. Restores a large amount of hull.",
+    "type": "Consumable",
+    "grade": "Remarkable",
+    "consumable": { "healAmount": 450.0 }
+  },
+  {
+    "id": "repair_kit_v",
+    "displayName": "Repair Kit Mk.V",
+    "description": "Experimental hull regenerator. Restores a huge amount of hull.",
+    "type": "Consumable",
+    "grade": "Epic",
+    "consumable": { "healAmount": 900.0 }
+  },
+  {
+    "id": "repair_kit_vi",
+    "displayName": "Repair Kit Mk.VI",
+    "description": "Self-replicating nanite swarm. Restores a massive amount of hull.",
+    "type": "Consumable",
+    "grade": "Legendary",
+    "consumable": { "healAmount": 1800.0 }
+  },
+  {
+    "id": "repair_kit_vii",
+    "displayName": "Singularity Reconstructor",
+    "description": "Reassembles hull matter at a subatomic level. Near-total restoration.",
+    "type": "Consumable",
+    "grade": "Mythic",
+    "consumable": { "healAmount": 4000.0 }
   }
 ]

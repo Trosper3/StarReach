@@ -27,9 +27,13 @@ struct PlayerStationDef {
     float       radius = 120.0f;
     std::vector<StationHardpointDef> hardpoints;
     std::vector<BuildIngredient>     buildCost;
+    // Ceiling on hardpoints.size() after player-crafted hardpoints are attached
+    // post-build. Defaults to the built-in count (no attach room) if the JSON
+    // config omits it, so it can never be locked below what the def already has.
+    int         maxHardpoints = 0;
 };
 
-enum class BuildableType { Station, Module };
+enum class BuildableType { Station, Module, Hardpoint };
 
 struct BuildableDef {
     std::string   id;
@@ -39,4 +43,6 @@ struct BuildableDef {
     std::vector<BuildIngredient> itemCost;
     std::string   stationDefId;
     std::string   moduleDefId;
+    // Populated when type == Hardpoint: the blueprint attached to a station on craft.
+    StationHardpointDef hardpointDef;
 };

@@ -1,5 +1,7 @@
 #include "StationModuleMenu.h"
 #include "core/ShipRegistry.h"
+#include "data/registry/PlayerStationRegistry.h"
+#include "data/modules/ArmorDefs.h"
 #include "raylib.h"
 #include "raymath.h"
 #include <algorithm>
@@ -11,6 +13,48 @@ static constexpr Color TxtMain  = {180,215,255, 240 };
 static constexpr Color TxtDim   = { 90,120,160, 200 };
 static constexpr Color TxtGreen = { 70,200, 90, 255 };
 
+// Builds an empty (no preloaded modules) HardpointState from a crafted
+// blueprint. Mirrors FleetManager::SpawnStation's per-hardpoint conversion,
+// minus the preloaded-modules step — attached hardpoints always start bare.
+static HardpointState MakeBlankHardpointState(const StationHardpointDef& hpd) {
+    HardpointState hp;
+    hp.id          = hpd.id;
+    hp.displayName = hpd.displayName;
+    hp.isCore      = false; // crafted attachments are never the station core
+    hp.maxHull     = hpd.maxHull;
+    hp.hull        = hpd.maxHull;
+    hp.alive       = true;
+    hp.wSlots      = hpd.wSlots;
+    hp.arSlots     = hpd.arSlots;
+    hp.shSlots     = hpd.shSlots;
+    hp.enSlots     = hpd.enSlots;
+    hp.auxSlots    = hpd.auxSlots;
+    hp.weapons.assign(hpd.wSlots, std::nullopt);
+    hp.shields.assign(hpd.shSlots, std::nullopt);
+    hp.aux.assign(hpd.auxSlots, std::nullopt);
+    if (hp.arSlots > 0) {
+        hp.armor   = Armor_HullPatch();
+        hp.maxHull = 100.0f + hp.armor->armor.hullBonus;
+        hp.hull    = hp.maxHull;
+    }
+    return hp;
+}
+
+// Renders a crafted (not-yet-attached) hardpoint blueprint sitting in storage —
+// distinct amber styling since it's a structural item, not a ModuleDef.
+static void DrawHardpointChip(Rectangle r, const std::string& displayName, bool hovered) {
+    Color bg  = hovered ? Color{ 40,30,10,235 } : Color{ 20,15,6,210 };
+    Color bdr = Color{ 210,160, 60, 220 };
+    DrawRectangleRec(r, bg);
+    DrawRectangleLinesEx(r, hovered ? 2.0f : 1.5f, bdr);
+    DrawText("HP", (int)(r.x + 4), (int)(r.y + 4), 11, Color{ 230,190, 90, 255 });
+
+    const char* nm = displayName.c_str();
+    int fs = 9;
+    while (MeasureText(nm, fs) > (int)r.width - 6 && fs > 7) fs--;
+    DrawText(nm, (int)(r.x + 3), (int)(r.y + r.height - fs - 5), fs, Color{ 220,210,190,240 });
+}
+
 // ── Open / Close ──────────────────────────────────────────────────────────────
 
 void StationModuleMenu::Open(PlayerStation* station, std::vector<StorageItem>* storage) {
@@ -19,6 +63,7 @@ void StationModuleMenu::Open(PlayerStation* station, std::vector<StorageItem>* s
     _selHp    = 0;
     _dragging = false;
     _dragSrc  = DragSrc::None;
+    _dragKind = DragKind::Module;
     _dragIdx  = -1;
     isOpen    = true;
     _storageScroll = 0;
@@ -29,6 +74,13 @@ void StationModuleMenu::Close() {
     _dragging = false;
     _dragSrc  = DragSrc::None;
     _dragIdx  = -1;
+}
+
+bool StationModuleMenu::CanAttachHardpoint() const {
+    if (!_station) return false;
+    const PlayerStationDef* def = PlayerStationRegistry::ById(_station->stationDefId);
+    int maxHp = def ? def->maxHardpoints : (int)_station->hardpoints.size();
+    return (int)_station->hardpoints.size() < maxHp;
 }
 
 // ── Slot reference helpers ────────────────────────────────────────────────────
@@ -113,14 +165,18 @@ bool StationModuleMenu::Update() {
     }
 
     // Hardpoint list clicks
+    int hpX = panelX + 6, hpY = panelY + 38;
     if (!_station->hardpoints.empty()) {
-        int hpX = panelX + 6, hpY = panelY + 38;
         for (int i = 0; i < (int)_station->hardpoints.size(); ++i) {
             Rectangle r = { (float)hpX, (float)(hpY + i * 44), (float)(HPListW - 8), 40.0f };
             if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(m, r))
                 _selHp = i;
         }
     }
+    // Row directly below the hardpoint list — drop a Hardpoint-type storage
+    // item here to attach it to this station (while under maxHardpoints).
+    Rectangle attachHpRect = { (float)hpX, (float)(hpY + (int)_station->hardpoints.size() * 44),
+                               (float)(HPListW - 8), 40.0f };
 
     // Shipyard interactions (ONLY triggers if Docking Bay is selected)
     if (_selHp >= 0 && _selHp < (int)_station->hardpoints.size()) {
@@ -189,6 +245,7 @@ bool StationModuleMenu::Update() {
             if (opt && opt->has_value() && CheckCollisionPointRec(m, slots[si].rect)) {
                 _dragging = true;
                 _dragSrc = DragSrc::Slot;
+                _dragKind = DragKind::Module; // slots only ever hold equippable modules
                 _dragIdx = si;
                 _dragMod = **opt;
                 *opt = std::nullopt;
@@ -197,15 +254,23 @@ bool StationModuleMenu::Update() {
         }
         if (!_dragging && _storage) {
             for (int i = 0; i < (int)stoRects.size(); ++i) {
-                if (i < (int)_storage->size() && (*_storage)[i].type == StorageItemType::Module &&
-                    CheckCollisionPointRec(m, stoViewRec) && CheckCollisionPointRec(m, stoRects[i])) {
-                    _dragging = true;
-                    _dragSrc = DragSrc::Storage;
-                    _dragIdx = i;
-                    _dragMod = (*_storage)[i].module;
-                    (*_storage)[i] = StorageItem{};
-                    break;
+                if (i >= (int)_storage->size()) continue;
+                StorageItemType t = (*_storage)[i].type;
+                if ((t != StorageItemType::Module && t != StorageItemType::Hardpoint) ||
+                    !CheckCollisionPointRec(m, stoViewRec) || !CheckCollisionPointRec(m, stoRects[i]))
+                    continue;
+                _dragging = true;
+                _dragSrc  = DragSrc::Storage;
+                _dragIdx  = i;
+                if (t == StorageItemType::Hardpoint) {
+                    _dragKind = DragKind::Hardpoint;
+                    _dragHp   = (*_storage)[i].hardpoint;
+                } else {
+                    _dragKind = DragKind::Module;
+                    _dragMod  = (*_storage)[i].module;
                 }
+                (*_storage)[i] = StorageItem{};
+                break;
             }
         }
     }
@@ -214,55 +279,104 @@ bool StationModuleMenu::Update() {
     if (_dragging && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
         bool dropped = false;
 
-        for (int si = 0; si < (int)slots.size(); ++si) {
-            auto* opt = GetSlotOpt(slots[si]);
-            if (opt && CheckCollisionPointRec(m, slots[si].rect) && IsCompatible(slots[si].type, _dragMod)) {
-                if (opt->has_value() && _storage) {
-                    for (auto& st : *_storage) {
-                        if (st.type == StorageItemType::Empty) {
-                            st.type = StorageItemType::Module;
-                            st.module = **opt;
-                            st.displayName = opt->value().displayName;
-                            break;
-                        }
-                    }
-                }
-                *opt = _dragMod;
+        if (_dragKind == DragKind::Hardpoint) {
+            // Hardpoint blueprints never equip into a slot — either attach to
+            // the station or bounce back to the storage slot they came from.
+            if (CheckCollisionPointRec(m, attachHpRect) && CanAttachHardpoint()) {
+                _station->hardpoints.push_back(MakeBlankHardpointState(_dragHp));
                 dropped = true;
-                break;
+            }
+            if (!dropped && _storage && _dragIdx >= 0 && _dragIdx < (int)_storage->size()) {
+                StorageItem& st = (*_storage)[_dragIdx];
+                st.type        = StorageItemType::Hardpoint;
+                st.hardpoint   = _dragHp;
+                st.displayName = _dragHp.displayName;
             }
         }
-
-        if (!dropped && _storage) {
-            for (int i = 0; i < (int)stoRects.size(); ++i) {
-                if (i < (int)_storage->size() && (*_storage)[i].type == StorageItemType::Empty &&
-                    CheckCollisionPointRec(m, stoViewRec) && CheckCollisionPointRec(m, stoRects[i])) {
-                    StorageItem& st = (*_storage)[i];
-                    st.type = StorageItemType::Module;
-                    st.module = _dragMod;
-                    st.displayName = _dragMod.displayName;
+        else if (_dragMod.type == ModuleType::Consumable) {
+            // Repair kits are consumed on drop over any slot in the selected
+            // hardpoint's panel — they heal, they don't equip.
+            for (int si = 0; si < (int)slots.size(); ++si) {
+                if (CheckCollisionPointRec(m, slots[si].rect)) {
+                    if (_selHp >= 0 && _selHp < (int)_station->hardpoints.size()) {
+                        HardpointState& hp = _station->hardpoints[_selHp];
+                        hp.hull = std::min(hp.hull + _dragMod.consumable.healAmount, hp.maxHull);
+                    }
                     dropped = true;
                     break;
                 }
             }
-        }
-
-        if (!dropped) {
-            if (_dragSrc == DragSrc::Slot) {
-                auto* opt = GetSlotOpt(slots[_dragIdx]);
-                if (opt) *opt = _dragMod;
+            if (!dropped && _storage) {
+                for (int i = 0; i < (int)stoRects.size(); ++i) {
+                    if (i < (int)_storage->size() && (*_storage)[i].type == StorageItemType::Empty &&
+                        CheckCollisionPointRec(m, stoViewRec) && CheckCollisionPointRec(m, stoRects[i])) {
+                        StorageItem& st = (*_storage)[i];
+                        st.type = StorageItemType::Module;
+                        st.module = _dragMod;
+                        st.displayName = _dragMod.displayName;
+                        dropped = true;
+                        break;
+                    }
+                }
             }
-            else if (_dragSrc == DragSrc::Storage && _storage && _dragIdx < (int)_storage->size()) {
+            if (!dropped && _dragSrc == DragSrc::Storage && _storage && _dragIdx < (int)_storage->size()) {
                 StorageItem& st = (*_storage)[_dragIdx];
                 st.type = StorageItemType::Module;
                 st.module = _dragMod;
                 st.displayName = _dragMod.displayName;
             }
         }
+        else {
+            for (int si = 0; si < (int)slots.size(); ++si) {
+                auto* opt = GetSlotOpt(slots[si]);
+                if (opt && CheckCollisionPointRec(m, slots[si].rect) && IsCompatible(slots[si].type, _dragMod)) {
+                    if (opt->has_value() && _storage) {
+                        for (auto& st : *_storage) {
+                            if (st.type == StorageItemType::Empty) {
+                                st.type = StorageItemType::Module;
+                                st.module = **opt;
+                                st.displayName = opt->value().displayName;
+                                break;
+                            }
+                        }
+                    }
+                    *opt = _dragMod;
+                    dropped = true;
+                    break;
+                }
+            }
+
+            if (!dropped && _storage) {
+                for (int i = 0; i < (int)stoRects.size(); ++i) {
+                    if (i < (int)_storage->size() && (*_storage)[i].type == StorageItemType::Empty &&
+                        CheckCollisionPointRec(m, stoViewRec) && CheckCollisionPointRec(m, stoRects[i])) {
+                        StorageItem& st = (*_storage)[i];
+                        st.type = StorageItemType::Module;
+                        st.module = _dragMod;
+                        st.displayName = _dragMod.displayName;
+                        dropped = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!dropped) {
+                if (_dragSrc == DragSrc::Slot) {
+                    auto* opt = GetSlotOpt(slots[_dragIdx]);
+                    if (opt) *opt = _dragMod;
+                }
+                else if (_dragSrc == DragSrc::Storage && _storage && _dragIdx < (int)_storage->size()) {
+                    StorageItem& st = (*_storage)[_dragIdx];
+                    st.type = StorageItemType::Module;
+                    st.module = _dragMod;
+                    st.displayName = _dragMod.displayName;
+                }
+            }
+        }
 
         _dragging = false;
-        _dragSrc = DragSrc::None;
-        _dragIdx = -1;
+        _dragSrc  = DragSrc::None;
+        _dragIdx  = -1;
     }
 
     return true;
@@ -376,6 +490,19 @@ void StationModuleMenu::Draw() const {
         if (destroyed) DrawText("DESTROYED", (int)(r.x + (r.width - MeasureText("DESTROYED", 9)) / 2), (int)(r.y + 14), 9, Color{ 200,60,60,220 });
     }
 
+    if (CanAttachHardpoint()) {
+        Rectangle ar = { (float)hpX, (float)(hpY + (int)_station->hardpoints.size() * 44),
+                          (float)(HPListW - 8), 40.0f };
+        bool hovAttach = _dragging && _dragKind == DragKind::Hardpoint && CheckCollisionPointRec(mouse, ar);
+        Color bg  = hovAttach ? Color{ 20,60,20,230 } : Color{ 8,18,8,180 };
+        Color bdr = hovAttach ? Color{ 90,220,90,255 } : Color{ 40,90,40,180 };
+        DrawRectangleRec(ar, bg);
+        DrawRectangleLinesEx(ar, hovAttach ? 2.0f : 1.0f, bdr);
+        const char* lbl = "+ ATTACH HARDPOINT";
+        DrawText(lbl, (int)(ar.x + (ar.width - MeasureText(lbl, 9)) / 2.0f),
+                 (int)(ar.y + ar.height / 2 - 4), 9, hovAttach ? WHITE : Color{ 120,200,120,200 });
+    }
+
     // ── Module Slots (Middle Column) ──────────────────────────────────────────
     int slotAreaX = panelX + HPListW + 12;
     int slotAreaY = panelY + 36;
@@ -401,7 +528,7 @@ void StationModuleMenu::Draw() const {
             std::optional<ModuleDef> drawOpt = (opt && opt->has_value() && !isDragged)
                 ? *opt : std::nullopt;
             bool hov = CheckCollisionPointRec(mouse, slots[si].rect);
-            bool compat = _dragging && IsCompatible(slots[si].type, _dragMod);
+            bool compat = _dragging && _dragKind == DragKind::Module && IsCompatible(slots[si].type, _dragMod);
             DrawSlot(slots[si].rect, drawOpt, hov, compat);
         }
 
@@ -460,17 +587,22 @@ void StationModuleMenu::Draw() const {
 
             const StorageItem& it = (*_storage)[i];
             bool isDragged = (_dragging && _dragSrc == DragSrc::Storage && _dragIdx == i);
-            std::optional<ModuleDef> opt = (it.type == StorageItemType::Module && !isDragged)
-                ? std::optional<ModuleDef>{it.module} : std::nullopt;
-
             bool hov = CheckCollisionPointRec(mouse, stoViewRec) && CheckCollisionPointRec(mouse, r);
-            DrawSlot(r, opt, hov, false);
+
+            if (it.type == StorageItemType::Hardpoint && !isDragged) {
+                DrawHardpointChip(r, it.hardpoint.displayName, hov);
+            } else {
+                std::optional<ModuleDef> opt = (it.type == StorageItemType::Module && !isDragged)
+                    ? std::optional<ModuleDef>{it.module} : std::nullopt;
+                DrawSlot(r, opt, hov, false);
+            }
         }
         EndScissorMode();
     }
 
     if (_dragging) {
         Rectangle dr = { mouse.x - SlotPx / 2.0f, mouse.y - SlotPx / 2.0f, (float)SlotPx, (float)SlotPx };
-        DrawSlot(dr, _dragMod, false, false);
+        if (_dragKind == DragKind::Hardpoint) DrawHardpointChip(dr, _dragHp.displayName, false);
+        else                                  DrawSlot(dr, _dragMod, false, false);
     }
 }

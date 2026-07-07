@@ -762,7 +762,12 @@ void MainMenu::UpdateMultiplayer(float dt) {
     // ── JOIN button ───────────────────────────────────────────────────────────
     if (IsClicked(joinBR)) {
         _editingIp = false;
-        if (net::Game().StartClient(_ipBuffer, net::kDefaultPort)) {
+        // Whatever faction this client is currently set to (from an earlier
+        // singleplayer "New Game" faction pick, or the config default) is
+        // what the host uses to pool this player's discoveries with same-
+        // faction party members — see SpaceFlight's _peerFaction handling.
+        Faction joinFaction = FleetManager::Get().PlayerShip.PlayerFaction;
+        if (net::Game().StartClient(_ipBuffer, net::kDefaultPort, joinFaction)) {
             _mpState      = MpState::Connecting;
             _connectTimer = 0.0f;
             _mpStatus     = "";

@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include "NetCommon.h"
+#include "../core/FactionEnum.h"           // Faction, carried in Hello for discovery pooling
 #include "../engine/NetworkSyncSystem.h"   // ecs::NetworkSnapshot (reused on the wire)
 
 // Binary wire protocol for StarReach multiplayer.
@@ -15,7 +16,7 @@
 namespace net {
 
 enum class MsgType : uint8_t {
-    Hello           = 1,   // C->S: request to join (carries protocol version)
+    Hello           = 1,   // C->S: request to join (carries protocol version + player faction)
     Welcome         = 2,   // S->C: accepted; assigns the client its networkId
     Reject          = 3,   // S->C: refused (e.g. protocol mismatch / server full)
     Input           = 4,   // C->S: per-tick player input command
@@ -25,6 +26,15 @@ enum class MsgType : uint8_t {
     ServerClosing   = 8,   // S->C: broadcast before host shuts down; clients return to menu
     StationDead     = 9,   // S->C: a world station was destroyed; client marks it dead
     ClientWarpNotify= 10,  // C->S: client's warp cinematic hit black; wants system `systemId`
+    // Discovery pooling (party = same faction, per [[tasks-galaxy-map-features]]
+    // item #5): DiscoverySync delivers the recipient's faction's full known-
+    // discovered set once, right after Hello reveals their faction (a plain
+    // WorldSync resend would work too, but re-triggers a full client-side
+    // world regen as a side effect — this is a dedicated, side-effect-free
+    // bulk catch-up instead). SystemDiscovered is the live incremental update
+    // broadcast to faction-mates whenever anyone in the party warps somewhere.
+    DiscoverySync   = 11,  // S->C: full discovered-system-id list for the recipient's faction
+    SystemDiscovered= 12,  // S->C: one more system id discovered by a same-faction party member
 };
 
 // Station state that differs from what seed-regeneration produces. Sent inside
@@ -39,13 +49,20 @@ struct StationStateSync {
 
 // Payload for WorldSync — the client calls SpawnPlanetsAndStations(worldSeed),
 // fast-forwards planet orbits by worldAge, applies the station diff, and
-// switches to system systemId. gameSeed is the galaxy master seed
-// (StarSystemRegistry::Init) so the client's galactic map matches the host's;
-// it's independent of worldSeed, which only seeds one system's content.
+// switches to system systemId. gameSeed is the universe master seed
+// (UniverseRegistry) and galaxyId picks which galaxy within it (defaults to
+// 1, the home galaxy, for hosts that never leave it) — together they resolve
+// to the galaxy seed passed to StarSystemRegistry::Init, so the client's
+// galactic map matches the host's; both are independent of worldSeed, which
+// only seeds one system's content. Only the host is ever authoritative for
+// which galaxy is "current" — clients follow along on WorldSync, they never
+// initiate a cross-galaxy warp themselves (see SpaceFlight::Update's
+// MapAction::WarpToGalaxy handling).
 struct WorldSyncData {
     uint32_t systemId  = 1;
     uint32_t worldSeed = 0;
     uint32_t gameSeed  = 0;
+    uint32_t galaxyId  = 1;
     float    worldAge  = 0.0f;   // seconds the host has simulated this system
     std::vector<StationStateSync> stations;  // only stations that differ from genesis
 };
@@ -102,10 +119,11 @@ struct ByteReader {
 
 // ── Message encoders ────────────────────────────────────────────────────────
 
-inline std::vector<uint8_t> EncodeHello() {
+inline std::vector<uint8_t> EncodeHello(Faction faction) {
     ByteWriter w;
     w.put(uint8_t(MsgType::Hello));
     w.put(kProtocolVersion);
+    w.put(uint8_t(faction));
     return std::move(w.data);
 }
 
@@ -239,12 +257,46 @@ inline bool DecodeClientWarpNotify(ByteReader& r, uint32_t& outSystemId) {
     return r.ok;
 }
 
+inline std::vector<uint8_t> EncodeDiscoverySync(const std::vector<uint32_t>& systemIds) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::DiscoverySync));
+    uint16_t count = static_cast<uint16_t>(std::min(systemIds.size(), size_t(65535)));
+    w.put(count);
+    for (uint16_t i = 0; i < count; ++i) w.put(systemIds[i]);
+    return std::move(w.data);
+}
+
+inline bool DecodeDiscoverySync(ByteReader& r, std::vector<uint32_t>& outIds) {
+    outIds.clear();
+    uint16_t count = r.get<uint16_t>();
+    if (!r.ok) return false;
+    outIds.reserve(count);
+    for (uint16_t i = 0; i < count; ++i) {
+        outIds.push_back(r.get<uint32_t>());
+        if (!r.ok) return false;
+    }
+    return true;
+}
+
+inline std::vector<uint8_t> EncodeSystemDiscovered(uint32_t systemId) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::SystemDiscovered));
+    w.put(systemId);
+    return std::move(w.data);
+}
+
+inline bool DecodeSystemDiscovered(ByteReader& r, uint32_t& outSystemId) {
+    outSystemId = r.get<uint32_t>();
+    return r.ok;
+}
+
 inline std::vector<uint8_t> EncodeWorldSync(const WorldSyncData& ws) {
     ByteWriter w;
     w.put(uint8_t(MsgType::WorldSync));
     w.put(ws.systemId);
     w.put(ws.worldSeed);
     w.put(ws.gameSeed);
+    w.put(ws.galaxyId);
     w.put(ws.worldAge);
     uint16_t count = static_cast<uint16_t>(std::min(ws.stations.size(), size_t(65535)));
     w.put(count);
@@ -263,8 +315,9 @@ inline MsgType PeekType(const void* data, size_t len) {
     return MsgType(*static_cast<const uint8_t*>(data));
 }
 
-inline bool DecodeHello(ByteReader& r, uint16_t& outVersion) {
+inline bool DecodeHello(ByteReader& r, uint16_t& outVersion, Faction& outFaction) {
     outVersion = r.get<uint16_t>();
+    outFaction = Faction(r.get<uint8_t>());
     return r.ok;
 }
 
@@ -282,6 +335,7 @@ inline bool DecodeWorldSync(ByteReader& r, WorldSyncData& out) {
     out.systemId  = r.get<uint32_t>();
     out.worldSeed = r.get<uint32_t>();
     out.gameSeed  = r.get<uint32_t>();
+    out.galaxyId  = r.get<uint32_t>();
     out.worldAge  = r.get<float>();
     uint16_t count = r.get<uint16_t>();
     if (!r.ok) return false;

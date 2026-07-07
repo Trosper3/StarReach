@@ -104,7 +104,16 @@ public:
         // Galactic state
         unsigned int              currentSystemId     = 1;
         std::vector<unsigned int> discoveredSystemIds;
-        uint32_t                  gameSeed            = 0; // master galaxy seed
+        uint32_t                  gameSeed            = 0; // universe seed (UniverseRegistry)
+
+        // Universe state. Defaults to 0 so saves written before this field
+        // existed load as galaxy 1 (home) — see SpaceFlight::OnEnter, which
+        // treats 0 the same as 1 when restoring.
+        unsigned int              currentGalaxyId     = 0;
+        // Every galaxy id ever warped into (see SpaceFlight::_visitedGalaxyIds).
+        // Empty on saves written before this field existed — SpaceFlight::OnEnter
+        // falls back to just the restored currentGalaxyId in that case.
+        std::vector<unsigned int> visitedGalaxyIds;
 
         // Faction standing (faction id → rank index, 0 = first rank)
         std::unordered_map<std::string, int> factionRankIndices;

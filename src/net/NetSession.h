@@ -6,6 +6,7 @@
 #include <vector>
 #include "NetCommon.h"
 #include "Protocol.h"
+#include "../core/FactionEnum.h"
 #include "../shared/Entity.h"
 
 // Forward-declare ENet's host/peer so this header pulls no enet include.
@@ -42,7 +43,11 @@ public:
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
     bool StartHost(uint16_t port = kDefaultPort);
-    bool StartClient(const std::string& hostAddress, uint16_t port = kDefaultPort);
+    // faction is this client's own player faction (sent to the host via Hello,
+    // once the ENet connection succeeds) — see SpaceFlight's discovery-pooling
+    // notes on _peerFaction/_peerFactionDiscovered for why the host needs it.
+    bool StartClient(const std::string& hostAddress, uint16_t port = kDefaultPort,
+                      Faction faction = Faction::Republic);
     void Shutdown();
 
     NetRole Role()      const { return _role; }
@@ -87,6 +92,17 @@ public:
     // in other systems ignore it; they get station state via WorldSync instead.
     void HostBroadcastStationDead(uint32_t systemId, uint32_t stationId);
 
+    // Send one peer the full discovered-system-id list for their faction —
+    // used right after their Hello reveals which faction that is, so a
+    // joining/reconnecting party member catches up on everything their
+    // faction-mates have already found (see SpaceFlight's discovery pooling).
+    void HostSendDiscoverySync(uint32_t peerId, const std::vector<uint32_t>& systemIds);
+
+    // Broadcast a single newly-discovered system id to exactly the listed
+    // peers (a party's other same-faction members) — the live counterpart to
+    // HostSendDiscoverySync's one-time bulk catch-up.
+    void HostBroadcastSystemDiscovered(const std::vector<uint32_t>& peerIds, uint32_t systemId);
+
     // ── Client -> host ────────────────────────────────────────────────────────
     void ClientSendInput(const InputCommand& cmd);
 
@@ -110,6 +126,16 @@ public:
     std::vector<std::pair<uint32_t, uint32_t>> pendingWarpNotifies;
     // Client: (systemId, stationId) pairs destroyed on the server.
     std::vector<std::pair<uint32_t, uint32_t>> pendingStationDeads;
+    // Host: (peerId, faction) pairs from newly-arrived Hello packets — arrives
+    // separately from (and usually a tick or more after) newPeerIds, since
+    // Hello is a follow-up packet rather than part of the ENet connect event.
+    std::vector<std::pair<uint32_t, Faction>>  newPeerFactions;
+    // Client: set once a DiscoverySync (full same-faction discovered-set
+    // catch-up) arrives.
+    std::optional<std::vector<uint32_t>>       pendingDiscoverySync;
+    // Client: system ids from live SystemDiscovered broadcasts, queued for
+    // the next drain.
+    std::vector<uint32_t>                      pendingSystemDiscoveries;
 
 private:
     void handlePacket(ENetPeer* from, const uint8_t* data, size_t len);
@@ -120,6 +146,7 @@ private:
     uint32_t  _localNetworkId = 0;
     uint32_t  _nextNetworkId  = 2;         // host: ids handed to joining clients (1 = host)
     bool      _connected      = false;
+    Faction   _localFaction   = Faction::Republic; // client: sent to the host via Hello
 };
 
 } // namespace net

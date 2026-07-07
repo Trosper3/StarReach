@@ -25,7 +25,8 @@
       { "itemId": "hull_frame",     "amount": 8 },
       { "itemId": "circuit_board",  "amount": 4 },
       { "itemId": "titanium_alloy", "amount": 3 }
-    ]
+    ],
+    "maxHardpoints": 4
   },
   {
     "id": "defense_platform",
@@ -53,7 +54,8 @@
       { "itemId": "hull_frame",    "amount": 6 },
       { "itemId": "weapons_rack",  "amount": 3 },
       { "itemId": "circuit_board", "amount": 3 }
-    ]
+    ],
+    "maxHardpoints": 5
   },
   {
     "id": "space_station",
@@ -86,6 +88,7 @@
       { "itemId": "hull_frame",    "amount": 15 },
       { "itemId": "circuit_board", "amount":  8 },
       { "itemId": "power_cell",    "amount":  5 }
-    ]
+    ],
+    "maxHardpoints": 6
   }
 ]

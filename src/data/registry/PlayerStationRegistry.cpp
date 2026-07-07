@@ -38,6 +38,9 @@ void PlayerStationRegistry::Init() {
                 for (const auto& h : item["hardpoints"])
                     if (h.is_object()) d.hardpoints.push_back(ParseHardpoint(h));
 
+            d.maxHardpoints = JL::Int(item, "maxHardpoints", (int)d.hardpoints.size(),
+                                       (int)d.hardpoints.size(), 20);
+
             if (item.contains("buildCost") && item["buildCost"].is_array()) {
                 for (const auto& c : item["buildCost"]) {
                     if (!c.is_object()) continue;
@@ -63,6 +66,7 @@ void PlayerStationRegistry::Init() {
                 { "station_core", "Station Core",    true,  200.0f, 0, 1, 0, 0, 0 },
             };
             d.buildCost = { {"hull_frame",8}, {"circuit_board",4}, {"titanium_alloy",3} };
+            d.maxHardpoints = 4;
             s_all.push_back(d);
         }
         {
@@ -76,6 +80,7 @@ void PlayerStationRegistry::Init() {
                 { "station_core", "Station Core",  true,  150.0f, 0, 1, 0, 0, 0 },
             };
             d.buildCost = { {"hull_frame",6}, {"weapons_rack",3}, {"circuit_board",3} };
+            d.maxHardpoints = 5;
             s_all.push_back(d);
         }
         {
@@ -90,6 +95,7 @@ void PlayerStationRegistry::Init() {
                 { "station_core", "Station Core",     true,  250.0f, 0, 1, 0, 0, 0 },
             };
             d.buildCost = { {"hull_frame",15}, {"circuit_board",8}, {"power_cell",5} };
+            d.maxHardpoints = 6;
             s_all.push_back(d);
         }
     }

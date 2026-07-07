@@ -3,10 +3,14 @@
 #include "shared/ui/HudTheme.h"
 #include "core/InventoryManager.h"
 #include "data/registry/ModuleRegistry.h"
+#include "data/registry/MaterialRegistry.h"
+#include "data/registry/ItemRegistry.h"
+#include "data/registry/BuildableRegistry.h"
 #include "raylib.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 static bool IsHov(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(), r); }
 static bool IsClk(Rectangle r) { return IsHov(r) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT); }
@@ -24,6 +28,43 @@ static void DrawSvcBtn(Rectangle r, const char* label, bool enabled = true) {
 }
 
 struct SvcLayout { Rectangle title, content, bot; };
+
+// Buy screen: 3 sub-tabs + a scrollable row list, both laid out inside the
+// shared content panel. Computed identically by Update/Draw, same convention
+// as the rest of this menu's per-screen layout helpers.
+static void CalcBuyGeom(const SvcLayout& L, Rectangle tabRects[3], Rectangle& listArea) {
+    float tabY = L.content.y + 14.0f;
+    float tabH = 30.0f;
+    float tabW = (L.content.width - 40.0f) / 3.0f;
+    float x0   = L.content.x + 20.0f;
+    for (int i = 0; i < 3; ++i)
+        tabRects[i] = { x0 + i * tabW, tabY, tabW - 4.0f, tabH };
+    float listY = tabY + tabH + 10.0f;
+    listArea = { L.content.x + 20.0f, listY,
+                 L.content.width - 40.0f, (L.content.y + L.content.height) - listY - 14.0f };
+}
+
+// Finds the first Empty slot in storage and fills it. Non-stackable results
+// (modules, hardpoints) only.
+static bool PlaceInFirstEmptySlot(std::vector<StorageItem>& storage, const StorageItem& item) {
+    for (StorageItem& s : storage) {
+        if (s.type == StorageItemType::Empty) { s = item; return true; }
+    }
+    return false;
+}
+
+// Stacks onto an existing Material slot of the same id, or falls back to the
+// first Empty slot. Returns false if neither is available (storage full).
+static bool StackOrPlaceMaterial(std::vector<StorageItem>& storage, const std::string& id,
+                                  const std::string& displayName, int amount) {
+    for (StorageItem& s : storage) {
+        if (s.type == StorageItemType::Material && s.materialId == id) {
+            s.count = std::min(s.count + amount, StorageMenu::MaxStack);
+            return true;
+        }
+    }
+    return PlaceInFirstEmptySlot(storage, StorageItem{ StorageItemType::Material, displayName, id, amount });
+}
 
 static SvcLayout CalcSvcLayout(int sw, int sh) {
     SvcLayout L;
@@ -44,6 +85,26 @@ static SvcLayout CalcSvcLayout(int sw, int sh) {
 static int  GradeIndex(ModuleGrade g) { return (int)g; }
 static int  SellPrice(ModuleGrade g)  { return (GradeIndex(g) + 1) * 50; }
 static int  MergeCost(ModuleGrade g)  { return (GradeIndex(g) + 1) * 100; }
+
+// Per-unit sell price for a raw material or crafted item, looked up from
+// whichever registry defines it (raw ore vs. refined component).
+static int MaterialSellPrice(const std::string& materialId) {
+    if (const MatDef* m = MaterialRegistry::ById(materialId)) return m->sellValue;
+    if (const ItemDef* i = ItemRegistry::ById(materialId))    return i->sellValue;
+    return 5;
+}
+
+// Hardpoints have no ModuleGrade — their "rarity" is however much structure
+// they add, so sell price scales with total slot count and hull.
+static int HardpointSellPrice(const StationHardpointDef& hp) {
+    int slots = hp.wSlots + hp.arSlots + hp.shSlots + hp.enSlots + hp.auxSlots;
+    return 20 + slots * 15 + (int)(hp.maxHull * 0.3f);
+}
+
+// "Buy" screen convenience tax over the equivalent sell value — instant
+// delivery costs more than gathering materials and crafting it yourself.
+static constexpr float kBuyMarkup = 3.0f;
+
 static bool NextGrade(ModuleGrade g, ModuleGrade& out) {
     if (g == ModuleGrade::Mythic) return false;
     out = (ModuleGrade)(GradeIndex(g) + 1);
@@ -57,6 +118,27 @@ static Rectangle ConfirmBtnRect(const SvcLayout& L) {
     return { L.bot.x + L.bot.width - 195.0f, L.bot.y + L.bot.height - 54.0f, 180.0f, 40.0f };
 }
 
+// Repair screen: percentage slider + exact-value textbox + a MAX shortcut,
+// all centered on one row below the hull readout.
+static Rectangle RepairSliderRect(const SvcLayout& L) {
+    float w = std::min(420.0f, L.content.width - 220.0f);
+    float x = L.content.x + (L.content.width - w) / 2.0f - 60.0f;
+    float y = L.content.y + L.content.height / 2.0f + 14.0f;
+    return { x, y, w, 10.0f };
+}
+static Rectangle RepairHandleRect(const Rectangle& slider, float pct) {
+    float cx = slider.x + slider.width * (pct / 100.0f);
+    return { cx - 7.0f, slider.y - 7.0f, 14.0f, 24.0f };
+}
+static Rectangle RepairTextBoxRect(const SvcLayout& L) {
+    Rectangle s = RepairSliderRect(L);
+    return { s.x + s.width + 16.0f, s.y - 11.0f, 60.0f, 30.0f };
+}
+static Rectangle RepairMaxBtnRect(const SvcLayout& L) {
+    Rectangle t = RepairTextBoxRect(L);
+    return { t.x + t.width + 12.0f, t.y, 64.0f, 30.0f };
+}
+
 // ── Open / Close ──────────────────────────────────────────────────────────────
 
 void StationServicesMenu::Open(ecs::Entity* player, std::vector<StorageItem>* storage) {
@@ -64,6 +146,12 @@ void StationServicesMenu::Open(ecs::Entity* player, std::vector<StorageItem>* st
     _storage = storage;
     _screen  = Screen::Main;
     _selA = _selB = -1;
+    _buyTab = BuyTab::Crafts;
+    _buyScroll = 0;
+    _repairPct = 100.0f;
+    _repairText = "100";
+    _repairTextActive = false;
+    _repairDraggingSlider = false;
     isOpen = true;
 }
 
@@ -71,6 +159,8 @@ void StationServicesMenu::Close() {
     if (_screen != Screen::Main) {
         _screen = Screen::Main;
         _selA = _selB = -1;
+        _repairTextActive = false;
+        _repairDraggingSlider = false;
     } else {
         isOpen = false;
     }
@@ -80,11 +170,12 @@ void StationServicesMenu::Close() {
 
 void StationServicesMenu::Update() {
     if (!isOpen) return;
-    if (IsKeyPressed(KEY_ESCAPE)) { Close(); return; }
+    if (IsKeyPressed(KEY_ESCAPE) && !_repairTextActive) { Close(); return; }
 
     switch (_screen) {
     case Screen::Main:     UpdateMain();     break;
     case Screen::Sell:     UpdateSell();     break;
+    case Screen::Buy:      UpdateBuy();      break;
     case Screen::Repair:   UpdateRepair();   break;
     case Screen::Engineer: UpdateEngineer(); break;
     }
@@ -92,16 +183,18 @@ void StationServicesMenu::Update() {
 
 void StationServicesMenu::UpdateMain() {
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
-    float bw   = (L.bot.width - 60.0f) / 4.0f;
-    float gap  = (L.bot.width - 30.0f - bw * 4.0f) / 3.0f;
+    float bw   = (L.bot.width - 30.0f - 40.0f) / 5.0f;
+    float gap  = 10.0f;
     float by   = L.bot.y + L.bot.height - 40.0f - 14.0f;
     float x0   = L.bot.x + 15.0f;
     Rectangle sellBtn   = { x0,                    by, bw, 40.0f };
-    Rectangle repairBtn = { x0 + (bw + gap),        by, bw, 40.0f };
-    Rectangle engBtn    = { x0 + (bw + gap) * 2.0f, by, bw, 40.0f };
-    Rectangle closeBtn  = { x0 + (bw + gap) * 3.0f, by, bw, 40.0f };
+    Rectangle buyBtn    = { x0 + (bw + gap),        by, bw, 40.0f };
+    Rectangle repairBtn = { x0 + (bw + gap) * 2.0f, by, bw, 40.0f };
+    Rectangle engBtn    = { x0 + (bw + gap) * 3.0f, by, bw, 40.0f };
+    Rectangle closeBtn  = { x0 + (bw + gap) * 4.0f, by, bw, 40.0f };
 
     if (IsClk(sellBtn))   { _screen = Screen::Sell;     _selA = _selB = -1; }
+    if (IsClk(buyBtn))    { _screen = Screen::Buy;      _buyTab = BuyTab::Crafts; _buyScroll = 0; }
     if (IsClk(repairBtn)) { _screen = Screen::Repair; }
     if (IsClk(engBtn))    { _screen = Screen::Engineer; _selA = _selB = -1; }
     if (IsClk(closeBtn))  { isOpen = false; }
@@ -119,7 +212,8 @@ void StationServicesMenu::UpdateSell() {
         Vector2 mouse = GetMousePosition();
         for (int i = 0; i < n; ++i) {
             if (!CheckCollisionPointRec(mouse, rects[i])) continue;
-            if ((*_storage)[i].type == StorageItemType::Module)
+            StorageItemType t = (*_storage)[i].type;
+            if (t == StorageItemType::Module || t == StorageItemType::Material || t == StorageItemType::Hardpoint)
                 _selA = (_selA == i) ? -1 : i;
             break;
         }
@@ -127,27 +221,169 @@ void StationServicesMenu::UpdateSell() {
 
     if (IsClk(BackBtnRect(L))) { Close(); return; }
 
-    if (_selA >= 0 && _selA < n && (*_storage)[_selA].type == StorageItemType::Module) {
-        if (IsClk(ConfirmBtnRect(L))) {
-            int price = SellPrice((*_storage)[_selA].module.grade);
+    if (_selA >= 0 && _selA < n) {
+        StorageItem& item = (*_storage)[_selA];
+        if (item.type == StorageItemType::Module && IsClk(ConfirmBtnRect(L))) {
+            int price = SellPrice(item.module.grade);
             InventoryManager::Get().AddCredits(price);
-            (*_storage)[_selA] = StorageItem{};
+            item = StorageItem{};
+            _selA = -1;
+        }
+        else if (item.type == StorageItemType::Material && IsClk(ConfirmBtnRect(L))) {
+            int price = MaterialSellPrice(item.materialId) * item.count;
+            InventoryManager::Get().AddCredits(price);
+            item = StorageItem{};
+            _selA = -1;
+        }
+        else if (item.type == StorageItemType::Hardpoint && IsClk(ConfirmBtnRect(L))) {
+            int price = HardpointSellPrice(item.hardpoint);
+            InventoryManager::Get().AddCredits(price);
+            item = StorageItem{};
             _selA = -1;
         }
     }
 }
 
+void StationServicesMenu::UpdateBuy() {
+    if (!_storage) return;
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    Rectangle tabRects[3], listArea;
+    CalcBuyGeom(L, tabRects, listArea);
+    Vector2 mouse = GetMousePosition();
+
+    if (IsClk(BackBtnRect(L))) { Close(); return; }
+
+    for (int i = 0; i < 3; ++i)
+        if (IsClk(tabRects[i])) { _buyTab = (BuyTab)i; _buyScroll = 0; }
+
+    int count = 0;
+    if      (_buyTab == BuyTab::Crafts)    count = (int)ItemRegistry::All().size();
+    else if (_buyTab == BuyTab::Modules)   count = (int)BuildableRegistry::ByType(BuildableType::Module).size();
+    else                                   count = (int)BuildableRegistry::ByType(BuildableType::Hardpoint).size();
+
+    static constexpr float RowH = 54.0f, RowGap = 6.0f;
+    if (CheckCollisionPointRec(mouse, listArea)) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) _buyScroll -= (int)(wheel * 24.0f);
+    }
+    int totalH = (int)(count * (RowH + RowGap));
+    int maxScroll = std::max(0, totalH - (int)listArea.height);
+    _buyScroll = std::clamp(_buyScroll, 0, maxScroll);
+
+    if (!IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) return;
+
+    for (int i = 0; i < count; ++i) {
+        Rectangle row = { listArea.x, listArea.y + i * (RowH + RowGap) - _buyScroll, listArea.width, RowH };
+        if (row.y + row.height <= listArea.y || row.y >= listArea.y + listArea.height) continue;
+        Rectangle btn = { row.x + row.width - 110.0f, row.y + row.height / 2.0f - 16.0f, 100.0f, 32.0f };
+        if (!CheckCollisionPointRec(mouse, btn)) continue;
+
+        if (_buyTab == BuyTab::Crafts) {
+            const ItemDef& item = ItemRegistry::All()[i];
+            int price = (int)std::ceil(item.sellValue * kBuyMarkup);
+            if (InventoryManager::Get().Credits >= price &&
+                StackOrPlaceMaterial(*_storage, item.id, item.displayName, 1)) {
+                InventoryManager::Get().SpendCredits(price);
+            }
+        }
+        else if (_buyTab == BuyTab::Modules) {
+            auto items = BuildableRegistry::ByType(BuildableType::Module);
+            auto modOpt = ModuleRegistry::ById(items[i].moduleDefId);
+            if (modOpt.has_value()) {
+                int price = (int)std::ceil(SellPrice(modOpt->grade) * kBuyMarkup);
+                StorageItem toAdd{ StorageItemType::Module, modOpt->displayName, "", 0, *modOpt };
+                if (InventoryManager::Get().Credits >= price && PlaceInFirstEmptySlot(*_storage, toAdd)) {
+                    InventoryManager::Get().SpendCredits(price);
+                }
+            }
+        }
+        else {
+            auto items = BuildableRegistry::ByType(BuildableType::Hardpoint);
+            int price = (int)std::ceil(HardpointSellPrice(items[i].hardpointDef) * kBuyMarkup);
+            StorageItem toAdd{ StorageItemType::Hardpoint, items[i].displayName, "", 0, ModuleDef{}, items[i].hardpointDef };
+            if (InventoryManager::Get().Credits >= price && PlaceInFirstEmptySlot(*_storage, toAdd)) {
+                InventoryManager::Get().SpendCredits(price);
+            }
+        }
+        break;
+    }
+}
+
 void StationServicesMenu::UpdateRepair() {
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+
+    if (IsKeyPressed(KEY_ESCAPE) && _repairTextActive) { _repairTextActive = false; return; }
     if (IsClk(BackBtnRect(L))) { Close(); return; }
     if (!_player) return;
 
     float missing = _player->health.maxStats.hull - _player->health.currentHull;
+
+    Rectangle slider  = RepairSliderRect(L);
+    Rectangle handle  = RepairHandleRect(slider, _repairPct);
+    Rectangle textBox = RepairTextBoxRect(L);
+    Rectangle maxBtn  = RepairMaxBtnRect(L);
+    Vector2   mouse   = GetMousePosition();
+
+    auto SyncTextFromPct = [&]() {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "%d", (int)std::round(_repairPct));
+        _repairText = buf;
+    };
+
+    // Slider drag (click-drag anywhere on the track or its handle)
+    if (!_repairDraggingSlider && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+        (CheckCollisionPointRec(mouse, handle) || CheckCollisionPointRec(mouse, slider))) {
+        _repairDraggingSlider = true;
+        _repairTextActive = false;
+    }
+    if (_repairDraggingSlider) {
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            float t = (mouse.x - slider.x) / slider.width;
+            _repairPct = std::clamp(t, 0.0f, 1.0f) * 100.0f;
+            SyncTextFromPct();
+        } else {
+            _repairDraggingSlider = false;
+        }
+    }
+
+    // Textbox: click to focus, type digits, Enter/click-away to commit
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT))
+        _repairTextActive = IsHov(textBox);
+
+    if (_repairTextActive) {
+        int ch = GetCharPressed();
+        while (ch > 0) {
+            if (ch >= '0' && ch <= '9' && _repairText.size() < 3)
+                _repairText += (char)ch;
+            ch = GetCharPressed();
+        }
+        if (IsKeyPressed(KEY_BACKSPACE) && !_repairText.empty())
+            _repairText.pop_back();
+        if (IsKeyPressed(KEY_ENTER)) _repairTextActive = false;
+
+        _repairPct = _repairText.empty() ? 0.0f
+                   : (float)std::clamp(std::atoi(_repairText.c_str()), 0, 100);
+    }
+
+    if (IsClk(maxBtn) && missing > 0.01f) {
+        int credits = InventoryManager::Get().Credits;
+        // Largest % whose cost (rounded up per existing per-point rate) still
+        // fits current credits; floor keeps the eventual Confirm affordable.
+        float pctAfford = (credits < 10) ? 0.0f
+                         : std::min(100.0f, std::floor((credits / 2.0f) / missing * 100.0f));
+        _repairPct = pctAfford;
+        SyncTextFromPct();
+    }
+
     if (missing <= 0.01f) return;
-    int cost = std::max(10, (int)std::ceil(missing) * 2);
+    float healAmount = missing * (_repairPct / 100.0f);
+    if (healAmount <= 0.01f) return;
+    int cost = std::max(10, (int)std::ceil(healAmount) * 2);
+
     if (IsClk(ConfirmBtnRect(L)) && InventoryManager::Get().Credits >= cost) {
         InventoryManager::Get().SpendCredits(cost);
-        _player->health.currentHull = _player->health.maxStats.hull;
+        _player->health.currentHull = std::min(_player->health.currentHull + healAmount,
+                                                _player->health.maxStats.hull);
     }
 }
 
@@ -206,6 +442,7 @@ void StationServicesMenu::Draw() const {
     switch (_screen) {
     case Screen::Main:     DrawMain();     break;
     case Screen::Sell:     DrawSell();     break;
+    case Screen::Buy:      DrawBuy();      break;
     case Screen::Repair:   DrawRepair();   break;
     case Screen::Engineer: DrawEngineer(); break;
     }
@@ -229,14 +466,15 @@ void StationServicesMenu::DrawMain() const {
              (int)(L.content.y + L.content.height / 2.0f - 8), 16, HudLabel);
 
     DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
-    float bw   = (L.bot.width - 60.0f) / 4.0f;
-    float gap  = (L.bot.width - 30.0f - bw * 4.0f) / 3.0f;
+    float bw   = (L.bot.width - 30.0f - 40.0f) / 5.0f;
+    float gap  = 10.0f;
     float by   = L.bot.y + L.bot.height - 40.0f - 14.0f;
     float x0   = L.bot.x + 15.0f;
-    DrawSvcBtn({ x0,                    by, bw, 40.0f }, "SELL MODULES");
-    DrawSvcBtn({ x0 + (bw + gap),        by, bw, 40.0f }, "REPAIR");
-    DrawSvcBtn({ x0 + (bw + gap) * 2.0f, by, bw, 40.0f }, "ENGINEER");
-    DrawSvcBtn({ x0 + (bw + gap) * 3.0f, by, bw, 40.0f }, "CLOSE  [ESC]");
+    DrawSvcBtn({ x0,                    by, bw, 40.0f }, "SELL ITEMS");
+    DrawSvcBtn({ x0 + (bw + gap),        by, bw, 40.0f }, "BUY ITEMS");
+    DrawSvcBtn({ x0 + (bw + gap) * 2.0f, by, bw, 40.0f }, "REPAIR");
+    DrawSvcBtn({ x0 + (bw + gap) * 3.0f, by, bw, 40.0f }, "ENGINEER");
+    DrawSvcBtn({ x0 + (bw + gap) * 4.0f, by, bw, 40.0f }, "CLOSE  [ESC]");
 }
 
 static void DrawSlotGrid(const SvcLayout& L, const std::vector<StorageItem>& storage,
@@ -263,24 +501,115 @@ void StationServicesMenu::DrawSell() const {
     using namespace hudtheme;
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
     DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
-    DrawText("STATION SERVICES > SELL MODULES", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
+    DrawText("STATION SERVICES > SELL ITEMS", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
 
     if (_storage) DrawSlotGrid(L, *_storage, _selA, -1);
 
     DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
     DrawSvcBtn(BackBtnRect(L), "BACK  [ESC]");
 
-    bool hasSel = _storage && _selA >= 0 && _selA < (int)_storage->size()
-        && (*_storage)[_selA].type == StorageItemType::Module;
-    if (hasSel) {
+    bool validIdx = _storage && _selA >= 0 && _selA < (int)_storage->size();
+    StorageItemType selType = validIdx ? (*_storage)[_selA].type : StorageItemType::Empty;
+    if (validIdx && selType == StorageItemType::Module) {
         const StorageItem& item = (*_storage)[_selA];
         int price = SellPrice(item.module.grade);
         char lbl[64];
         std::snprintf(lbl, sizeof(lbl), "SELL FOR %d CR", price);
         DrawSvcBtn(ConfirmBtnRect(L), lbl);
+    } else if (validIdx && selType == StorageItemType::Material) {
+        const StorageItem& item = (*_storage)[_selA];
+        int price = MaterialSellPrice(item.materialId) * item.count;
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), "SELL x%d FOR %d CR", item.count, price);
+        DrawSvcBtn(ConfirmBtnRect(L), lbl);
+    } else if (validIdx && selType == StorageItemType::Hardpoint) {
+        const StorageItem& item = (*_storage)[_selA];
+        int price = HardpointSellPrice(item.hardpoint);
+        char lbl[64];
+        std::snprintf(lbl, sizeof(lbl), "SELL FOR %d CR", price);
+        DrawSvcBtn(ConfirmBtnRect(L), lbl);
     } else {
-        DrawSvcBtn(ConfirmBtnRect(L), "SELECT A MODULE", false);
+        DrawSvcBtn(ConfirmBtnRect(L), "SELECT AN ITEM", false);
     }
+}
+
+void StationServicesMenu::DrawBuy() const {
+    using namespace hudtheme;
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
+    DrawText("STATION SERVICES > BUY ITEMS", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
+
+    char credLbl[48];
+    std::snprintf(credLbl, sizeof(credLbl), "CREDITS: %d", InventoryManager::Get().Credits);
+    int cw = MeasureText(credLbl, 14);
+    DrawText(credLbl, (int)(L.title.x + L.title.width - cw - 14), (int)L.title.y + 13, 14, HudGood);
+
+    DrawHudBracketPanel(L.content, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
+
+    Rectangle tabRects[3], listArea;
+    CalcBuyGeom(L, tabRects, listArea);
+    Vector2 mouse = GetMousePosition();
+
+    const char* tabLabels[3] = { "CRAFTS", "MODULES", "HARDPOINTS" };
+    for (int i = 0; i < 3; ++i) {
+        bool active = ((int)_buyTab == i);
+        bool hov    = CheckCollisionPointRec(mouse, tabRects[i]);
+        Color bg  = active ? Color{ 20,55,80,230 } : (hov ? Color{ 14,35,55,220 } : Color{ 10,20,35,200 });
+        Color bdr = active ? HudBorder : Color{ 30,60,90,160 };
+        DrawRectangleRec(tabRects[i], bg);
+        DrawRectangleLinesEx(tabRects[i], active ? 1.5f : 1.0f, bdr);
+        DrawText(tabLabels[i],
+                 (int)(tabRects[i].x + (tabRects[i].width - MeasureText(tabLabels[i], 11)) / 2.0f),
+                 (int)(tabRects[i].y + 9), 11, active ? WHITE : HudLabel);
+    }
+
+    int count = 0;
+    if      (_buyTab == BuyTab::Crafts)    count = (int)ItemRegistry::All().size();
+    else if (_buyTab == BuyTab::Modules)   count = (int)BuildableRegistry::ByType(BuildableType::Module).size();
+    else                                   count = (int)BuildableRegistry::ByType(BuildableType::Hardpoint).size();
+
+    static constexpr float RowH = 54.0f, RowGap = 6.0f;
+    BeginScissorMode((int)listArea.x, (int)listArea.y, (int)listArea.width, (int)listArea.height);
+    for (int i = 0; i < count; ++i) {
+        Rectangle row = { listArea.x, listArea.y + i * (RowH + RowGap) - _buyScroll, listArea.width, RowH };
+        if (row.y + row.height <= listArea.y || row.y >= listArea.y + listArea.height) continue;
+
+        std::string name;
+        int  price = 0;
+        bool valid = true;
+        if (_buyTab == BuyTab::Crafts) {
+            const ItemDef& item = ItemRegistry::All()[i];
+            name  = item.displayName;
+            price = (int)std::ceil(item.sellValue * kBuyMarkup);
+        } else if (_buyTab == BuyTab::Modules) {
+            auto items = BuildableRegistry::ByType(BuildableType::Module);
+            name = items[i].displayName;
+            auto modOpt = ModuleRegistry::ById(items[i].moduleDefId);
+            valid = modOpt.has_value();
+            if (valid) price = (int)std::ceil(SellPrice(modOpt->grade) * kBuyMarkup);
+        } else {
+            auto items = BuildableRegistry::ByType(BuildableType::Hardpoint);
+            name  = items[i].displayName;
+            price = (int)std::ceil(HardpointSellPrice(items[i].hardpointDef) * kBuyMarkup);
+        }
+
+        bool hovRow = CheckCollisionPointRec(mouse, row);
+        DrawRectangleRec(row, hovRow ? Color{ 16,30,45,220 } : Color{ 10,18,32,190 });
+        DrawRectangleLinesEx(row, 1.0f, Color{ 30,60,90,160 });
+        DrawText(name.c_str(), (int)row.x + 10, (int)row.y + 8, 13, HudValue);
+
+        char priceLbl[32];
+        std::snprintf(priceLbl, sizeof(priceLbl), "%d CR", price);
+        DrawText(priceLbl, (int)row.x + 10, (int)row.y + 28, 12, HudGood);
+
+        Rectangle btn = { row.x + row.width - 110.0f, row.y + row.height / 2.0f - 16.0f, 100.0f, 32.0f };
+        bool canAfford = valid && InventoryManager::Get().Credits >= price;
+        DrawSvcBtn(btn, "BUY", canAfford);
+    }
+    EndScissorMode();
+
+    DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
+    DrawSvcBtn(BackBtnRect(L), "BACK  [ESC]");
 }
 
 void StationServicesMenu::DrawRepair() const {
@@ -288,6 +617,11 @@ void StationServicesMenu::DrawRepair() const {
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
     DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
     DrawText("STATION SERVICES > REPAIR", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
+
+    char credLbl[48];
+    std::snprintf(credLbl, sizeof(credLbl), "CREDITS: %d", InventoryManager::Get().Credits);
+    int cw = MeasureText(credLbl, 14);
+    DrawText(credLbl, (int)(L.title.x + L.title.width - cw - 14), (int)L.title.y + 13, 14, HudGood);
 
     DrawHudBracketPanel(L.content, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
 
@@ -299,6 +633,7 @@ void StationServicesMenu::DrawRepair() const {
              (int)(L.content.y + L.content.height / 2.0f - 30.0f), 18, HudValue);
 
     float missing = maxH - hull;
+
     DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
     DrawSvcBtn(BackBtnRect(L), "BACK  [ESC]");
 
@@ -306,16 +641,51 @@ void StationServicesMenu::DrawRepair() const {
         DrawSvcBtn(ConfirmBtnRect(L), "HULL AT FULL", false);
         return;
     }
-    int  cost      = std::max(10, (int)std::ceil(missing) * 2);
+
+    // ── Slider + textbox + MAX ────────────────────────────────────────────
+    Rectangle slider  = RepairSliderRect(L);
+    Rectangle handle  = RepairHandleRect(slider, _repairPct);
+    Rectangle textBox = RepairTextBoxRect(L);
+    Rectangle maxBtn  = RepairMaxBtnRect(L);
+    Vector2   mouse   = GetMousePosition();
+
+    DrawRectangleRec(slider, Color{ 20,20,30,220 });
+    DrawRectangleLinesEx(slider, 1.0f, HudDiv);
+    Rectangle fill = { slider.x, slider.y, slider.width * (_repairPct / 100.0f), slider.height };
+    DrawRectangleRec(fill, Color{ 60,150,220,220 });
+    bool hovHandle = CheckCollisionPointRec(mouse, handle);
+    DrawRectangleRec(handle, (hovHandle || _repairDraggingSlider) ? Color{ 120,210,255,255 } : Color{ 90,170,230,240 });
+    DrawRectangleLinesEx(handle, 1.0f, HudBorder);
+
+    bool hovText = IsHov(textBox);
+    DrawRectangleRec(textBox, _repairTextActive ? Color{ 20,40,55,240 } : Color{ 14,20,28,210 });
+    DrawRectangleLinesEx(textBox, (_repairTextActive || hovText) ? 1.5f : 1.0f,
+                         _repairTextActive ? HudGood : HudBorder);
+    std::string textDisp = _repairText + (_repairTextActive ? "_" : "");
+    DrawText(textDisp.c_str(), (int)(textBox.x + 8), (int)(textBox.y + 7), 15, HudValue);
+    DrawText("%", (int)(textBox.x + textBox.width + 4), (int)(textBox.y + 7), 15, HudLabel);
+
+    DrawSvcBtn(maxBtn, "MAX");
+
+    const char* pctCaption = "% OF MISSING HULL TO REPAIR";
+    DrawText(pctCaption, (int)(slider.x), (int)(slider.y - 22), 11, HudLabel);
+
+    // ── Cost preview + confirm ────────────────────────────────────────────
+    float healAmount = missing * (_repairPct / 100.0f);
+    if (healAmount <= 0.01f) {
+        DrawSvcBtn(ConfirmBtnRect(L), "SELECT AN AMOUNT", false);
+        return;
+    }
+    int  cost      = std::max(10, (int)std::ceil(healAmount) * 2);
     bool canAfford = InventoryManager::Get().Credits >= cost;
     char lbl[64];
-    std::snprintf(lbl, sizeof(lbl), "REPAIR FOR %d CR", cost);
+    std::snprintf(lbl, sizeof(lbl), "REPAIR %.0f HULL FOR %d CR", healAmount, cost);
     DrawSvcBtn(ConfirmBtnRect(L), lbl, canAfford);
 
     char costLbl[64];
-    std::snprintf(costLbl, sizeof(costLbl), "REPAIR COST: %d CR/PT MISSING (MIN 10)", 2);
+    std::snprintf(costLbl, sizeof(costLbl), "RATE: 2 CR/PT MISSING (MIN 10 CR)");
     DrawText(costLbl, (int)(L.content.x + (L.content.width - MeasureText(costLbl, 12)) / 2.0f),
-             (int)(L.content.y + L.content.height / 2.0f + 4.0f), 12, HudLabel);
+             (int)(L.content.y + L.content.height - 26.0f), 12, HudLabel);
 }
 
 void StationServicesMenu::DrawEngineer() const {

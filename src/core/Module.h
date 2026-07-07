@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include "raylib.h"
 
-enum class ModuleType  { Weapon, Armor, Shield, Engine, Hyperdrive, Auxiliary };
+enum class ModuleType  { Weapon, Armor, Shield, Engine, Hyperdrive, Auxiliary, Consumable };
 enum class ModuleGrade { Common, Uncommon, Unique, Remarkable, Epic, Legendary, Mythic };
 
 enum class WeaponFireMode { Standard, Charge, LockOn };
@@ -54,6 +54,18 @@ struct AuxStats {
     bool  hasCloaking       = false;
     float materialFindBonus = 0.0f;
     bool  hasLockOnJammer   = false;
+    // Galaxy-map fog-of-war reveal radius — distinct from sensorRange (combat
+    // targeting, tens of thousands of units) since map-scale detection needs
+    // a completely different order of magnitude (star spacing is ~46,000u,
+    // vs. sensorRange's 600-5000u tiers). Kept as its own module line (see
+    // AuxDefs.h's Aux_ProximityArray..Aux_GalacticSurveyArray) rather than
+    // folded into the combat Scanner line, so — since ships only have 1 aux
+    // slot — equipping for exploration vs. combat awareness is a real choice.
+    float mapSensorRange    = 0.0f;
+};
+
+struct ConsumableStats {
+    float healAmount = 50.0f;
 };
 
 struct ModuleDef {
@@ -67,10 +79,11 @@ struct ModuleDef {
     std::string assetPath;                    
     std::vector<std::vector<std::string>> designArray;
 
-    WeaponStats weapon;
-    ArmorStats  armor;
-    ShieldStats shield;
-    EngineStats engine;
-    AuxStats    auxiliary;
+    WeaponStats     weapon;
+    ArmorStats      armor;
+    ShieldStats     shield;
+    EngineStats     engine;
+    AuxStats        auxiliary;
+    ConsumableStats consumable;
 };
 

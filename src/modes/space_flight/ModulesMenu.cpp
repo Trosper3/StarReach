@@ -20,10 +20,12 @@ void ModulesMenu::StorageSlotRects(int stoX, int stoW, int count, Rectangle* out
 
 void ModulesMenu::Open(ShipLoadout* loadout,
     std::vector<StorageItem>* storage,
-    int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots) {
+    int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots,
+    HealthComponent* healTarget) {
     isOpen = true;
     _loadout  = loadout;
     _storage  = storage;
+    _healTarget = healTarget;
     _wSlots   = wSlots;
     _arSlots  = arSlots;
     _shSlots  = shSlots;
@@ -48,10 +50,12 @@ void ModulesMenu::Close() {
 
 void ModulesMenu::Open(ShipLoadout* loadout,
     std::vector<StorageItem>* storage,
-    int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots) {
+    int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots,
+    HealthComponent* healTarget) {
     isOpen = true;
     _loadout = loadout;
     _storage = storage;
+    _healTarget = healTarget;
     _wSlots   = wSlots;
     _arSlots  = arSlots;
     _shSlots  = shSlots;
@@ -150,6 +154,7 @@ static const char* ModTypeLetter(ModuleType t) {
     case ModuleType::Engine:     return "E";
     case ModuleType::Hyperdrive: return "H";
     case ModuleType::Auxiliary:  return "U";
+    case ModuleType::Consumable: return "R";
     }
     return "?";
 }
@@ -274,6 +279,7 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
     case ModuleType::Auxiliary: {
         const AuxStats& ax = mod.auxiliary;
         if (ax.hasSensors)       addStat("Sensor Range", "%.0f u", ax.sensorRange);
+        if (ax.mapSensorRange > 0.0f) addStat("Map Sensor Range", "%.0f u", ax.mapSensorRange);
         if (ax.hasCloaking)      addStr("Cloaking", "Active");
         if (ax.hasLockOnJammer)  addStr("Lock-On Jam", "Active");
         // materialFindBonus has no effect on a player-piloted ship — it only
@@ -281,6 +287,9 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
         if (nLines == 0)         addStr("Status", "No effects");
         break;
     }
+    case ModuleType::Consumable:
+        addStat("Heal", "+%.0f hull", mod.consumable.healAmount);
+        break;
     }
 
     const int padX = 10, padY = 8;
@@ -554,22 +563,35 @@ bool ModulesMenu::Update() {
 
         if (_dragSrc == DragSrc::Storage) {
             if (_hovModSlot >= 0 && _dragIdx >= 0 && _dragIdx < n) {
-                const ModSlotRef& ms = modSlots[_hovModSlot];
                 StorageItem& src = (*_storage)[_dragIdx];
-                if (src.type == StorageItemType::Module && IsCompatible(ms.type, src.module)) {
-                    auto* target = GetModOpt(ms);
-                    if (target) {
-                        ModuleDef incoming = src.module;
-                        if (*target) {
-                            src.module = **target;
-                            src.displayName = src.module.displayName;
-                            src.type = StorageItemType::Module;
+                if (src.type == StorageItemType::Module && src.module.type == ModuleType::Consumable) {
+                    // Repair kits are consumed on drop over any slot — they
+                    // heal the ship, they don't equip.
+                    if (_healTarget) {
+                        _healTarget->currentHull = std::min(
+                            _healTarget->currentHull + src.module.consumable.healAmount,
+                            _healTarget->maxStats.hull);
+                    }
+                    src = StorageItem{};
+                    changed = true;
+                }
+                else {
+                    const ModSlotRef& ms = modSlots[_hovModSlot];
+                    if (src.type == StorageItemType::Module && IsCompatible(ms.type, src.module)) {
+                        auto* target = GetModOpt(ms);
+                        if (target) {
+                            ModuleDef incoming = src.module;
+                            if (*target) {
+                                src.module = **target;
+                                src.displayName = src.module.displayName;
+                                src.type = StorageItemType::Module;
+                            }
+                            else {
+                                src = StorageItem{};
+                            }
+                            *target = incoming;
+                            changed = true;
                         }
-                        else {
-                            src = StorageItem{};
-                        }
-                        *target = incoming;
-                        changed = true;
                     }
                 }
             }
