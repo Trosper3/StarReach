@@ -6,6 +6,7 @@
 #include "data/registry/MaterialRegistry.h"
 #include "data/registry/ItemRegistry.h"
 #include "data/registry/BuildableRegistry.h"
+#include "systems/diplomacy/ReputationRegistry.h"
 #include "raylib.h"
 #include <algorithm>
 #include <cmath>
@@ -86,12 +87,27 @@ static int  GradeIndex(ModuleGrade g) { return (int)g; }
 static int  SellPrice(ModuleGrade g)  { return (GradeIndex(g) + 1) * 50; }
 static int  MergeCost(ModuleGrade g)  { return (GradeIndex(g) + 1) * 100; }
 
-// Per-unit sell price for a raw material or crafted item, looked up from
-// whichever registry defines it (raw ore vs. refined component).
-static int MaterialSellPrice(const std::string& materialId) {
+// Base (un-economy-adjusted) per-unit value for a raw material or crafted
+// item, looked up from whichever registry defines it (raw ore vs. refined
+// component).
+static int MaterialBaseValue(const std::string& materialId) {
     if (const MatDef* m = MaterialRegistry::ById(materialId)) return m->sellValue;
     if (const ItemDef* i = ItemRegistry::ById(materialId))    return i->sellValue;
     return 5;
+}
+
+// Per-unit price the station pays the player right now for materialId. Reads
+// live per-station stock (Epic 3) when an economy is attached; otherwise
+// falls back to the flat base value, same as before Epic 3.
+static int MaterialSellPrice(const StationEconomy* econ, const std::string& materialId) {
+    int base = MaterialBaseValue(materialId);
+    return econ ? econ->SellUnitPrice(materialId, base) : base;
+}
+
+// Per-unit price the player pays to buy materialId from the station.
+static int MaterialBuyPrice(const StationEconomy* econ, const std::string& materialId) {
+    int base = MaterialBaseValue(materialId);
+    return econ ? econ->BuyUnitPrice(materialId, base) : (int)std::ceil(base * 3.0f);
 }
 
 // Hardpoints have no ModuleGrade — their "rarity" is however much structure
@@ -104,6 +120,14 @@ static int HardpointSellPrice(const StationHardpointDef& hp) {
 // "Buy" screen convenience tax over the equivalent sell value — instant
 // delivery costs more than gathering materials and crafting it yourself.
 static constexpr float kBuyMarkup = 3.0f;
+
+// Epic 4: hyperdrive fuel is purchased as "fuel_cells" stock (Epic 3's
+// economy — production/hauling reaches it same as any other good, see
+// SpaceFlight::TickNpcEconomy), each cell converting to a fixed amount of
+// tank fuel. A station with 0 fuel_cells in stock simply can't refuel you,
+// same as it can't sell any other good it's out of.
+static constexpr const char* kFuelCellsId  = "fuel_cells";
+static constexpr float       kFuelPerCell  = 5.0f;
 
 static bool NextGrade(ModuleGrade g, ModuleGrade& out) {
     if (g == ModuleGrade::Mythic) return false;
@@ -141,9 +165,18 @@ static Rectangle RepairMaxBtnRect(const SvcLayout& L) {
 
 // ── Open / Close ──────────────────────────────────────────────────────────────
 
-void StationServicesMenu::Open(ecs::Entity* player, std::vector<StorageItem>* storage) {
+void StationServicesMenu::Open(ecs::Entity* player, std::vector<StorageItem>* storage, StationEconomy* economy,
+                                float* fuel, float maxFuel, Faction stationFaction,
+                                std::vector<Contract>* offers, Contract* activeContract, bool* hasActiveContract) {
     _player  = player;
     _storage = storage;
+    _economy = economy;
+    _fuel    = fuel;
+    _maxFuel = maxFuel;
+    _stationFaction    = stationFaction;
+    _offers            = offers;
+    _activeContract    = activeContract;
+    _hasActiveContract = hasActiveContract;
     _screen  = Screen::Main;
     _selA = _selB = -1;
     _buyTab = BuyTab::Crafts;
@@ -178,25 +211,31 @@ void StationServicesMenu::Update() {
     case Screen::Buy:      UpdateBuy();      break;
     case Screen::Repair:   UpdateRepair();   break;
     case Screen::Engineer: UpdateEngineer(); break;
+    case Screen::Fuel:     UpdateFuel();     break;
+    case Screen::Contracts: UpdateContracts(); break;
     }
 }
 
 void StationServicesMenu::UpdateMain() {
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
-    float bw   = (L.bot.width - 30.0f - 40.0f) / 5.0f;
+    float bw   = (L.bot.width - 30.0f - 60.0f) / 7.0f;
     float gap  = 10.0f;
     float by   = L.bot.y + L.bot.height - 40.0f - 14.0f;
     float x0   = L.bot.x + 15.0f;
     Rectangle sellBtn   = { x0,                    by, bw, 40.0f };
     Rectangle buyBtn    = { x0 + (bw + gap),        by, bw, 40.0f };
     Rectangle repairBtn = { x0 + (bw + gap) * 2.0f, by, bw, 40.0f };
-    Rectangle engBtn    = { x0 + (bw + gap) * 3.0f, by, bw, 40.0f };
-    Rectangle closeBtn  = { x0 + (bw + gap) * 4.0f, by, bw, 40.0f };
+    Rectangle fuelBtn   = { x0 + (bw + gap) * 3.0f, by, bw, 40.0f };
+    Rectangle engBtn    = { x0 + (bw + gap) * 4.0f, by, bw, 40.0f };
+    Rectangle contrBtn  = { x0 + (bw + gap) * 5.0f, by, bw, 40.0f };
+    Rectangle closeBtn  = { x0 + (bw + gap) * 6.0f, by, bw, 40.0f };
 
     if (IsClk(sellBtn))   { _screen = Screen::Sell;     _selA = _selB = -1; }
     if (IsClk(buyBtn))    { _screen = Screen::Buy;      _buyTab = BuyTab::Crafts; _buyScroll = 0; }
     if (IsClk(repairBtn)) { _screen = Screen::Repair; }
+    if (IsClk(fuelBtn))   { _screen = Screen::Fuel; }
     if (IsClk(engBtn))    { _screen = Screen::Engineer; _selA = _selB = -1; }
+    if (IsClk(contrBtn))  { _screen = Screen::Contracts; }
     if (IsClk(closeBtn))  { isOpen = false; }
 }
 
@@ -230,8 +269,10 @@ void StationServicesMenu::UpdateSell() {
             _selA = -1;
         }
         else if (item.type == StorageItemType::Material && IsClk(ConfirmBtnRect(L))) {
-            int price = MaterialSellPrice(item.materialId) * item.count;
+            int price = MaterialSellPrice(_economy, item.materialId) * item.count;
             InventoryManager::Get().AddCredits(price);
+            if (_economy) _economy->AddStock(item.materialId, item.count);
+            ReputationRegistry::Adjust(_stationFaction, 0.5f); // Epic 6.3: trade nudges standing
             item = StorageItem{};
             _selA = -1;
         }
@@ -280,10 +321,13 @@ void StationServicesMenu::UpdateBuy() {
 
         if (_buyTab == BuyTab::Crafts) {
             const ItemDef& item = ItemRegistry::All()[i];
-            int price = (int)std::ceil(item.sellValue * kBuyMarkup);
-            if (InventoryManager::Get().Credits >= price &&
+            int  price   = MaterialBuyPrice(_economy, item.id);
+            bool inStock = !_economy || _economy->GetStock(item.id) > 0;
+            if (inStock && InventoryManager::Get().Credits >= price &&
                 StackOrPlaceMaterial(*_storage, item.id, item.displayName, 1)) {
                 InventoryManager::Get().SpendCredits(price);
+                if (_economy) _economy->RemoveStock(item.id, 1);
+                ReputationRegistry::Adjust(_stationFaction, 0.5f); // Epic 6.3: trade nudges standing
             }
         }
         else if (_buyTab == BuyTab::Modules) {
@@ -387,6 +431,30 @@ void StationServicesMenu::UpdateRepair() {
     }
 }
 
+void StationServicesMenu::UpdateFuel() {
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    if (IsClk(BackBtnRect(L))) { Close(); return; }
+    if (!_fuel || !_economy) return; // no fuel system / no station stock to draw from
+
+    float missing = _maxFuel - *_fuel;
+    if (missing <= 0.01f) return;
+
+    int cellsNeeded    = (int)std::ceil(missing / kFuelPerCell);
+    int availableCells = _economy->GetStock(kFuelCellsId);
+    int cellsToBuy      = std::min(cellsNeeded, availableCells);
+    if (cellsToBuy <= 0) return;
+
+    int base      = MaterialBaseValue(kFuelCellsId);
+    int unitPrice = _economy->BuyUnitPrice(kFuelCellsId, base);
+    int totalCost = unitPrice * cellsToBuy;
+
+    if (IsClk(ConfirmBtnRect(L)) && InventoryManager::Get().Credits >= totalCost) {
+        InventoryManager::Get().SpendCredits(totalCost);
+        _economy->RemoveStock(kFuelCellsId, cellsToBuy);
+        *_fuel = std::min(_maxFuel, *_fuel + cellsToBuy * kFuelPerCell);
+    }
+}
+
 void StationServicesMenu::UpdateEngineer() {
     if (!_storage) return;
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
@@ -431,6 +499,36 @@ void StationServicesMenu::UpdateEngineer() {
     }
 }
 
+// Epic 7: offers are display-only while a contract is already active (Draw
+// shows its progress instead of the offer list in that state); accepting a
+// Courier debits its cargo from the docked station's live stock immediately
+// (skipped if stock shifted below what was quoted since the offer was
+// generated — the whole offer list is regenerated fresh on the next dock).
+void StationServicesMenu::UpdateContracts() {
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    if (IsClk(BackBtnRect(L))) { Close(); return; }
+    if (!_offers || !_activeContract || !_hasActiveContract || *_hasActiveContract) return;
+    if (!IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) return;
+
+    Vector2 mouse = GetMousePosition();
+    static constexpr float RowH = 74.0f, RowGap = 10.0f;
+    float listY = L.content.y + 20.0f;
+    for (size_t i = 0; i < _offers->size(); ++i) {
+        Rectangle row = { L.content.x + 20.0f, listY + i * (RowH + RowGap), L.content.width - 40.0f, RowH };
+        Rectangle btn = { row.x + row.width - 130.0f, row.y + row.height / 2.0f - 18.0f, 110.0f, 36.0f };
+        if (!CheckCollisionPointRec(mouse, btn)) continue;
+
+        Contract& offer = (*_offers)[i];
+        if (offer.type == ContractType::Courier) {
+            if (!_economy || _economy->GetStock(offer.goodId) < offer.amount) continue;
+            _economy->RemoveStock(offer.goodId, offer.amount);
+        }
+        *_activeContract    = offer;
+        *_hasActiveContract = true;
+        break;
+    }
+}
+
 // ── Draw ──────────────────────────────────────────────────────────────────────
 
 void StationServicesMenu::Draw() const {
@@ -445,6 +543,8 @@ void StationServicesMenu::Draw() const {
     case Screen::Buy:      DrawBuy();      break;
     case Screen::Repair:   DrawRepair();   break;
     case Screen::Engineer: DrawEngineer(); break;
+    case Screen::Fuel:     DrawFuel();     break;
+    case Screen::Contracts: DrawContracts(); break;
     }
 }
 
@@ -466,15 +566,17 @@ void StationServicesMenu::DrawMain() const {
              (int)(L.content.y + L.content.height / 2.0f - 8), 16, HudLabel);
 
     DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
-    float bw   = (L.bot.width - 30.0f - 40.0f) / 5.0f;
+    float bw   = (L.bot.width - 30.0f - 60.0f) / 7.0f;
     float gap  = 10.0f;
     float by   = L.bot.y + L.bot.height - 40.0f - 14.0f;
     float x0   = L.bot.x + 15.0f;
     DrawSvcBtn({ x0,                    by, bw, 40.0f }, "SELL ITEMS");
     DrawSvcBtn({ x0 + (bw + gap),        by, bw, 40.0f }, "BUY ITEMS");
     DrawSvcBtn({ x0 + (bw + gap) * 2.0f, by, bw, 40.0f }, "REPAIR");
-    DrawSvcBtn({ x0 + (bw + gap) * 3.0f, by, bw, 40.0f }, "ENGINEER");
-    DrawSvcBtn({ x0 + (bw + gap) * 4.0f, by, bw, 40.0f }, "CLOSE  [ESC]");
+    DrawSvcBtn({ x0 + (bw + gap) * 3.0f, by, bw, 40.0f }, "FUEL");
+    DrawSvcBtn({ x0 + (bw + gap) * 4.0f, by, bw, 40.0f }, "ENGINEER");
+    DrawSvcBtn({ x0 + (bw + gap) * 5.0f, by, bw, 40.0f }, "CONTRACTS");
+    DrawSvcBtn({ x0 + (bw + gap) * 6.0f, by, bw, 40.0f }, "CLOSE  [ESC]");
 }
 
 static void DrawSlotGrid(const SvcLayout& L, const std::vector<StorageItem>& storage,
@@ -518,10 +620,18 @@ void StationServicesMenu::DrawSell() const {
         DrawSvcBtn(ConfirmBtnRect(L), lbl);
     } else if (validIdx && selType == StorageItemType::Material) {
         const StorageItem& item = (*_storage)[_selA];
-        int price = MaterialSellPrice(item.materialId) * item.count;
+        int price = MaterialSellPrice(_economy, item.materialId) * item.count;
         char lbl[64];
         std::snprintf(lbl, sizeof(lbl), "SELL x%d FOR %d CR", item.count, price);
         DrawSvcBtn(ConfirmBtnRect(L), lbl);
+        if (_economy) {
+            int stock = _economy->GetStock(item.materialId);
+            const char* trend = stock < StationEconomy::kBaselineStock ? "SCARCE - HIGH PRICE"
+                              : stock > StationEconomy::kBaselineStock * 2 ? "SURPLUS - LOW PRICE" : "STABLE";
+            char stockLbl[64];
+            std::snprintf(stockLbl, sizeof(stockLbl), "STATION STOCK: %d  (%s)", stock, trend);
+            DrawText(stockLbl, (int)(L.content.x + 20), (int)(L.content.y + L.content.height - 24.0f), 12, HudLabel);
+        }
     } else if (validIdx && selType == StorageItemType::Hardpoint) {
         const StorageItem& item = (*_storage)[_selA];
         int price = HardpointSellPrice(item.hardpoint);
@@ -580,7 +690,8 @@ void StationServicesMenu::DrawBuy() const {
         if (_buyTab == BuyTab::Crafts) {
             const ItemDef& item = ItemRegistry::All()[i];
             name  = item.displayName;
-            price = (int)std::ceil(item.sellValue * kBuyMarkup);
+            price = MaterialBuyPrice(_economy, item.id);
+            valid = !_economy || _economy->GetStock(item.id) > 0;
         } else if (_buyTab == BuyTab::Modules) {
             auto items = BuildableRegistry::ByType(BuildableType::Module);
             name = items[i].displayName;
@@ -598,13 +709,18 @@ void StationServicesMenu::DrawBuy() const {
         DrawRectangleLinesEx(row, 1.0f, Color{ 30,60,90,160 });
         DrawText(name.c_str(), (int)row.x + 10, (int)row.y + 8, 13, HudValue);
 
-        char priceLbl[32];
-        std::snprintf(priceLbl, sizeof(priceLbl), "%d CR", price);
+        char priceLbl[48];
+        if (_buyTab == BuyTab::Crafts && _economy) {
+            std::snprintf(priceLbl, sizeof(priceLbl), "%d CR   STOCK: %d", price,
+                          _economy->GetStock(ItemRegistry::All()[i].id));
+        } else {
+            std::snprintf(priceLbl, sizeof(priceLbl), "%d CR", price);
+        }
         DrawText(priceLbl, (int)row.x + 10, (int)row.y + 28, 12, HudGood);
 
         Rectangle btn = { row.x + row.width - 110.0f, row.y + row.height / 2.0f - 16.0f, 100.0f, 32.0f };
         bool canAfford = valid && InventoryManager::Get().Credits >= price;
-        DrawSvcBtn(btn, "BUY", canAfford);
+        DrawSvcBtn(btn, valid ? "BUY" : "OUT OF STOCK", canAfford);
     }
     EndScissorMode();
 
@@ -688,6 +804,73 @@ void StationServicesMenu::DrawRepair() const {
              (int)(L.content.y + L.content.height - 26.0f), 12, HudLabel);
 }
 
+void StationServicesMenu::DrawFuel() const {
+    using namespace hudtheme;
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
+    DrawText("STATION SERVICES > FUEL", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
+
+    char credLbl[48];
+    std::snprintf(credLbl, sizeof(credLbl), "CREDITS: %d", InventoryManager::Get().Credits);
+    int cw = MeasureText(credLbl, 14);
+    DrawText(credLbl, (int)(L.title.x + L.title.width - cw - 14), (int)L.title.y + 13, 14, HudGood);
+
+    DrawHudBracketPanel(L.content, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
+    DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
+    DrawSvcBtn(BackBtnRect(L), "BACK  [ESC]");
+
+    if (!_fuel) {
+        const char* msg = "FUEL SYSTEM UNAVAILABLE";
+        DrawText(msg, (int)(L.content.x + (L.content.width - MeasureText(msg, 16)) / 2.0f),
+                 (int)(L.content.y + L.content.height / 2.0f - 8), 16, HudCaution);
+        DrawSvcBtn(ConfirmBtnRect(L), "N/A", false);
+        return;
+    }
+
+    float pct = *_fuel / _maxFuel;
+    Color fuelCol = pct > 0.5f ? HudGood : pct > 0.2f ? HudCaution : HudCritical;
+    char fuelLbl[64];
+    std::snprintf(fuelLbl, sizeof(fuelLbl), "FUEL TANK: %.0f / %.0f", *_fuel, _maxFuel);
+    DrawText(fuelLbl, (int)(L.content.x + (L.content.width - MeasureText(fuelLbl, 18)) / 2.0f),
+             (int)(L.content.y + L.content.height / 2.0f - 30.0f), 18, HudValue);
+
+    Rectangle bar = { L.content.x + 60.0f, L.content.y + L.content.height / 2.0f, L.content.width - 120.0f, 16.0f };
+    DrawRectangleRec(bar, Color{ 20,20,30,220 });
+    DrawRectangleLinesEx(bar, 1.0f, HudDiv);
+    DrawRectangleRec({ bar.x, bar.y, bar.width * std::clamp(pct, 0.0f, 1.0f), bar.height }, fuelCol);
+
+    float missing = _maxFuel - *_fuel;
+    if (missing <= 0.01f) {
+        DrawSvcBtn(ConfirmBtnRect(L), "TANK FULL", false);
+        return;
+    }
+    if (!_economy) {
+        DrawSvcBtn(ConfirmBtnRect(L), "NO FUEL DEPOT HERE", false);
+        return;
+    }
+
+    int cellsNeeded    = (int)std::ceil(missing / kFuelPerCell);
+    int availableCells = _economy->GetStock(kFuelCellsId);
+    int cellsToBuy      = std::min(cellsNeeded, availableCells);
+
+    char stockLbl[64];
+    std::snprintf(stockLbl, sizeof(stockLbl), "STATION FUEL CELLS IN STOCK: %d", availableCells);
+    DrawText(stockLbl, (int)(L.content.x + 20), (int)(L.content.y + L.content.height - 24.0f), 12, HudLabel);
+
+    if (cellsToBuy <= 0) {
+        DrawSvcBtn(ConfirmBtnRect(L), "OUT OF FUEL CELLS", false);
+        return;
+    }
+
+    int base      = MaterialBaseValue(kFuelCellsId);
+    int unitPrice = _economy->BuyUnitPrice(kFuelCellsId, base);
+    int totalCost = unitPrice * cellsToBuy;
+    bool canAfford = InventoryManager::Get().Credits >= totalCost;
+    char lbl[64];
+    std::snprintf(lbl, sizeof(lbl), "REFUEL +%.0f FOR %d CR", cellsToBuy * kFuelPerCell, totalCost);
+    DrawSvcBtn(ConfirmBtnRect(L), lbl, canAfford);
+}
+
 void StationServicesMenu::DrawEngineer() const {
     using namespace hudtheme;
     auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
@@ -721,4 +904,67 @@ void StationServicesMenu::DrawEngineer() const {
     char lbl[64];
     std::snprintf(lbl, sizeof(lbl), "MERGE FOR %d CR", cost);
     DrawSvcBtn(ConfirmBtnRect(L), lbl, canAfford);
+}
+
+static const char* ContractTypeLabel(ContractType t) {
+    switch (t) {
+        case ContractType::Bounty:  return "BOUNTY";
+        case ContractType::Courier: return "COURIER";
+        case ContractType::Escort:  return "ESCORT";
+        default:                    return "";
+    }
+}
+
+void StationServicesMenu::DrawContracts() const {
+    using namespace hudtheme;
+    auto L = CalcSvcLayout(GetScreenWidth(), GetScreenHeight());
+    DrawHudBracketPanel(L.title, HudBg, HudBorder, 12.0f, 2.0f);
+    DrawText("STATION SERVICES > CONTRACTS", (int)L.title.x + 14, (int)L.title.y + 11, 16, HudValue);
+
+    DrawHudBracketPanel(L.content, Color{ 4, 8, 14, 250 }, HudBorder, 18.0f, 2.0f);
+    DrawHudBracketPanel(L.bot, HudBg, HudBorder, 14.0f, 2.0f);
+    DrawSvcBtn(BackBtnRect(L), "BACK  [ESC]");
+
+    if (_hasActiveContract && *_hasActiveContract && _activeContract) {
+        const Contract& c = *_activeContract;
+        float y = L.content.y + 30.0f;
+        char hdr[64];
+        std::snprintf(hdr, sizeof(hdr), "ACTIVE %s CONTRACT", ContractTypeLabel(c.type));
+        DrawText(hdr, (int)(L.content.x + 20), (int)y, 16, HudGood); y += 28;
+        DrawText(c.title.c_str(), (int)(L.content.x + 20), (int)y, 15, HudValue); y += 24;
+        DrawText(c.briefing.c_str(), (int)(L.content.x + 20), (int)y, 12, HudLabel); y += 26;
+        char buf[64];
+        if (c.type == ContractType::Bounty)
+            std::snprintf(buf, sizeof(buf), "PROGRESS: %d / %d kills", c.killsDone, c.killsRequired);
+        else
+            std::snprintf(buf, sizeof(buf), "TIME REMAINING: %.0fs", std::max(0.0f, c.timeRemaining));
+        DrawText(buf, (int)(L.content.x + 20), (int)y, 13, HudValue);
+        return;
+    }
+
+    if (!_offers || _offers->empty()) {
+        const char* msg = "NO CONTRACTS AVAILABLE";
+        DrawText(msg, (int)(L.content.x + (L.content.width - MeasureText(msg, 16)) / 2.0f),
+                 (int)(L.content.y + L.content.height / 2.0f - 8), 16, HudCaution);
+        return;
+    }
+
+    static constexpr float RowH = 74.0f, RowGap = 10.0f;
+    float listY = L.content.y + 20.0f;
+    for (size_t i = 0; i < _offers->size(); ++i) {
+        const Contract& c = (*_offers)[i];
+        Rectangle row = { L.content.x + 20.0f, listY + i * (RowH + RowGap), L.content.width - 40.0f, RowH };
+        DrawHudChamferRect(row, 6.0f, Color{ 14,20,28,200 }, HudBorder, 1.0f);
+
+        char titleLbl[160];
+        std::snprintf(titleLbl, sizeof(titleLbl), "[%s] %s", ContractTypeLabel(c.type), c.title.c_str());
+        DrawText(titleLbl, (int)(row.x + 14), (int)(row.y + 10), 14, HudValue);
+        DrawText(c.briefing.c_str(), (int)(row.x + 14), (int)(row.y + 32), 11, HudLabel);
+        char rew[48];
+        std::snprintf(rew, sizeof(rew), "+%d CR", c.rewardCredits);
+        DrawText(rew, (int)(row.x + 14), (int)(row.y + 52), 12, HudGood);
+
+        Rectangle btn = { row.x + row.width - 130.0f, row.y + row.height / 2.0f - 18.0f, 110.0f, 36.0f };
+        DrawSvcBtn(btn, "ACCEPT");
+    }
 }

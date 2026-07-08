@@ -12,6 +12,15 @@ struct LoadoutEntry {
     std::string moduleId;
 };
 
+// A single mounting point on a station, with a screen-space offset for composite rendering.
+struct StationHardpointDef {
+    std::string name;
+    std::string slotType;             // "weapon", "shield", "engine", etc.
+    Vector2     offset    = { 0.0f, 0.0f };
+    int         slotCount = 1;
+    std::vector<std::string> preloadedModules;
+};
+
 // Blueprint for a spawnable ship — consumed by ecs::ShipRegistry and FleetManager.
 struct ShipDef {
     std::string  id;
@@ -39,15 +48,7 @@ struct ShipDef {
     bool      flipSprite     = false;
     ShipType  shipType       = ShipType::Fighter;
     std::vector<LoadoutEntry> loadout;
-};
-
-// A single mounting point on a station, with a screen-space offset for composite rendering.
-struct StationHardpointDef {
-    std::string name;
-    std::string slotType;             // "weapon", "shield", "engine", etc.
-    Vector2     offset    = { 0.0f, 0.0f };
-    int         slotCount = 1;
-    std::vector<std::string> preloadedModules;
+    std::vector<StationHardpointDef> hardpoints; // capital ships only; empty for fighters
 };
 
 // Blueprint for a spawnable station — consumed by ecs::ShipRegistry and FleetManager.

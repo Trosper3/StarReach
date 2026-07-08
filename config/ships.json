@@ -9,11 +9,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_republic",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 1,
       "armor": 1,
@@ -46,11 +46,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_zenith",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 1,
       "armor": 1,
@@ -83,11 +83,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_korrath",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -120,11 +120,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_merchant",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -157,11 +157,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_eden",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -194,11 +194,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_reaperians",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -231,11 +231,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_forge",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -268,11 +268,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_conclave",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -305,11 +305,11 @@
     "projSpeed": 0.0,
     "projRange": 0.0,
     "fireRate": 0.0,
-    "radius": 50.0,
+    "radius": 25.0,
     "paletteId": "faction_void",
     "shipType": "fighter",
     "flipSprite": false,
-    "pixelScale": 0.05,
+    "pixelScale": 0.025,
     "slots": {
       "weapon": 3,
       "armor": 1,
@@ -329,6 +329,124 @@
       {
         "slot": "engine",
         "moduleId": "engine_thruster_i"
+      }
+    ]
+  },
+  {
+    "id": "reaver_dreadnought",
+    "displayName": "Reaver Dreadnought",
+    "paletteId": "faction_reaperians",
+    "shipType": "capital",
+    "maxHull": 800.0,
+    "thrust": 40.0,
+    "turnSpeed": 20.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 140.0,
+    "flipSprite": false,
+    "pixelScale": 1.0,
+    "hardpoints": [
+      {
+        "name": "Forward Battery",
+        "slotType": "weapon",
+        "offset": { "x": 0, "y": -110 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Port Battery",
+        "slotType": "weapon",
+        "offset": { "x": -90, "y": 30 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Starboard Battery",
+        "slotType": "weapon",
+        "offset": { "x": 90, "y": 30 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Engine Bank",
+        "slotType": "engine",
+        "offset": { "x": 0, "y": 120 },
+        "slotCount": 1,
+        "modules": ["engine_thruster_i"]
+      },
+      {
+        "name": "Shield Array",
+        "slotType": "shield",
+        "offset": { "x": 0, "y": 0 },
+        "slotCount": 1,
+        "modules": ["shield_kinetic_barrier_i"]
+      },
+      {
+        "name": "Command Bridge",
+        "slotType": "command_bridge",
+        "offset": { "x": 0, "y": -30 },
+        "slotCount": 1,
+        "modules": []
+      }
+    ]
+  },
+  {
+    "id": "republic_battlecruiser",
+    "displayName": "Republic Battlecruiser",
+    "paletteId": "faction_republic",
+    "shipType": "capital",
+    "maxHull": 800.0,
+    "thrust": 40.0,
+    "turnSpeed": 20.0,
+    "projSpeed": 0.0,
+    "projRange": 0.0,
+    "fireRate": 0.0,
+    "radius": 140.0,
+    "flipSprite": false,
+    "pixelScale": 1.0,
+    "hardpoints": [
+      {
+        "name": "Forward Battery",
+        "slotType": "weapon",
+        "offset": { "x": 0, "y": -110 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Port Battery",
+        "slotType": "weapon",
+        "offset": { "x": -90, "y": 30 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Starboard Battery",
+        "slotType": "weapon",
+        "offset": { "x": 90, "y": 30 },
+        "slotCount": 1,
+        "modules": ["pulse_cannon_i"]
+      },
+      {
+        "name": "Engine Bank",
+        "slotType": "engine",
+        "offset": { "x": 0, "y": 120 },
+        "slotCount": 1,
+        "modules": ["engine_thruster_i"]
+      },
+      {
+        "name": "Shield Array",
+        "slotType": "shield",
+        "offset": { "x": 0, "y": 0 },
+        "slotCount": 1,
+        "modules": ["shield_kinetic_barrier_i"]
+      },
+      {
+        "name": "Command Bridge",
+        "slotType": "command_bridge",
+        "offset": { "x": 0, "y": -30 },
+        "slotCount": 1,
+        "modules": []
       }
     ]
   }

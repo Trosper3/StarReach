@@ -100,6 +100,11 @@ PlayerStation& FleetManager::SpawnStation(const std::string& stationDefId, Vecto
         ps.storage.assign(8, StorageItem{});
     }
 
+    // Epic 3: player stations start at half the baseline NPC-station stock —
+    // they haven't got an Industrialist producing for them yet, just whatever
+    // the player and passing Trader NPCs bring through.
+    SeedStationEconomy(ps.economy, 0.5f);
+
     PlayerStations.push_back(std::move(ps));
     return PlayerStations.back();
 }

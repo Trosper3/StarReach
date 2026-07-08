@@ -7,5 +7,6 @@
   { "id": "tungsten",  "displayName": "Tungsten",  "color": { "r": 126, "g": 126, "b": 140, "a": 255 }, "sellValue": 6 },
   { "id": "crystite",  "displayName": "Crystite",  "color": { "r":  56, "g": 210, "b": 196, "a": 255 }, "sellValue": 8 },
   { "id": "xenonite",  "displayName": "Xenonite",  "color": { "r": 170, "g":  82, "b": 228, "a": 255 }, "sellValue": 12 },
-  { "id": "voidstone", "displayName": "Voidstone", "color": { "r":  72, "g":  26, "b":  96, "a": 255 }, "sellValue": 15 }
+  { "id": "voidstone", "displayName": "Voidstone", "color": { "r":  72, "g":  26, "b":  96, "a": 255 }, "sellValue": 15 },
+  { "id": "fuel_cells", "displayName": "Fuel Cells", "color": { "r": 240, "g": 160, "b":  40, "a": 255 }, "sellValue": 3 }
 ]

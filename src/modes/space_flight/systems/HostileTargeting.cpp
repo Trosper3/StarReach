@@ -1,17 +1,18 @@
 #include "modes/space_flight/systems/HostileTargeting.h"
 #include "modes/space_flight/SpaceFlight.h"
 #include "systems/diplomacy/DiplomaticRegistry.h"
+#include "systems/diplomacy/ReputationRegistry.h"
 #include "raymath.h"
 
 namespace combat {
 
 HostileTarget FindNearestHostileTarget(const SystemWorld&  world,
                                        const ecs::Entity&  playerEntity,
-                                       Faction             playerFaction,
                                        Faction             selfFaction,
                                        Vector2             selfPos,
                                        float               maxRange,
-                                       unsigned int         selfStationId) {
+                                       unsigned int         selfStationId,
+                                       bool                playerTargetable) {
     HostileTarget best;
     float bestDist = maxRange;
 
@@ -26,7 +27,7 @@ HostileTarget FindNearestHostileTarget(const SystemWorld&  world,
         }
     }
 
-    if (DiplomaticRegistry::Get(selfFaction, playerFaction) == Relation::Hostile) {
+    if (playerTargetable && ReputationRegistry::PlayerRelation(selfFaction) == Relation::Hostile) {
         float d = Vector2Distance(selfPos, playerEntity.transform.position);
         if (d < bestDist) {
             bestDist = d;
@@ -47,10 +48,22 @@ HostileTarget FindNearestHostileTarget(const SystemWorld&  world,
     return best;
 }
 
-bool CoreIsProtected(const std::vector<HardpointState>& hardpoints) {
+bool AllHardpointsDestroyed(const std::vector<HardpointState>& hardpoints) {
     for (const HardpointState& hp : hardpoints)
-        if (!hp.isCore && hp.alive) return true;
-    return false;
+        if (hp.alive) return false;
+    return true;
+}
+
+bool IsDisabled(const std::vector<HardpointState>& hardpoints) {
+    // Keyed off weapon-capable hardpoints only (wSlots > 0), not "every
+    // non-core hardpoint" — a docking bay, trade hub, mining drill, engine,
+    // or shield array can't shoot back, and destroying them to reach this
+    // state would gut the very thing capture is supposed to hand over.
+    // Caller only reaches this once combat::AllHardpointsDestroyed is false,
+    // so the object is already known to still have something alive.
+    for (const HardpointState& hp : hardpoints)
+        if (hp.alive && hp.wSlots > 0) return false; // still has a live weapon hardpoint — armed
+    return true;
 }
 
 } // namespace combat

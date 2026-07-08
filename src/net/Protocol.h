@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 #include "NetCommon.h"
 #include "../core/FactionEnum.h"           // Faction, carried in Hello for discovery pooling
@@ -35,6 +36,14 @@ enum class MsgType : uint8_t {
     // broadcast to faction-mates whenever anyone in the party warps somewhere.
     DiscoverySync   = 11,  // S->C: full discovered-system-id list for the recipient's faction
     SystemDiscovered= 12,  // S->C: one more system id discovered by a same-faction party member
+    // Epic C (player-built structures MP sync): a client wanting to build a
+    // station or place a friendly ship sends a request instead of creating
+    // the object locally; only the host ever actually creates it (canonical
+    // id assignment), then it reaches everyone through the normal Snapshot
+    // broadcast. Materials/credits are validated and spent locally by the
+    // requesting client before sending — co-op trust model, not anti-cheat.
+    BuildStationRequest = 13, // C->S: build a player station at (posX,posY)
+    PlaceShipRequest    = 14, // C->S: place a friendly NPC ship at (posX,posY)
 };
 
 // Station state that differs from what seed-regeneration produces. Sent inside
@@ -84,6 +93,32 @@ struct InputCommand {
     uint32_t sequence    = 0;    // client-incrementing; for ordering/prediction
     float    posX        = 0.0f; // client-authoritative position (host uses this to display ship)
     float    posY        = 0.0f;
+    uint8_t  docked       = 0;   // 1 = client is inside a station menu — host excludes this
+                                  // peer from targeting/collision/broadcast until it clears
+};
+
+// C->S: client requests the host build a player station at (posX,posY) in
+// the client's current system. Materials/credits are validated and spent
+// locally by the requesting client BEFORE sending this — the host does not
+// re-validate affordability (co-op trust model, not anti-cheat). See
+// [[tasks-multiplayer]] Epic C.
+struct BuildStationRequest {
+    std::string stationDefId;
+    float       posX = 0.0f;
+    float       posY = 0.0f;
+};
+
+// C->S: client requests the host place a friendly NPC ship (incl. a
+// player-built capital) at (posX,posY). Same locally-trusted spend model as
+// BuildStationRequest. requesterId is NOT sent on the wire (the host already
+// knows the sending peer from the ENet connection) — NetSession fills it in
+// after decode, mirroring how MsgType::Input stamps cmd.networkId, so the
+// host knows which peer's system to place the ship into.
+struct PlaceShipRequest {
+    std::string shipDefId;
+    float       posX = 0.0f;
+    float       posY = 0.0f;
+    uint32_t    requesterId = 0;
 };
 
 // ── Low-level byte (de)serialization ────────────────────────────────────────
@@ -95,6 +130,15 @@ struct ByteWriter {
     void put(const T& v) {
         const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
         data.insert(data.end(), p, p + sizeof(T));
+    }
+
+    // Length-prefixed string (uint8_t length, capped at 255 bytes) — mirrors
+    // ByteReader::getStr(). Truncates silently past 255 chars (defIds are
+    // short identifiers, never expected to hit this).
+    void putStr(const std::string& s) {
+        uint8_t len = static_cast<uint8_t>(std::min(s.size(), size_t(255)));
+        put(len);
+        data.insert(data.end(), s.begin(), s.begin() + len);
     }
 };
 
@@ -114,6 +158,18 @@ struct ByteReader {
         p += sizeof(T);
         remaining -= sizeof(T);
         return v;
+    }
+
+    // Length-prefixed string (uint8_t length, capped at 255 bytes) — the
+    // template get<T>()/put<T>() above assume a fixed-size POD, which a
+    // std::string is not.
+    std::string getStr() {
+        uint8_t len = get<uint8_t>();
+        if (!ok || remaining < len) { ok = false; return {}; }
+        std::string s(reinterpret_cast<const char*>(p), len);
+        p += len;
+        remaining -= len;
+        return s;
     }
 };
 
@@ -152,6 +208,7 @@ inline std::vector<uint8_t> EncodeInput(const InputCommand& c) {
     w.put(c.sequence);
     w.put(c.posX);
     w.put(c.posY);
+    w.put(c.docked);
     return std::move(w.data);
 }
 
@@ -174,11 +231,46 @@ struct ProjectileSnapshot {
     float velX = 0.0f, velY = 0.0f;
 };
 
+// Per-hardpoint capital-ship state (appended after the projectile section).
+// One flat row per alive-ship hardpoint; the client groups rows by capitalId.
+struct CapitalHardpointSnapshot {
+    uint32_t capitalId = 0;
+    uint8_t  hpIndex   = 0;
+    uint16_t hull      = 0;
+    uint8_t  alive     = 1;
+};
+
+// Player-built station body state (appended after the capital-hardpoint
+// section). Resent in full every snapshot tick (position is static once
+// placed) — keeps encode/decode symmetric with AsteroidSnapshot rather than
+// adding a delta/dirty-tracking scheme for a handful of stations per system.
+struct PlayerStationSnapshot {
+    uint32_t    id           = 0;
+    std::string stationDefId;
+    float       posX         = 0.0f;
+    float       posY         = 0.0f;
+    uint8_t     alive        = 1;
+};
+
+// Per-hardpoint player-station state (appended after the PlayerStationSnapshot
+// section). One flat row per hardpoint; client groups rows by stationId.
+// Kept separate from CapitalHardpointSnapshot because PlayerStation::id and
+// NpcMeta::id are independent per-process counters that can collide.
+struct PlayerStationHardpointSnapshot {
+    uint32_t stationId = 0;
+    uint8_t  hpIndex   = 0;
+    uint16_t hull      = 0;
+    uint8_t  alive     = 1;
+};
+
 inline std::vector<uint8_t> EncodeSnapshot(
-    uint32_t                                 systemId,
-    const std::vector<ecs::NetworkSnapshot>& snaps,
-    const std::vector<AsteroidSnapshot>&     asteroids   = {},
-    const std::vector<ProjectileSnapshot>&   projectiles = {})
+    uint32_t                                     systemId,
+    const std::vector<ecs::NetworkSnapshot>&     snaps,
+    const std::vector<AsteroidSnapshot>&         asteroids   = {},
+    const std::vector<ProjectileSnapshot>&       projectiles = {},
+    const std::vector<CapitalHardpointSnapshot>& capitals    = {},
+    const std::vector<PlayerStationSnapshot>&    stations    = {},
+    const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {})
 {
     ByteWriter w;
     w.put(uint8_t(MsgType::Snapshot));
@@ -216,7 +308,67 @@ inline std::vector<uint8_t> EncodeSnapshot(
         w.put(projectiles[i].velX);
         w.put(projectiles[i].velY);
     }
+    // Capital hardpoint section.
+    uint16_t cCount = static_cast<uint16_t>(std::min(capitals.size(), size_t(65535)));
+    w.put(cCount);
+    for (uint16_t i = 0; i < cCount; ++i) {
+        w.put(capitals[i].capitalId);
+        w.put(capitals[i].hpIndex);
+        w.put(capitals[i].hull);
+        w.put(capitals[i].alive);
+    }
+    // Player-station body section.
+    uint16_t sCount = static_cast<uint16_t>(std::min(stations.size(), size_t(65535)));
+    w.put(sCount);
+    for (uint16_t i = 0; i < sCount; ++i) {
+        w.put(stations[i].id);
+        w.putStr(stations[i].stationDefId);
+        w.put(stations[i].posX);
+        w.put(stations[i].posY);
+        w.put(stations[i].alive);
+    }
+    // Player-station hardpoint section.
+    uint16_t shCount = static_cast<uint16_t>(std::min(stationHardpoints.size(), size_t(65535)));
+    w.put(shCount);
+    for (uint16_t i = 0; i < shCount; ++i) {
+        w.put(stationHardpoints[i].stationId);
+        w.put(stationHardpoints[i].hpIndex);
+        w.put(stationHardpoints[i].hull);
+        w.put(stationHardpoints[i].alive);
+    }
     return std::move(w.data);
+}
+
+inline std::vector<uint8_t> EncodeBuildStationRequest(const std::string& stationDefId, float posX, float posY) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::BuildStationRequest));
+    w.putStr(stationDefId);
+    w.put(posX);
+    w.put(posY);
+    return std::move(w.data);
+}
+
+inline bool DecodeBuildStationRequest(ByteReader& r, std::string& outStationDefId, float& outX, float& outY) {
+    outStationDefId = r.getStr();
+    outX = r.get<float>();
+    outY = r.get<float>();
+    return r.ok;
+}
+
+inline std::vector<uint8_t> EncodePlaceShipRequest(const std::string& shipDefId, float posX, float posY) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::PlaceShipRequest));
+    w.putStr(shipDefId);
+    w.put(posX);
+    w.put(posY);
+    return std::move(w.data);
+}
+
+inline bool DecodePlaceShipRequest(ByteReader& r, std::string& outShipDefId, float& outX, float& outY) {
+    outShipDefId = r.getStr();
+    outX = r.get<float>();
+    outY = r.get<float>();
+    return r.ok;
 }
 
 inline std::vector<uint8_t> EncodePlayerDead() {
@@ -361,6 +513,7 @@ inline bool DecodeInput(ByteReader& r, InputCommand& out) {
     out.sequence    = r.get<uint32_t>();
     out.posX        = r.get<float>();
     out.posY        = r.get<float>();
+    out.docked      = r.get<uint8_t>();
     return r.ok;
 }
 
@@ -368,11 +521,17 @@ inline bool DecodeSnapshot(ByteReader& r,
                            uint32_t&                          outSystemId,
                            std::vector<ecs::NetworkSnapshot>& out,
                            std::vector<AsteroidSnapshot>&     asteroidOut,
-                           std::vector<ProjectileSnapshot>&   projOut)
+                           std::vector<ProjectileSnapshot>&   projOut,
+                           std::vector<CapitalHardpointSnapshot>& capsOut,
+                           std::vector<PlayerStationSnapshot>&    stationsOut,
+                           std::vector<PlayerStationHardpointSnapshot>& stationHpsOut)
 {
     out.clear();
     asteroidOut.clear();
     projOut.clear();
+    capsOut.clear();
+    stationsOut.clear();
+    stationHpsOut.clear();
     outSystemId = r.get<uint32_t>();
     uint16_t count = r.get<uint16_t>();
     if (!r.ok) return false;
@@ -420,6 +579,49 @@ inline bool DecodeSnapshot(ByteReader& r,
         ps.velY = r.get<float>();
         if (!r.ok) break;
         projOut.push_back(ps);
+    }
+    // Capital hardpoint section.
+    if (r.remaining == 0) return true;
+    uint16_t cCount = r.get<uint16_t>();
+    if (!r.ok) return true;
+    capsOut.reserve(cCount);
+    for (uint16_t i = 0; i < cCount; ++i) {
+        CapitalHardpointSnapshot cs;
+        cs.capitalId = r.get<uint32_t>();
+        cs.hpIndex   = r.get<uint8_t>();
+        cs.hull      = r.get<uint16_t>();
+        cs.alive     = r.get<uint8_t>();
+        if (!r.ok) break;
+        capsOut.push_back(cs);
+    }
+    // Player-station body section.
+    if (r.remaining == 0) return true;
+    uint16_t sCount = r.get<uint16_t>();
+    if (!r.ok) return true;
+    stationsOut.reserve(sCount);
+    for (uint16_t i = 0; i < sCount; ++i) {
+        PlayerStationSnapshot ss;
+        ss.id           = r.get<uint32_t>();
+        ss.stationDefId = r.getStr();
+        ss.posX         = r.get<float>();
+        ss.posY         = r.get<float>();
+        ss.alive        = r.get<uint8_t>();
+        if (!r.ok) break;
+        stationsOut.push_back(ss);
+    }
+    // Player-station hardpoint section.
+    if (r.remaining == 0) return true;
+    uint16_t shCount = r.get<uint16_t>();
+    if (!r.ok) return true;
+    stationHpsOut.reserve(shCount);
+    for (uint16_t i = 0; i < shCount; ++i) {
+        PlayerStationHardpointSnapshot shs;
+        shs.stationId = r.get<uint32_t>();
+        shs.hpIndex   = r.get<uint8_t>();
+        shs.hull      = r.get<uint16_t>();
+        shs.alive     = r.get<uint8_t>();
+        if (!r.ok) break;
+        stationHpsOut.push_back(shs);
     }
     return true;
 }

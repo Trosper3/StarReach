@@ -43,6 +43,13 @@ struct SystemMapData {
     Vector2              playerPos       = {};
     float                hyperdriveRange = 0.0f;
     int                  wingmanCount    = 0;
+    // Epic 4 (hyperdrive fuel): current/max tank, shown next to the range
+    // readout so the player can see a jump is fuel-blocked (not just
+    // range-blocked) before clicking it. GalaxyMap doesn't compute the
+    // per-jump cost itself (SpaceFlight::JumpFuelCost does, at commit time)
+    // — this is display-only.
+    float                fuel    = 0.0f;
+    float                maxFuel = 0.0f;
     std::vector<MapBlip> blips;
     bool                 hasSun   = false; // sun always sits at local (0,0)
     Color                sunCore  = WHITE;
@@ -64,11 +71,6 @@ struct SystemMapData {
     // existence/distance a selected undiscovered system's popup reveals —
     // see GalaxyMap.cpp's PreviewSensorIntel.
     int mapSensorTier = 0;
-    // The player's own faction — needed to resolve DiplomaticRegistry::Get()
-    // for the faction/relation overlay on controlled discovered systems (see
-    // GalaxyMap.cpp's Draw()). Defaults to Republic, matching kPlayerFaction's
-    // own default in SpaceFlight.cpp.
-    Faction playerFaction = Faction::Republic;
 
     // Universe tier. Defaults to 1 (the home galaxy) — callers that don't
     // yet track multiple galaxies get correct behavior for free, since

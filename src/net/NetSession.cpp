@@ -135,6 +135,10 @@ void NetSession::Shutdown() {
     newPeerFactions.clear();
     pendingDiscoverySync.reset();
     pendingSystemDiscoveries.clear();
+    pendingBuildStationRequests.clear();
+    pendingPlaceShipRequests.clear();
+    latestPlayerStationSnapshots.clear();
+    latestPlayerStationHardpointSnapshots.clear();
 }
 
 void NetSession::Poll(float /*dt*/) {
@@ -249,11 +253,17 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
         std::vector<ecs::NetworkSnapshot> snaps;
         std::vector<AsteroidSnapshot>     aSnaps;
         std::vector<ProjectileSnapshot>   pSnaps;
-        if (DecodeSnapshot(r, sysId, snaps, aSnaps, pSnaps)) {
+        std::vector<CapitalHardpointSnapshot> cSnaps;
+        std::vector<PlayerStationSnapshot> stSnaps;
+        std::vector<PlayerStationHardpointSnapshot> stHpSnaps;
+        if (DecodeSnapshot(r, sysId, snaps, aSnaps, pSnaps, cSnaps, stSnaps, stHpSnaps)) {
             latestSnapshotSystemId      = sysId;
             latestSnapshots             = std::move(snaps);
             latestAsteroidSnapshots     = std::move(aSnaps);
             latestProjectileSnapshots   = std::move(pSnaps);
+            latestCapitalSnapshots      = std::move(cSnaps);
+            latestPlayerStationSnapshots          = std::move(stSnaps);
+            latestPlayerStationHardpointSnapshots = std::move(stHpSnaps);
             snapshotDirty = true;
         }
         break;
@@ -302,6 +312,22 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
         break;
     }
 
+    case MsgType::BuildStationRequest: {
+        BuildStationRequest req;
+        if (DecodeBuildStationRequest(r, req.stationDefId, req.posX, req.posY))
+            pendingBuildStationRequests.push_back(std::move(req));
+        break;
+    }
+
+    case MsgType::PlaceShipRequest: {
+        PlaceShipRequest req;
+        if (DecodePlaceShipRequest(r, req.shipDefId, req.posX, req.posY)) {
+            req.requesterId = GetPeerId(from);
+            pendingPlaceShipRequests.push_back(std::move(req));
+        }
+        break;
+    }
+
     default:
         break;
     }
@@ -311,7 +337,10 @@ void NetSession::HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
                                   uint32_t                              systemId,
                                   const std::vector<ecs::Entity>&       entities,
                                   const std::vector<AsteroidSnapshot>&   asteroids,
-                                  const std::vector<ProjectileSnapshot>&  projectiles) {
+                                  const std::vector<ProjectileSnapshot>&  projectiles,
+                                  const std::vector<CapitalHardpointSnapshot>& capitals,
+                                  const std::vector<PlayerStationSnapshot>& stations,
+                                  const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints) {
     if (_role != NetRole::Host || !_host || peerIds.empty()) return;
 
     std::vector<ecs::NetworkSnapshot> snaps;
@@ -327,7 +356,7 @@ void NetSession::HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
         snaps.push_back(s);
     }
 
-    auto pkt = EncodeSnapshot(systemId, snaps, asteroids, projectiles);
+    auto pkt = EncodeSnapshot(systemId, snaps, asteroids, projectiles, capitals, stations, stationHardpoints);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), 0 /*unreliable*/);
     bool sent = false;
     for (size_t i = 0; i < _host->peerCount; ++i) {
@@ -445,6 +474,22 @@ void NetSession::ClientSendWarpNotify(uint32_t systemId) {
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
     enet_peer_send(_serverPeer, kChannelReliable, p);
     std::printf("[net] sent ClientWarpNotify for system %u\n", systemId);
+}
+
+void NetSession::ClientSendBuildStationRequest(const std::string& stationDefId, float posX, float posY) {
+    if (_role != NetRole::Client || !_serverPeer || !_connected) return;
+
+    auto pkt = EncodeBuildStationRequest(stationDefId, posX, posY);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    enet_peer_send(_serverPeer, kChannelReliable, p);
+}
+
+void NetSession::ClientSendPlaceShipRequest(const std::string& shipDefId, float posX, float posY) {
+    if (_role != NetRole::Client || !_serverPeer || !_connected) return;
+
+    auto pkt = EncodePlaceShipRequest(shipDefId, posX, posY);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    enet_peer_send(_serverPeer, kChannelReliable, p);
 }
 
 } // namespace net

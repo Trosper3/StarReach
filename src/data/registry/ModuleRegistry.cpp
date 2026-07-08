@@ -189,11 +189,15 @@ ModuleDef ModuleRegistry::Random(ModuleType type, ModuleGrade grade) {
 }
 
 ModuleDef ModuleRegistry::RandomDrop(ModuleGrade grade) {
+    // Every equippable module type can drop — Consumable (repair kits) is
+    // deliberately excluded, since those are a purchasable/usable item
+    // category rather than a loadout slot module.
     static const ModuleType kDropTypes[] = {
-        ModuleType::Weapon, ModuleType::Armor,
-        ModuleType::Shield, ModuleType::Engine,
+        ModuleType::Weapon, ModuleType::Armor,    ModuleType::Shield,
+        ModuleType::Engine, ModuleType::Hyperdrive, ModuleType::Auxiliary,
     };
-    ModuleType type = kDropTypes[GetRandomValue(0, 3)];
+    static constexpr int kDropTypeCount = sizeof(kDropTypes) / sizeof(kDropTypes[0]);
+    ModuleType type = kDropTypes[GetRandomValue(0, kDropTypeCount - 1)];
     return Random(type, grade);
 }
 

@@ -22,6 +22,9 @@ struct Asteroid {
 };
 
 inline float AsteroidRadius(int tier) { return tier == 2 ? 46.0f : tier == 1 ? 24.0f : 12.0f; }
-inline int   AsteroidHealth(int tier) { return tier == 2 ? 3     : tier == 1 ? 2     : 1;      }
+// Real hit points (not an impact-count abstraction) so weapon damage governs
+// break speed — kept under int8_t's 127 ceiling since these ride the
+// multiplayer AsteroidSnapshot wire format (net::AsteroidSnapshot::health) as-is.
+inline int   AsteroidHealth(int tier) { return tier == 2 ? 120   : tier == 1 ? 55    : 20;     }
 inline float AsteroidSpeed (int tier) { return tier == 2 ? 38.0f : tier == 1 ? 65.0f : 105.0f; }
 inline float AsteroidDamage(int tier) { return tier == 2 ? 12.0f : tier == 1 ? 6.0f  : 3.0f;   }

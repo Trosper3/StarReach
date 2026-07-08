@@ -1,7 +1,13 @@
 #include "ModulesMenu.h"
+#include "shared/ui/HudTheme.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+
+// ── Shared chrome/glass HUD theme (see shared/ui/HudTheme.h) — same helpers
+// StationServicesMenu/BuildMenu already use, so all SpaceFlight menus read
+// as one UI language. Grade/type colors (StorageMenu::GradeColor/TypeColor)
+// stay as-is — those are semantic (rarity/module-type), not structural chrome.
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -161,19 +167,16 @@ static const char* ModTypeLetter(ModuleType t) {
 
 void ModulesMenu::DrawModSlot(Rectangle r, const std::optional<ModuleDef>& mod,
     bool hovered, bool highlighted) const {
-    DrawRectangleRec(r, Color{ 10, 18, 10, 220 });
-
-    Color border = highlighted ? Color{ 255, 255, 80, 255 }
-        : hovered ? Color{ 120, 220,120, 255 }
-    : Color{ 34,  98, 34, 155 };
-    DrawRectangleLinesEx(r, (highlighted || hovered) ? 2.0f : 1.0f, border);
+    using namespace hudtheme;
+    Color border = highlighted ? HudCaution : hovered ? HudGood : HudDiv;
+    DrawHudChamferRect(r, 8.0f, Color{ 10, 16, 24, 220 }, border, (highlighted || hovered) ? 2.0f : 1.0f);
 
     if (!mod) {
         const char* em = "EMPTY";
         DrawText(em,
             (int)(r.x + (r.width - MeasureText(em, 9)) / 2.0f),
             (int)(r.y + r.height / 2.0f - 5), 9,
-            Color{ 50, 70, 50, 110 });
+            Color{ 60, 75, 90, 140 });
         return;
     }
 
@@ -200,13 +203,13 @@ void ModulesMenu::DrawModSlot(Rectangle r, const std::optional<ModuleDef>& mod,
 
 void ModulesMenu::DrawDraggedItem() const {
     if (!_dragging) return;
+    using namespace hudtheme;
 
     Vector2 m = GetMousePosition();
     const float sz = 64.0f;
     Rectangle r = { m.x - sz * 0.5f, m.y - sz * 0.5f, sz, sz };
 
-    DrawRectangleRec(r, Color{ 12, 20, 12, 230 });
-    DrawRectangleLinesEx(r, 2.0f, Color{ 100, 220, 100, 255 });
+    DrawHudChamferRect(r, 8.0f, Color{ 12, 20, 28, 230 }, HudGood, 2.0f);
 
     Color gc = StorageMenu::GradeColor(_dragMod.grade);
     DrawRectangleLinesEx({ r.x + 1, r.y + 1, r.width - 2, r.height - 2 }, 2.0f,
@@ -224,6 +227,7 @@ void ModulesMenu::DrawDraggedItem() const {
 
 void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, float alpha) const {
     if (alpha < 0.01f) return;
+    using namespace hudtheme;
 
     auto A = [&](uint8_t base) -> uint8_t {
         return (uint8_t)(base * alpha);
@@ -305,14 +309,14 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
     if (py + panH > sh - 8) py = sh - panH - 8;
 
     Color gc = StorageMenu::GradeColor(mod.grade);
-    DrawRectangle(px, py, panW, panH, { 6, 10, 6, A(240) });
+    DrawRectangle(px, py, panW, panH, { 4, 8, 14, A(245) });
     DrawRectangleLinesEx({ (float)px, (float)py, (float)panW, (float)panH },
         1.5f, { gc.r, gc.g, gc.b, A(200) });
 
     int cx = px + padX;
     int cy = py + padY;
 
-    DrawText(mod.displayName.c_str(), cx, cy, 14, { 210, 235, 210, A(255) });
+    DrawText(mod.displayName.c_str(), cx, cy, 14, { HudValue.r, HudValue.g, HudValue.b, A(255) });
     cy += 18;
 
     DrawText(StorageMenu::GradeName(mod.grade), cx, cy, 11,
@@ -320,11 +324,11 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
     cy += 14;
 
     if (nLines > 0) {
-        DrawRectangle(cx, cy, panW - padX * 2, 1, { 40, 80, 40, A(140) });
+        DrawRectangle(cx, cy, panW - padX * 2, 1, { HudDiv.r, HudDiv.g, HudDiv.b, A(140) });
         cy += 5;
 
-        Color lblColor = { 115, 155, 115, A(220) };
-        Color valColor = { 195, 220, 195, A(255) };
+        Color lblColor = { HudLabel.r, HudLabel.g, HudLabel.b, A(220) };
+        Color valColor = { HudValue.r, HudValue.g, HudValue.b, A(255) };
         for (int i = 0; i < nLines; ++i) {
             DrawText(labels[i], cx, cy, 11, lblColor);
             DrawText(vals[i], cx + 95, cy, 11, valColor);
@@ -335,30 +339,30 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
 
 void ModulesMenu::Draw() const {
     if (!isOpen || !_loadout || !_storage) return;
+    using namespace hudtheme;
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    DrawRectangle(0, 0, sw, sh, Color{ 1, 3, 1, 255 });
+    DrawRectangle(0, 0, sw, sh, Color{ 2, 4, 9, 255 });
 
     const char* title = "MODULES";
-    DrawText(title, (sw - MeasureText(title, 26)) / 2, 18, 26, Color{ 68, 162, 68, 255 });
-    DrawRectangle((sw - 400) / 2, 54, 400, 1, Color{ 34, 98, 34, 170 });
+    DrawText(title, (sw - MeasureText(title, 26)) / 2, 18, 26, HudValue);
+    DrawRectangle((sw - 400) / 2, 54, 400, 1, HudDiv);
 
     Vector2 mouse = GetMousePosition();
     Rectangle back = { 18.0f, 16.0f, 110.0f, 36.0f };
     bool hb = CheckCollisionPointRec(mouse, back);
-    DrawRectangleRec(back, hb ? Color{ 50, 95, 50, 230 } : Color{ 12, 28, 12, 220 });
-    DrawRectangleLinesEx(back, 1.0f, Color{ 40, 160, 40, 200 });
+    DrawHudChamferRect(back, 6.0f, hb ? Color{ 30, 55, 70, 230 } : Color{ 14, 20, 28, 200 }, HudBorder, hb ? 2.0f : 1.0f);
     const char* bl = "< BACK";
     DrawText(bl,
         (int)(back.x + (back.width - MeasureText(bl, 15)) / 2.0f),
         (int)(back.y + (back.height - 15) / 2.0f),
-        15, WHITE);
+        15, hb ? WHITE : HudLabel);
 
     int modW, stoX, stoW;
     PanelSplit(sw, modW, stoX, stoW);
-    DrawRectangle(50 + modW + 14, 60, 1, sh - 100, Color{ 34, 98, 34, 120 });
-    DrawText("SHIP MODULES", 50, 64, 13, Color{ 68, 162, 68, 195 });
-    DrawText("STORAGE", stoX, 64, 13, Color{ 68, 162, 68, 195 });
+    DrawRectangle(50 + modW + 14, 60, 1, sh - 100, HudDiv);
+    DrawText("SHIP MODULES", 50, 64, 13, HudLabel);
+    DrawText("STORAGE", stoX, 64, 13, HudLabel);
 
     static constexpr int LabelW = 130;
     static constexpr int RowH = 80;
@@ -385,7 +389,7 @@ void ModulesMenu::Draw() const {
             rd.type == ModuleType::Hyperdrive ? _hdSlots  :
             _auxSlots;
         if (slotCount == 0)
-            DrawText("NO SLOT", 50 + LabelW, ty, 11, Color{ 50, 55, 50, 160 });
+            DrawText("NO SLOT", 50 + LabelW, ty, 11, Color{ 55, 65, 75, 160 });
     }
 
     std::vector<ModSlotRef> modSlots;
@@ -456,18 +460,18 @@ void ModulesMenu::Draw() const {
         HideCursor();
         Vector2 m = GetMousePosition();
         if (grabbed) {
-            DrawCircle((int)m.x, (int)m.y, 6, Color{ 40, 180, 40, 240 });
-            DrawCircleLines((int)m.x, (int)m.y, 6.0f, Color{ 150, 255, 150, 255 });
+            DrawCircle((int)m.x, (int)m.y, 6, Color{ HudGood.r, HudGood.g, HudGood.b, 240 });
+            DrawCircleLines((int)m.x, (int)m.y, 6.0f, Color{ 170, 240, 210, 255 });
             DrawCircleLines((int)m.x - 2, (int)m.y + 1, 2.0f, WHITE);
         }
         else {
-            DrawRectangle((int)m.x - 5, (int)m.y - 2, 10, 7, Color{ 20, 100, 20, 200 });
-            DrawRectangleLines((int)m.x - 5, (int)m.y - 2, 10, 7, Color{ 100, 220, 100, 255 });
+            DrawRectangle((int)m.x - 5, (int)m.y - 2, 10, 7, Color{ 20, 55, 70, 200 });
+            DrawRectangleLines((int)m.x - 5, (int)m.y - 2, 10, 7, HudBorder);
             for (int f = 0; f < 4; ++f) {
                 int fx = (int)m.x - 4 + f * 2;
-                DrawLine(fx, (int)m.y - 2, fx, (int)m.y - 8, Color{ 150, 255, 150, 255 });
+                DrawLine(fx, (int)m.y - 2, fx, (int)m.y - 8, HudValue);
             }
-            DrawLine((int)m.x - 5, (int)m.y + 2, (int)m.x - 9, (int)m.y - 1, Color{ 150, 255, 150, 255 });
+            DrawLine((int)m.x - 5, (int)m.y + 2, (int)m.x - 9, (int)m.y - 1, HudValue);
         }
     }
     else {
