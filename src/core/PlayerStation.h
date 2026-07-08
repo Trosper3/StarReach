@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "core/Module.h"
 #include "core/StorageItem.h"
+#include "core/StationEconomy.h"
 #include "raylib.h"
 #include <optional>
 #include <string>
@@ -15,6 +16,7 @@ struct HardpointState {
     float       hull     = 100.0f;
     float       maxHull  = 100.0f;
     bool        alive    = true;
+    Vector2     localOffset = { 0.0f, 0.0f }; // ship/station-local, unrotated; capital ships use this for turret placement
     int         wSlots   = 0;
     int         arSlots  = 0;
     int         shSlots  = 0;
@@ -40,6 +42,11 @@ struct PlayerStation {
     // Onboard cargo hold (currently only populated for mining stations).
     std::vector<StorageItem> storage;
     float                    miningTimer = 0.0f;   // seconds until next auto-collected material
+
+    // Epic 3: per-station supply/demand (tasks_spaceflight_dynamics.md #3).
+    // Player stations get their own live stock too — a Trader NPC route can
+    // terminate at one just as easily as at an NPC-owned SpaceStation.
+    StationEconomy economy;
 
     HealthComponent health;
 

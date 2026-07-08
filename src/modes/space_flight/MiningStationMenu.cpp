@@ -1,12 +1,19 @@
 #include "MiningStationMenu.h"
+#include "shared/ui/HudTheme.h"
 #include "raylib.h"
 #include <algorithm>
 #include <cstdio>
 
-static constexpr Color BgPanel = {  6, 16, 12, 248 };
-static constexpr Color BdrMain = { 40, 160, 90, 200 };
-static constexpr Color TxtMain = { 180, 235, 200, 240 };
-static constexpr Color TxtDim  = {  90, 140, 110, 200 };
+// Shared chrome/glass HUD theme (see shared/ui/HudTheme.h) — same helpers
+// ModulesMenu/StorageMenu/StationServicesMenu/BuildMenu already use.
+using hudtheme::HudBg;
+using hudtheme::HudBorder;
+using hudtheme::HudLabel;
+using hudtheme::HudValue;
+using hudtheme::HudDiv;
+using hudtheme::HudCritical;
+using hudtheme::DrawHudBracketPanel;
+using hudtheme::DrawHudChamferRect;
 
 void MiningStationMenu::Open(PlayerStation* station, std::vector<StorageItem>* playerStorage) {
     _station  = station;
@@ -161,33 +168,29 @@ void MiningStationMenu::Draw() const {
     Vector2 mouse = GetMousePosition();
 
     DrawRectangle(0, 0, sw, sh, Color{ 0, 0, 0, 160 });
-    DrawRectangle(panelX, panelY, PanelW, PanelH, BgPanel);
-    DrawRectangleLinesEx({ (float)panelX, (float)panelY, (float)PanelW, (float)PanelH }, 1.5f, BdrMain);
+    DrawHudBracketPanel({ (float)panelX, (float)panelY, (float)PanelW, (float)PanelH }, HudBg, HudBorder, 14.0f, 2.0f);
 
     char titlebuf[128];
     std::snprintf(titlebuf, sizeof(titlebuf), "%s — STORAGE", _station->displayName.c_str());
-    DrawText(titlebuf, panelX + (PanelW - MeasureText(titlebuf, 14)) / 2, panelY + 8, 14, TxtMain);
+    DrawText(titlebuf, panelX + (PanelW - MeasureText(titlebuf, 14)) / 2, panelY + 8, 14, HudValue);
 
     Rectangle modBtn = { (float)(panelX + 8), (float)(panelY + 6), 96.0f, 22.0f };
     bool hovMod = CheckCollisionPointRec(mouse, modBtn);
-    DrawRectangleRec(modBtn, hovMod ? Color{ 20, 60, 40, 230 } : Color{ 10, 30, 20, 200 });
-    DrawRectangleLinesEx(modBtn, 1.0f, Color{ 40, 160, 90, 200 });
-    DrawText("MODULES", (int)(modBtn.x + 10), (int)(modBtn.y + 5), 11, hovMod ? WHITE : TxtDim);
+    DrawHudChamferRect(modBtn, 5.0f, hovMod ? Color{ 30, 55, 70, 230 } : Color{ 14, 20, 28, 200 }, HudBorder, hovMod ? 1.5f : 1.0f);
+    DrawText("MODULES", (int)(modBtn.x + 10), (int)(modBtn.y + 5), 11, hovMod ? WHITE : HudLabel);
 
     Rectangle closeBtn = { (float)(panelX + PanelW - 28), (float)(panelY + 6), 22.0f, 22.0f };
     bool hovX = CheckCollisionPointRec(mouse, closeBtn);
-    DrawRectangleRec(closeBtn, hovX ? Color{ 100, 30, 30, 200 } : Color{ 40, 15, 15, 180 });
-    DrawRectangleLinesEx(closeBtn, 1.0f, Color{ 150, 50, 50, 200 });
-    DrawText("X", (int)(closeBtn.x + 7), (int)(closeBtn.y + 5), 12, hovX ? WHITE : TxtDim);
+    DrawHudChamferRect(closeBtn, 4.0f, hovX ? Color{ 90, 25, 25, 220 } : Color{ 30, 12, 12, 180 }, HudCritical, 1.0f);
+    DrawText("X", (int)(closeBtn.x + 7), (int)(closeBtn.y + 5), 12, hovX ? WHITE : HudLabel);
 
     int stoX = panelX + 16;
     int plrX = panelX + PanelW - ColW - 16;
     int colY = panelY + 70;
 
-    DrawText("STATION", stoX, colY - 18, 11, TxtDim);
-    DrawText("YOUR SHIP", plrX, colY - 18, 11, TxtDim);
-    DrawLine(panelX + PanelW / 2, panelY + 50, panelX + PanelW / 2, panelY + PanelH - 16,
-             Color{ 30, 70, 45, 160 });
+    DrawText("STATION", stoX, colY - 18, 11, HudLabel);
+    DrawText("YOUR SHIP", plrX, colY - 18, 11, HudLabel);
+    DrawLine(panelX + PanelW / 2, panelY + 50, panelX + PanelW / 2, panelY + PanelH - 16, HudDiv);
 
     std::vector<Rectangle> stoRects, plrRects;
     GetColumnRects(stoX, colY, (int)_station->storage.size(), stoRects);

@@ -25,6 +25,24 @@ std::unordered_map<std::string, size_t> ShipRegistry::s_shipIndex;
 std::vector<StationDef>                 ShipRegistry::s_stations;
 std::unordered_map<std::string, size_t> ShipRegistry::s_stationIndex;
 
+static std::vector<ecs::StationHardpointDef> ParseHardpoints(const nlohmann::json& jarr) {
+    std::vector<ecs::StationHardpointDef> out;
+    for (auto& h : jarr) {
+        ecs::StationHardpointDef hp;
+        hp.name      = h.value("name",      "");
+        hp.slotType  = h.value("slotType",  "");
+        hp.slotCount = h.value("slotCount", 1);
+        if (h.contains("offset") && h["offset"].is_object())
+            hp.offset = { h["offset"].value("x", 0.0f),
+                          h["offset"].value("y", 0.0f) };
+        if (h.contains("modules") && h["modules"].is_array())
+            for (const auto& m : h["modules"])
+                if (m.is_string()) hp.preloadedModules.push_back(m.get<std::string>());
+        out.push_back(std::move(hp));
+    }
+    return out;
+}
+
 static AttributeSet ParseBaseStats(const nlohmann::json& j) {
     AttributeSet s;
     // Support explicit baseStats block or map from legacy flat fields.
@@ -61,21 +79,8 @@ void ShipRegistry::Init(const char* jsonPath) {
             d.assetPath   = e.value("assetPath",   "");
             if (e.contains("designArray") && e["designArray"].is_array())
                 d.designArray = ParseDesignArray(e["designArray"]);
-            if (e.contains("hardpoints") && e["hardpoints"].is_array()) {
-                for (auto& h : e["hardpoints"]) {
-                    StationHardpointDef hp;
-                    hp.name      = h.value("name",      "");
-                    hp.slotType  = h.value("slotType",  "");
-                    hp.slotCount = h.value("slotCount", 1);
-                    if (h.contains("offset") && h["offset"].is_object())
-                        hp.offset = { h["offset"].value("x", 0.0f),
-                                      h["offset"].value("y", 0.0f) };
-                    if (h.contains("modules") && h["modules"].is_array())
-                        for (const auto& m : h["modules"])
-                            if (m.is_string()) hp.preloadedModules.push_back(m.get<std::string>());
-                    d.hardpoints.push_back(std::move(hp));
-                }
-            }
+            if (e.contains("hardpoints") && e["hardpoints"].is_array())
+                d.hardpoints = ParseHardpoints(e["hardpoints"]);
             s_stationIndex[d.id] = s_stations.size();
             s_stations.push_back(std::move(d));
         } else {
@@ -105,6 +110,8 @@ void ShipRegistry::Init(const char* jsonPath) {
                 d.hyperdriveSlots = sl.value("hyperdrive", 1);
                 d.auxSlots        = sl.value("auxiliary",  0);
             }
+            if (e.contains("hardpoints") && e["hardpoints"].is_array())
+                d.hardpoints = ParseHardpoints(e["hardpoints"]);
             if (e.contains("loadout") && e["loadout"].is_array()) {
                 for (const auto& le : e["loadout"]) {
                     if (!le.is_object()) continue;

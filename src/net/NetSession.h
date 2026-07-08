@@ -76,7 +76,10 @@ public:
                           uint32_t                              systemId,
                           const std::vector<ecs::Entity>&       entities,
                           const std::vector<AsteroidSnapshot>&  asteroids   = {},
-                          const std::vector<ProjectileSnapshot>& projectiles = {});
+                          const std::vector<ProjectileSnapshot>& projectiles = {},
+                          const std::vector<CapitalHardpointSnapshot>& capitals = {},
+                          const std::vector<PlayerStationSnapshot>& stations = {},
+                          const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {});
 
     // Send a system's seed + live-state diff to a specific peer so they can
     // generate the map and reconcile it (sent at join and on warp arrival).
@@ -110,11 +113,22 @@ public:
     // occupies `systemId`; the host replies with a WorldSync for that system.
     void ClientSendWarpNotify(uint32_t systemId);
 
+    // Ask the host to build a player station / place a friendly NPC ship at
+    // (posX,posY) in the client's current system. The client does NOT create
+    // the object locally — it waits for the host's next Snapshot broadcast to
+    // show it (see [[tasks-multiplayer]] Epic C). No-op for the host/offline
+    // (single-player and the host keep their existing direct-call path).
+    void ClientSendBuildStationRequest(const std::string& stationDefId, float posX, float posY);
+    void ClientSendPlaceShipRequest(const std::string& shipDefId, float posX, float posY);
+
     // ── I/O buffers consumed by the game loop ────────────────────────────────
     std::vector<InputCommand>          pendingInputs;              // host side
     std::vector<ecs::NetworkSnapshot>  latestSnapshots;            // client side
     std::vector<AsteroidSnapshot>      latestAsteroidSnapshots;    // client side
     std::vector<ProjectileSnapshot>    latestProjectileSnapshots;  // client side
+    std::vector<CapitalHardpointSnapshot> latestCapitalSnapshots;  // client side
+    std::vector<PlayerStationSnapshot>    latestPlayerStationSnapshots;          // client side
+    std::vector<PlayerStationHardpointSnapshot> latestPlayerStationHardpointSnapshots; // client side
     uint32_t                           latestSnapshotSystemId = 0; // client: system the snapshot describes
     bool                               snapshotDirty    = false;   // client: true when a new snapshot arrived
     bool                               pendingPlayerDead = false;  // client: server killed this player
@@ -136,6 +150,10 @@ public:
     // Client: system ids from live SystemDiscovered broadcasts, queued for
     // the next drain.
     std::vector<uint32_t>                      pendingSystemDiscoveries;
+    // Host: build/placement requests from clients, awaiting drain into the
+    // host's own world (see [[tasks-multiplayer]] Epic C).
+    std::vector<BuildStationRequest>           pendingBuildStationRequests;
+    std::vector<PlaceShipRequest>              pendingPlaceShipRequests;
 
 private:
     void handlePacket(ENetPeer* from, const uint8_t* data, size_t len);

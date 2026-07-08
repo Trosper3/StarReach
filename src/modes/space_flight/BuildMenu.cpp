@@ -2,23 +2,28 @@
 #include "data/registry/ItemRegistry.h"
 #include "data/registry/BuildableRegistry.h"
 #include "data/registry/ModuleRegistry.h"
+#include "shared/ui/HudTheme.h"
 #include "raylib.h"
 #include <algorithm>
 #include <cstdio>
 
-// ── Palette ───────────────────────────────────────────────────────────────────
+// ── Palette ─────────────────────────────────────────────────────────────────
+// Shared chrome/glass HUD theme (see shared/ui/HudTheme.h) — same helpers
+// StationServicesMenu already uses, so the two menus read as one UI language.
 
-static constexpr Color BgPanel = { 8, 14, 28, 245 };
-static constexpr Color BdrColor = { 40,100,200, 200 };
-static constexpr Color TabActive = { 20, 55,130, 230 };
-static constexpr Color TabIdle = { 12, 25, 55, 200 };
-static constexpr Color CanBuild = { 30,160, 60, 200 };
-static constexpr Color CantBuild = { 130, 30, 30, 200 };
-static constexpr Color Selected = { 20, 60,140, 230 };
-static constexpr Color TxtMain = { 190,220,255, 240 };
-static constexpr Color TxtDim = { 100,130,170, 200 };
-static constexpr Color TxtGreen = { 80,220,100, 255 };
-static constexpr Color TxtRed = { 220, 80, 80, 255 };
+static bool BmHov(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(), r); }
+
+static void DrawBmBtn(Rectangle r, const char* label, bool enabled, bool good = true) {
+    using namespace hudtheme;
+    bool  hov = enabled && BmHov(r);
+    Color accent = good ? HudGood : HudCritical;
+    Color bg  = !enabled ? Color{ 16,16,16,150 } : (hov ? Color{ 30,55,70,230 } : Color{ 14,20,28,200 });
+    Color bdr = !enabled ? HudDiv : accent;
+    Color fg  = !enabled ? Color{ 60,65,70,160 } : (hov ? WHITE : HudLabel);
+    DrawHudChamferRect(r, 6.0f, bg, bdr, hov ? 2.0f : 1.0f);
+    int tw = MeasureText(label, 12);
+    DrawText(label, (int)(r.x + (r.width - tw) / 2.0f), (int)(r.y + (r.height - 12) / 2.0f), 12, fg);
+}
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 
@@ -324,25 +329,21 @@ void BuildMenu::Update() {
 
 void BuildMenu::Draw() const {
     if (!isOpen) return;
+    using namespace hudtheme;
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     int panelH = std::min(sh - 20, 480);
     int px = 12, py = sh / 2 - panelH / 2;
     Vector2 mouse = GetMousePosition();
 
-    // Panel
-    DrawRectangle(px, py, PanelW, panelH, BgPanel);
-    DrawRectangleLinesEx({ (float)px,(float)py,(float)PanelW,(float)panelH }, 1.5f, BdrColor);
+    DrawHudBracketPanel({ (float)px,(float)py,(float)PanelW,(float)panelH }, HudBg, HudBorder, 16.0f, 2.0f);
 
     const char* title = "BUILD MENU";
-    DrawText(title, px + (PanelW - MeasureText(title, 13)) / 2, py + 8, 13, TxtMain);
+    DrawText(title, px + (PanelW - MeasureText(title, 13)) / 2, py + 8, 13, HudValue);
 
     // Close [X]
     Rectangle closeBtn = { (float)(px + PanelW - 28), (float)(py + 6), 22.0f, 22.0f };
-    bool hovX = CheckCollisionPointRec(mouse, closeBtn);
-    DrawRectangleRec(closeBtn, hovX ? Color{ 100,30,30,200 } : Color{ 40,15,15,180 });
-    DrawRectangleLinesEx(closeBtn, 1.0f, Color{ 150,50,50,200 });
-    DrawText("X", (int)(closeBtn.x + 7), (int)(closeBtn.y + 5), 12, hovX ? WHITE : TxtDim);
+    DrawBmBtn(closeBtn, "X", true, false);
 
     // Tabs
     const char* tabLabels[] = { "STATIONS", "MODULES", "HARDPOINTS", "CRAFT" };
@@ -350,12 +351,11 @@ void BuildMenu::Draw() const {
     for (int i = 0; i < 4; ++i) {
         Rectangle r = { (float)(px + i * tabW),(float)tabY,(float)tabW,(float)TabH };
         bool active = (_tab == i);
-        DrawRectangleRec(r, active ? TabActive : TabIdle);
-        DrawRectangleLinesEx(r, active ? 1.5f : 1.0f,
-            active ? BdrColor : Color{ 30,60,110,180 });
+        DrawHudChamferRect(r, 6.0f, active ? Color{ 20,55,80,230 } : HudBg,
+            active ? HudBorder : HudDiv, active ? 2.0f : 1.0f);
         DrawText(tabLabels[i],
             (int)(r.x + (r.width - MeasureText(tabLabels[i], 10)) / 2),
-            (int)(r.y + 8), 10, active ? WHITE : TxtDim);
+            (int)(r.y + 8), 10, active ? HudValue : HudLabel);
     }
 
     int listY = tabY + TabH + 6;
@@ -377,14 +377,14 @@ void BuildMenu::Draw() const {
             bool sel = (i == _selIdx);
             bool hov = CheckCollisionPointRec(mouse, { (float)px,(float)iy,(float)PanelW,(float)ItemH });
 
-            Color bg = sel ? Selected : (hov ? Color{ 16,35,70,220 } : Color{ 10,20,45,200 });
-            Color bdr = canAfford ? CanBuild : CantBuild;
+            Color bg = sel ? Color{ 20,60,80,230 } : (hov ? Color{ 16,35,70,220 } : Color{ 10,20,45,200 });
+            Color bdr = canAfford ? HudGood : HudCritical;
             DrawRectangle(px, iy, PanelW, ItemH, bg);
             DrawRectangleLinesEx({ (float)px,(float)iy,(float)PanelW,(float)ItemH },
                 sel ? 2.0f : 1.5f, bdr);
 
-            DrawText(bd.displayName.c_str(), px + 8, iy + 7, 12, TxtMain);
-            DrawText(bd.description.c_str(), px + 8, iy + 23, 10, TxtDim);
+            DrawText(bd.displayName.c_str(), px + 8, iy + 7, 12, HudValue);
+            DrawText(bd.description.c_str(), px + 8, iy + 23, 10, HudLabel);
 
             int cx = px + 8, cy = iy + 42;
             for (const auto& ing : bd.itemCost) {
@@ -393,7 +393,7 @@ void BuildMenu::Draw() const {
                 char buf[128];
                 std::snprintf(buf, sizeof(buf), "%s %d/%d",
                     ItemName(ing.itemId), have, ing.amount);
-                Color c = ok ? TxtGreen : TxtRed;
+                Color c = ok ? HudGood : HudCritical;
                 DrawText(buf, cx, cy, 10, c);
                 cx += MeasureText(buf, 10) + 10;
                 if (cx > px + PanelW - 8) { cx = px + 8; cy += 14; }
@@ -414,12 +414,12 @@ void BuildMenu::Draw() const {
 
             DrawRectangle(px, iy, PanelW, CraftH, hov ? Color{ 16,35,70,220 } : Color{ 10,20,45,200 });
             DrawRectangleLinesEx({ (float)px,(float)iy,(float)PanelW,(float)CraftH }, 1.2f,
-                canCraft ? CanBuild : Color{ 60,60,80,160 });
+                canCraft ? HudGood : HudDiv);
 
             int owned = CountInStorage(item.id);
             char namebuf[128];
             std::snprintf(namebuf, sizeof(namebuf), "%s  (have %d)", item.displayName.c_str(), owned);
-            DrawText(namebuf, px + 8, iy + 6, 11, TxtMain);
+            DrawText(namebuf, px + 8, iy + 6, 11, HudValue);
 
             int cx = px + 8, cy = iy + 24;
             for (const auto& ing : item.craftCost) {
@@ -428,18 +428,12 @@ void BuildMenu::Draw() const {
                 char buf[128];
                 std::snprintf(buf, sizeof(buf), "%s %d/%d",
                     ing.materialId.c_str(), have, ing.amount);
-                DrawText(buf, cx, cy, 10, ok ? TxtGreen : TxtRed);
+                DrawText(buf, cx, cy, 10, ok ? HudGood : HudCritical);
                 cx += MeasureText(buf, 10) + 8;
             }
 
             Rectangle btn = { (float)(px + PanelW - 90),(float)(iy + CraftH - 28), 82.0f, 22.0f };
-            bool hovBtn = canCraft && CheckCollisionPointRec(mouse, btn);
-            DrawRectangleRec(btn, canCraft ? (hovBtn ? Color{ 20,80,40,230 } : Color{ 12,45,22,200 })
-                : Color{ 25,25,30,150 });
-            DrawRectangleLinesEx(btn, 1.0f, canCraft ? CanBuild : Color{ 40,40,50,120 });
-            const char* clbl = "CRAFT";
-            DrawText(clbl, (int)(btn.x + (btn.width - MeasureText(clbl, 10)) / 2),
-                (int)(btn.y + 6), 10, canCraft ? (hovBtn ? WHITE : TxtGreen) : TxtDim);
+            DrawBmBtn(btn, "CRAFT", canCraft);
         }
     }
 
@@ -455,40 +449,27 @@ void BuildMenu::Draw() const {
 
         int btnBottom = py + panelH - 10;
         Rectangle buildBtn = { (float)(px + PanelW / 2 - 60),(float)(btnBottom - 36), 120.0f, 30.0f };
-        bool hovBuild = canAff && CheckCollisionPointRec(mouse, buildBtn);
-
-        DrawRectangleRec(buildBtn, canAff ? (hovBuild ? Color{ 20,80,40,230 } : Color{ 12,45,22,200 })
-            : Color{ 22,22,28,160 });
-        DrawRectangleLinesEx(buildBtn, 1.5f, canAff ? CanBuild : Color{ 45,45,55,140 });
         const char* blbl = hasSel ? (_tab == 0 ? "PLACE" : "CRAFT") : "SELECT";
-        DrawText(blbl, (int)(buildBtn.x + (buildBtn.width - MeasureText(blbl, 11)) / 2),
-            (int)(buildBtn.y + 9), 11, canAff ? (hovBuild ? WHITE : TxtGreen) : TxtDim);
+        DrawBmBtn(buildBtn, blbl, canAff);
     }
 
     // Storage full error popup
     if (_errorOpen) {
-        int sw = GetScreenWidth(), sh = GetScreenHeight();
         DrawRectangle(0, 0, sw, sh, Color{ 0, 0, 0, 140 });
 
         static constexpr int PopW = 340, PopH = 110;
         int ppx = sw / 2 - PopW / 2, ppy = sh / 2 - PopH / 2;
-        DrawRectangle(ppx, ppy, PopW, PopH, Color{ 18, 8, 8, 248 });
-        DrawRectangleLinesEx({ (float)ppx,(float)ppy,(float)PopW,(float)PopH },
-            1.5f, Color{ 200, 50, 50, 220 });
+        DrawHudBracketPanel({ (float)ppx,(float)ppy,(float)PopW,(float)PopH },
+            Color{ 18, 8, 8, 248 }, HudCritical, 12.0f, 2.0f);
 
         const char* hdr = "STORAGE FULL";
-        DrawText(hdr, ppx + (PopW - MeasureText(hdr, 14)) / 2, ppy + 14, 14,
-            Color{ 230, 80, 80, 255 });
+        DrawText(hdr, ppx + (PopW - MeasureText(hdr, 14)) / 2, ppy + 14, 14, HudCritical);
 
         const char* msg = "You need more room in storage.";
         DrawText(msg, ppx + (PopW - MeasureText(msg, 11)) / 2, ppy + 38, 11,
             Color{ 200, 170, 170, 230 });
 
         Rectangle okBtn = { (float)(ppx + PopW / 2 - 44), (float)(ppy + PopH - 36), 88.0f, 26.0f };
-        bool hovOk = CheckCollisionPointRec(GetMousePosition(), okBtn);
-        DrawRectangleRec(okBtn, hovOk ? Color{ 100,25,25,230 } : Color{ 55,14,14,200 });
-        DrawRectangleLinesEx(okBtn, 1.0f, Color{ 180,50,50,200 });
-        DrawText("OK", (int)(okBtn.x + (okBtn.width - MeasureText("OK", 12)) / 2),
-            (int)(okBtn.y + 7), 12, hovOk ? WHITE : Color{ 210,120,120,220 });
+        DrawBmBtn(okBtn, "OK", true, false);
     }
 }

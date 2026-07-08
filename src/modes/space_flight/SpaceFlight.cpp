@@ -3,6 +3,7 @@
 #include "raymath.h"
 #include "core/FleetManager.h"
 #include "core/GameManager.h"
+#include "core/InventoryManager.h"
 #include "core/Module.h"
 #include "core/SaveManager.h"
 #include "engine/ResourceManager.h"
@@ -20,10 +21,13 @@
 #include "data/registry/StarRegistry.h"
 #include "data/registry/StarSystemRegistry.h"
 #include "data/registry/BuildableRegistry.h"
+#include "data/registry/MaterialRegistry.h"
+#include "data/registry/ItemRegistry.h"
 #include "engine/SpriteCache.h"
 #include "core/ShipRegistry.h"
 #include "data/MaterialDefs.h"
 #include "systems/diplomacy/DiplomaticRegistry.h"
+#include "systems/diplomacy/ReputationRegistry.h"
 #include "modes/space_flight/systems/HostileTargeting.h"
 #include "modes/space_flight/systems/DockRepair.h"
 #include "net/NetworkManager.h"
@@ -56,10 +60,20 @@ static Faction kPlayerFaction = Faction::Republic;
 // Minimum distance a fresh player spawn must keep from anything hostile.
 static constexpr float kEnemySpawnMargin = 700.0f;
 
+// Credit cost to build a player-allied capital ship via StationModuleMenu.
+// Regular ships built through this same flow remain free — only capitals
+// (heavy multi-hardpoint hulls) are gated, per the C.02a design decision.
+static constexpr int kCapitalShipBuildCost = 50000;
+
+// Epic 9.2 (fighter capture): a fighter must already be at/below this hull
+// fraction before an Ion-effect weapon disables it instead of just damaging
+// it — you have to wear it down with any weapon first, ion or otherwise.
+static constexpr float kIonDisableHullPct = 0.30f;
+
 static bool SpawnPosSafeFromStations(Vector2 pos, const std::vector<SpaceStation>& stations, float margin) {
     for (const SpaceStation& s : stations) {
         if (!s.alive) continue;
-        if (DiplomaticRegistry::Get(s.faction, kPlayerFaction) != Relation::Hostile) continue;
+        if (ReputationRegistry::PlayerRelation(s.faction) != Relation::Hostile) continue;
         if (Vector2Distance(pos, s.position) < s.radius + margin) return false;
     }
     return true;
@@ -92,11 +106,11 @@ static Vector2 GetSafeSpawnPosition(SystemWorld* w, float baseDistance, float ma
 }
 
 // MODULES/STORAGE/ESCORTS/RANKS moved to the SystemMap pause menu.
-// Right section of the HUD now just holds ENTER (top bar) with BUILD and
-// COMMS stacked vertically as icon buttons below it.
+// Right section of the HUD now just holds ENTER (top bar) with BUILD, COMMS,
+// and SEAT (Epic 8, turret seat) stacked vertically as icon buttons below it.
 static void ComputeHudButtons(int sw, int sh,
-    Rectangle& enterBtn, Rectangle& buildBtn, Rectangle& commsBtn) {
-    static constexpr int HudH2 = 174;
+    Rectangle& enterBtn, Rectangle& buildBtn, Rectangle& commsBtn, Rectangle& seatBtn) {
+    static constexpr int HudH2 = 178; // +4px to fit the SEAT button's row under COMMS
     static constexpr int CenterW = 190;
     int hx = 12, hw = sw - 24;
     int rDiv = hx + (hw - CenterW) / 2 + CenterW;
@@ -107,6 +121,7 @@ static void ComputeHudButtons(int sw, int sh,
     enterBtn = { (float)rx, (float)ry,        (float)btnW, 38.0f };
     buildBtn = { (float)rx, (float)(ry + 43), (float)btnW, 38.0f };
     commsBtn = { (float)rx, (float)(ry + 86), (float)btnW, 38.0f };
+    seatBtn  = { (float)rx, (float)(ry + 129),(float)btnW, 38.0f };
 }
 
 static const char* FactionName(Faction f) {
@@ -122,6 +137,58 @@ static const char* FactionName(Faction f) {
         case Faction::Void:     return "Void";
         default:                return "Unknown";
     }
+}
+
+static const char* NpcRoleName(NpcRole r) {
+    switch (r) {
+        case NpcRole::Explorer:     return "Explorer";
+        case NpcRole::Raider:       return "Raider";
+        case NpcRole::Military:     return "Military";
+        case NpcRole::Trader:       return "Trader";
+        case NpcRole::Industrialist:return "Industrialist";
+        default:                    return "";
+    }
+}
+
+// Epic 6: HUD label for a faction's current player-standing relation, next
+// to the existing FACTION/ROLE lines in the target info panel.
+static const char* PlayerRelationLabel(Relation r) {
+    switch (r) {
+        case Relation::Friendly: return "FRIENDLY";
+        case Relation::Hostile:  return "HOSTILE";
+        default:                 return "NEUTRAL";
+    }
+}
+
+// Per-faction role-weighting profile (locked decision: varies by faction, not
+// a uniform mix — tasks_spaceflight_dynamics.md Epic 2.2). Weights derived
+// from each faction's config/factions.json loreText/briefing rather than
+// invented: e.g. Reavers ("raid high-value targets... grow the fleet through
+// salvage") skew Raider-heavy, Merchant ("largest commercial fleet... trade
+// routes") skew Trader-heavy. Order matches NpcRole's declaration: Explorer,
+// Raider, Military, Trader, Industrialist.
+static NpcRole RollNpcRole(Faction f) {
+    struct Weights { int explorer, raider, military, trader, industrialist; };
+    Weights w;
+    switch (f) {
+        case Faction::Republic:  w = { 10, 5,  45, 25, 15 }; break; // naval doctrine, protect shipping lanes
+        case Faction::Zenith:    w = { 40, 5,  10, 10, 35 }; break; // recover research, prototypes, rare elements
+        case Faction::Korrath:   w = { 5,  45, 15, 10, 25 }; break; // mercenary contracts, aggressive extraction
+        case Faction::Merchant:  w = { 10, 5,  15, 55, 15 }; break; // largest commercial fleet, trade routes
+        case Faction::Eden:      w = { 10, 5,  25, 25, 35 }; break; // colony footholds, sustainable expansion
+        case Faction::Reavers:   w = { 5,  60, 15, 5,  15 }; break; // raid, salvage, grow the fleet through conquest
+        case Faction::Forge:     w = { 10, 35, 15, 10, 30 }; break; // rebuilt from wreckage; salvager/scavenger/raider ranks
+        case Faction::Conclave:  w = { 15, 5,  30, 10, 40 }; break; // optimized systems, expand the network
+        case Faction::Void:      w = { 55, 5,  15, 10, 15 }; break; // chart the unchartable, uncover anomalies
+        default:                 w = { 20, 20, 20, 20, 20 }; break;
+    }
+    int total = w.explorer + w.raider + w.military + w.trader + w.industrialist;
+    int roll = GetRandomValue(0, total - 1);
+    if ((roll -= w.explorer)     < 0) return NpcRole::Explorer;
+    if ((roll -= w.raider)       < 0) return NpcRole::Raider;
+    if ((roll -= w.military)     < 0) return NpcRole::Military;
+    if ((roll -= w.trader)       < 0) return NpcRole::Trader;
+    return NpcRole::Industrialist;
 }
 
 static Vector2 GetNpcStationHardpointPos(const SpaceStation& st, int hpIndex) {
@@ -189,6 +256,73 @@ static void BuildNpcStationHardpoints(SpaceStation& st) {
     st.hull    = totalHull;
 }
 
+// Capital ships move and rotate, so unlike station hardpoints (static ring
+// layout via GetNpcStationHardpointPos), their hardpoints are placed from a
+// fixed ship-local offset rotated by current heading. B.04 firing and B.06
+// hit-detection MUST call this same function so draw/fire/hit all agree.
+static Vector2 GetCapitalHardpointWorldPos(Vector2 shipPos, float shipRotationDeg, Vector2 localOffset) {
+    return Vector2Add(shipPos, Vector2Rotate(localOffset, shipRotationDeg * DEG2RAD));
+}
+
+// Capital ships get a fixed hardpoint layout from ships.json instead of the
+// procedural station roll above — each StationHardpointDef becomes one
+// HardpointState, keyed off slotType. "command_bridge" is the future
+// bridge-piloting seat (isCore, no combat slots, no special death rule now —
+// see project_capital_ships.md).
+static std::vector<HardpointState> BuildCapitalHardpoints(const ecs::ShipDef& def) {
+    std::vector<HardpointState> out;
+    for (const ecs::StationHardpointDef& hpd : def.hardpoints) {
+        HardpointState hp;
+        hp.id          = hpd.name;
+        hp.displayName = hpd.name;
+        hp.localOffset = hpd.offset;
+        hp.maxHull     = 120.0f;
+        hp.hull        = hp.maxHull;
+        hp.alive       = true;
+
+        if (hpd.slotType == "weapon") {
+            hp.wSlots = hpd.slotCount;
+            hp.weapons.assign(hpd.slotCount, std::nullopt);
+            for (const std::string& modId : hpd.preloadedModules) {
+                auto mod = ModuleById(modId);
+                if (!mod || mod->type != ModuleType::Weapon) continue;
+                for (auto& w : hp.weapons) if (!w.has_value()) { w = *mod; break; }
+            }
+        } else if (hpd.slotType == "engine") {
+            hp.enSlots = hpd.slotCount;
+            for (const std::string& modId : hpd.preloadedModules) {
+                auto mod = ModuleById(modId);
+                if (mod && mod->type == ModuleType::Engine) { hp.engine = *mod; break; }
+            }
+        } else if (hpd.slotType == "shield") {
+            hp.shSlots = hpd.slotCount;
+            hp.shields.assign(hpd.slotCount, std::nullopt);
+            for (const std::string& modId : hpd.preloadedModules) {
+                auto mod = ModuleById(modId);
+                if (!mod || mod->type != ModuleType::Shield) continue;
+                for (auto& s : hp.shields) if (!s.has_value()) { s = *mod; break; }
+            }
+        } else if (hpd.slotType == "command_bridge") {
+            hp.isCore = true;
+        } else {
+            hp.auxSlots = hpd.slotCount;
+            hp.aux.assign(hpd.slotCount, std::nullopt);
+            for (const std::string& modId : hpd.preloadedModules) {
+                auto mod = ModuleById(modId);
+                if (!mod || mod->type != ModuleType::Auxiliary) {
+                    TraceLog(LOG_WARNING, "BuildCapitalHardpoints: hardpoint '%s' has unrecognized slotType '%s' — module '%s' discarded (expected an Auxiliary-type module)",
+                             hpd.name.c_str(), hpd.slotType.c_str(), modId.c_str());
+                    continue;
+                }
+                for (auto& a : hp.aux) if (!a.has_value()) { a = *mod; break; }
+            }
+        }
+
+        out.push_back(std::move(hp));
+    }
+    return out;
+}
+
 static Vector2 GetHardpointPos(const PlayerStation& ps, int hpIndex, float stationRadius) {
     if (hpIndex < 0 || hpIndex >= (int)ps.hardpoints.size()) return ps.position;
     const HardpointState& hp = ps.hardpoints[hpIndex];
@@ -225,6 +359,73 @@ static Vector2 GetBestHardpointAimPos(const PlayerStation& ps, float rad) {
         if (ps.hardpoints[i].alive) return GetHardpointPos(ps, i, rad);
     }
     return ps.position;
+}
+
+// Same idea as GetBestHardpointAimPos, but for a world-owned NPC SpaceStation.
+// Without this, attackers aim at st.position — which is exactly where the
+// isCore hardpoint sits — so once the core dies (no longer invulnerable
+// since the no-core rework) every attacker keeps aiming dead-center at
+// nothing instead of redirecting to whatever hardpoint is still alive.
+static Vector2 GetStationAimPos(const SpaceStation& st) {
+    for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
+        const HardpointState& hp = st.hardpoints[i];
+        if (!hp.alive || hp.isCore) continue;
+        return GetNpcStationHardpointPos(st, i);
+    }
+    for (int i = 0; i < (int)st.hardpoints.size(); ++i)
+        if (st.hardpoints[i].alive) return GetNpcStationHardpointPos(st, i);
+    return st.position;
+}
+
+// Same idea for a capital ship's own hardpoint list.
+static Vector2 GetCapitalAimPos(const NpcMeta& m, Vector2 shipPos, float shipRotationDeg) {
+    for (const HardpointState& hp : m.hardpoints) {
+        if (!hp.alive || hp.isCore) continue;
+        return GetCapitalHardpointWorldPos(shipPos, shipRotationDeg, hp.localOffset);
+    }
+    for (const HardpointState& hp : m.hardpoints)
+        if (hp.alive) return GetCapitalHardpointWorldPos(shipPos, shipRotationDeg, hp.localOffset);
+    return shipPos;
+}
+
+// One entry point for "aim at NPC index j" — redirects to GetCapitalAimPos
+// when j is a capital ship (non-empty hardpoints), otherwise just its
+// ship-center position (fighters have no hardpoint list to redirect through).
+static Vector2 GetNpcAimPos(const SystemWorld& w, size_t j) {
+    const NpcMeta&      m = w.npcMeta[j];
+    const ecs::Entity&  e = w.entities[j];
+    if (m.hardpoints.empty()) return e.transform.position;
+    return GetCapitalAimPos(m, e.transform.position, e.transform.rotation);
+}
+
+// Shared by the PlayerStation/SpaceStation/capital-ship hardpoint-hit blocks
+// in UpdateNpcCollisions. Finds the first alive hardpoint within range of
+// projPos, applies damage (clamped to 0 — a hardpoint's hull must never go
+// negative, since it's later cast to uint16_t for the MP snapshot), and
+// emits the destroyed-hardpoint message as msgPrefix + displayName + msgSuffix.
+// Returns true if a hardpoint was hit at all (whether or not it died); the
+// caller still owns the AllHardpointsDestroyed death check and any per-owner
+// side effects (retaliation, loot, net broadcast, AI-state transition), since
+// those genuinely differ between stations and capital ships.
+bool SpaceFlight::ResolveHardpointHit(std::vector<HardpointState>& hardpoints, Vector2 projPos, float damage,
+                                       const std::function<Vector2(int)>& hardpointWorldPos,
+                                       const std::string& msgPrefix, const std::string& msgSuffix,
+                                       bool urgent) {
+    for (int i = 0; i < (int)hardpoints.size(); ++i) {
+        HardpointState& hp = hardpoints[i];
+        if (!hp.alive) continue;
+        Vector2 hpPos  = hardpointWorldPos(i);
+        float   hitRad = hp.isCore ? 18.0f : 14.0f;
+        if (Vector2Distance(projPos, hpPos) >= hitRad + 3.5f) continue;
+
+        hp.hull = std::max(0.0f, hp.hull - damage);
+        if (hp.hull <= 0.0f) {
+            hp.alive = false;
+            AddCommsMessage(msgPrefix + hp.displayName + msgSuffix, urgent);
+        }
+        return true;
+    }
+    return false;
 }
 
 void SpaceFlight::InitStars() {
@@ -334,9 +535,14 @@ void SpaceFlight::DrawStations() const {
 }
 
 void SpaceFlight::DrawPlayerStations() const {
-    const auto& stations = FleetManager::Get().PlayerStations;
-    for (const PlayerStation& ps : stations) {
-        if (!ps.alive) continue;
+    for (const PlayerStation& ps : FleetManager::Get().PlayerStations)
+        DrawOneStation(ps, true);
+    for (const auto& [id, ps] : _remotePlayerStations)
+        DrawOneStation(ps, false);
+}
+
+void SpaceFlight::DrawOneStation(const PlayerStation& ps, bool isLocal) const {
+        if (!ps.alive) return;
         const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
         float rad = def ? def->radius : 120.0f;
 
@@ -389,11 +595,13 @@ void SpaceFlight::DrawPlayerStations() const {
         DrawText(nm, (int)(ps.position.x - MeasureText(nm, 11) / 2), (int)(ps.position.y - rad - 16),
             11, Color{ 160,210,255,200 });
 
-        // PLAYER label
-        const char* ownlbl = "[YOURS]";
+        // Ownership label — "[YOURS]" for the local player's own stations,
+        // "[ALLY]" for another peer's (Epic C MP sync).
+        const char* ownlbl = isLocal ? "[YOURS]" : "[ALLY]";
+        Color ownCol = isLocal ? Color{ 80,200,100,200 } : Color{ 100,180,255,200 };
         DrawText(ownlbl,
             (int)(ps.position.x - MeasureText(ownlbl, 9) / 2),
-            (int)(ps.position.y - rad - 28), 9, Color{ 80,200,100,200 });
+            (int)(ps.position.y - rad - 28), 9, ownCol);
 
         // ── Draw Physical Hardpoints ──────────────────────────────────────────────
         for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
@@ -418,7 +626,6 @@ void SpaceFlight::DrawPlayerStations() const {
 
             // Render small text label near hovered hardpoints if needed here
         }
-    }
 }
 
 void SpaceFlight::BakeSunCorona() {
@@ -656,6 +863,7 @@ void SpaceFlight::SpawnPlanetsAndStations(unsigned int seed) {
             const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
             st.stationTypeId = typeDef.id;
             BuildNpcStationHardpoints(st);
+            SeedStationEconomy(st.economy);
             _w->stations.push_back(std::move(st));
         }
     }
@@ -729,18 +937,23 @@ void SpaceFlight::UpdateOrbits(float dt) {
 void SpaceFlight::ApplySunGravity(float dt) {
     if (!_w->sun.active) return;
 
-    // Player
-    Vector2& pPos = _playerEntity.transform.position;
-    Vector2& pVel = _playerEntity.transform.velocity;
-    float playerDist = Vector2Length(pPos);
-    if (playerDist < _w->sun.radius * 0.6f) {
-        _playerEntity.health.currentHull = 0.0f;
-    }
-    else if (playerDist < _w->sun.gravRange && playerDist > 0.01f) {
-        float t     = 1.0f - (playerDist / _w->sun.gravRange);
-        float accel = _w->sun.gravStrength * t * t;
-        pVel.x += (-pPos.x / playerDist) * accel * dt;
-        pVel.y += (-pPos.y / playerDist) * accel * dt;
+    // Player — skipped while docked (TickWorldWhileDocked calls this too, but
+    // a frozen docked player shouldn't take gravity damage or drift from a
+    // sun their ship isn't actually flying near anymore) or seated in a
+    // turret (Epic 8) for the same reason.
+    if (!_stationServicesMenu.isOpen && !_seated) {
+        Vector2& pPos = _playerEntity.transform.position;
+        Vector2& pVel = _playerEntity.transform.velocity;
+        float playerDist = Vector2Length(pPos);
+        if (playerDist < _w->sun.radius * 0.6f) {
+            _playerEntity.health.currentHull = 0.0f;
+        }
+        else if (playerDist < _w->sun.gravRange && playerDist > 0.01f) {
+            float t     = 1.0f - (playerDist / _w->sun.gravRange);
+            float accel = _w->sun.gravStrength * t * t;
+            pVel.x += (-pPos.x / playerDist) * accel * dt;
+            pVel.y += (-pPos.y / playerDist) * accel * dt;
+        }
     }
 
     // NPC ships
@@ -781,7 +994,6 @@ void SpaceFlight::ApplySunGravity(float dt) {
 
 static constexpr float NpcThrust = 180.0f;
 static constexpr float NpcDrag = 2.0f; // Adjusted from 2.8f to 2.0f to match player top speed bounds
-static constexpr float NpcTurnRate = 155.0f;
 static constexpr float NpcProjSpd = 480.0f;
 static constexpr float NpcProjRng = 700.0f;
 static constexpr float NpcDmg = 8.0f;
@@ -826,12 +1038,66 @@ static const char* HostileRefusalLines[] = {
     "You've got nerve. Disengage or die.",
     "Not happening. Weapons free!",
 };
+// Epic 13: hailing the specific ship broadcasting an active ShipUnderAttack
+// distress call.
+static const char* DistressHailLines[] = {
+    "MAYDAY! We're taking fire out here!",
+    "Under attack, requesting assistance!",
+    "Hostiles closing in — can you help?",
+};
+static const char* DistressAckLines[] = {
+    "Copy that — hold on, we're inbound!",
+    "Acknowledged. Standing by for support.",
+    "Received. Doing what we can to hold out.",
+};
 
 void SpaceFlight::AddCommsMessage(const std::string& text, bool fromPlayer) {
     if (_bgTick) return;  // chatter from systems the player isn't in
     CommsEntry e;  e.text = text;  e.fromPlayer = fromPlayer;
     _commsLog.push_back(e);
-    if ((int)_commsLog.size() > 5) _commsLog.erase(_commsLog.begin());
+    if (_commsLog.size() > kCommsLogCap) _commsLog.erase(_commsLog.begin());
+}
+
+void SpaceFlight::AdvanceTutorialStep(TutorialStep expected) {
+    if (!_tutorialActive || _tutorialStep != expected) return;
+
+    // One hint per step 1-7 (index == the step just completed); step 0 (Move)
+    // gets its opening hint at tutorial start in OnEnter instead.
+    static const char* kStepHints[] = {
+        "TUTORIAL: Target an asteroid or your home station (click it).",
+        "TUTORIAL: Destroy the targeted asteroid with your weapons.",
+        "TUTORIAL: Fly over a material drop to collect it.",
+        "TUTORIAL: Dock at your home station (ENTER when in range).",
+        "TUTORIAL: Open Station Services and sell an item.",
+        "TUTORIAL: Open Modules and equip one into a slot.",
+        "TUTORIAL: Open the galaxy map and warp to an adjacent system.",
+    };
+    int idx = (int)_tutorialStep;
+    _tutorialStep = (TutorialStep)(idx + 1);
+    if (_tutorialStep == TutorialStep::Done) {
+        _tutorialActive = false;
+        AddCommsMessage("TUTORIAL COMPLETE. Good luck out there.", true);
+    } else {
+        AddCommsMessage(kStepHints[idx], true);
+    }
+}
+
+void SpaceFlight::SkipTutorial() {
+    if (!_tutorialActive) return;
+    _tutorialActive = false;
+    AddCommsMessage("TUTORIAL SKIPPED.", true);
+}
+
+void SpaceFlight::TickTutorial() {
+    if (!_tutorialActive) return;
+    if (_tutorialStep == TutorialStep::Move) {
+        if (Vector2Distance(_playerEntity.transform.position, _tutorialStartPos) >= kTutorialMoveDistance)
+            AdvanceTutorialStep(TutorialStep::Move);
+    } else if (_tutorialStep == TutorialStep::Target) {
+        bool asteroidTargeted = _target.valid && !_target.isNpc && !_target.isStellar;
+        bool stationTargeted  = _target.valid && _target.isStellar && _target.hasFaction;
+        if (asteroidTargeted || stationTargeted) AdvanceTutorialStep(TutorialStep::Target);
+    }
 }
 
 static uint32_t s_npcEntityIdCounter = 10000;
@@ -859,23 +1125,394 @@ static NpcFaction RelationToNpcFaction(Relation r) {
 // count — you can't dock with (or board) something actively shooting at you.
 // Player-owned stations are always enterable regardless of faction data.
 bool SpaceFlight::IsNearEnterableStation() const {
+    return FindEnterableStation().found;
+}
+
+SpaceFlight::EnterableStation SpaceFlight::FindEnterableStation() const {
     const Vector2& pos = _playerEntity.transform.position;
     for (const SpaceStation& s : _w->stations) {
         if (!s.alive) continue;
         if (Vector2Distance(pos, s.position) >= s.radius + 50.0f) continue;
-        if (DiplomaticRegistry::Get(s.faction, kPlayerFaction) == Relation::Hostile) continue;
-        return true;
+        if (ReputationRegistry::PlayerRelation(s.faction) == Relation::Hostile) continue;
+        return { true, false, s.id };
     }
     for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
         if (!ps.alive) continue;
         const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
         float rad = def ? def->radius : 120.0f;
-        if (Vector2Distance(pos, ps.position) < rad + 50.0f) return true;
+        if (Vector2Distance(pos, ps.position) < rad + 50.0f) return { true, true, ps.id };
     }
-    return false;
+    return {};
 }
 
-static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2 pos) {
+StationEconomy* SpaceFlight::FindStationEconomy(unsigned int stationId, bool isPlayerStation) {
+    if (isPlayerStation) {
+        for (PlayerStation& ps : FleetManager::Get().PlayerStations)
+            if (ps.id == stationId) return &ps.economy;
+        return nullptr;
+    }
+    for (SpaceStation& st : _w->stations)
+        if (st.id == stationId) return &st.economy;
+    return nullptr;
+}
+
+Faction SpaceFlight::FindStationFaction(unsigned int stationId, bool isPlayerStation) const {
+    if (isPlayerStation) return kPlayerFaction;
+    for (const SpaceStation& st : _w->stations)
+        if (st.id == stationId) return st.faction;
+    return kPlayerFaction;
+}
+
+bool SpaceFlight::FindNearestFriendlySeat(unsigned int& npcIdOut, int& hpIdxOut, Vector2& posOut) const {
+    static constexpr float kSeatRange = 500.0f;
+    float bestDist = kSeatRange;
+    bool  found = false;
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        const NpcMeta& m = _w->npcMeta[i];
+        if (!m.alive || m.faction != NpcFaction::Friendly || m.hardpoints.empty()) continue;
+        const ecs::Entity& e = _w->entities[i];
+        for (int h = 0; h < (int)m.hardpoints.size(); ++h) {
+            const HardpointState& hp = m.hardpoints[h];
+            if (!hp.alive) continue;
+            Vector2 hpPos = GetCapitalHardpointWorldPos(e.transform.position, e.transform.rotation, hp.localOffset);
+            float d = Vector2Distance(_playerEntity.transform.position, hpPos);
+            if (d < bestDist) {
+                bestDist = d;
+                found = true;
+                npcIdOut = m.id;
+                hpIdxOut = h;
+                posOut   = hpPos;
+            }
+        }
+    }
+    return found;
+}
+
+// Epic 9.1 (capture): a disabled hostile/neutral station or capital (see
+// combat::IsDisabled, set on the rising edge in UpdateNpcCollisions) is
+// captured the instant the player closes to docking-style range — no
+// boarding minigame for v1. Reuses FindEnterableStation's radius+50 margin
+// so "close enough to capture" reads the same as "close enough to dock".
+// Host/singleplayer-only (see declaration) since only the host resolves
+// hardpoint hits that set the disabled flag in the first place.
+void SpaceFlight::UpdateCaptureProximity() {
+    static constexpr float kCaptureApproachDist = 50.0f;
+    const Vector2& pos = _playerEntity.transform.position;
+
+    for (SpaceStation& st : _w->stations) {
+        if (!st.alive || !st.disabled) continue;
+        if (ReputationRegistry::PlayerRelation(st.faction) == Relation::Friendly) continue;
+        if (Vector2Distance(pos, st.position) >= st.radius + kCaptureApproachDist) continue;
+        st.faction     = kPlayerFaction;
+        st.disabled    = false;
+        st.retaliating = false;
+        AddCommsMessage(st.stationTypeId + " captured! Now under your control.", true);
+    }
+
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta& m = _w->npcMeta[i];
+        if (!m.alive || !m.disabled || m.faction == NpcFaction::Friendly) continue;
+        const ecs::Entity& e = _w->entities[i];
+        if (Vector2Distance(pos, e.transform.position) >= m.radius + kCaptureApproachDist) continue;
+        m.faction             = NpcFaction::Friendly;
+        m.npcFaction          = kPlayerFaction;
+        m.disabled            = false;
+        m.ionDisableTimer     = 0.0f;
+        m.retaliatingVsPlayer = false;
+        m.retaliationTargetId = 0;
+        m.aiState             = NpcAiState::Patrol; // re-enters the guard/patrol logic from C.02b
+        AddCommsMessage(m.shipTypeName + " captured! It has joined your fleet.", true);
+    }
+}
+
+std::vector<Contract> SpaceFlight::GenerateContractOffers(Faction issuerFaction, unsigned int stationId, bool isPlayerStation) {
+    std::vector<Contract> offers;
+
+    // Bounty: kill a quota of ships from a faction hostile to the issuer.
+    // Uses the static faction-vs-faction matrix (issuer's actual rivals),
+    // not player reputation — a contract board reflects standing feuds.
+    {
+        std::vector<Faction> rivals;
+        for (int i = 0; i < (int)Faction::COUNT; ++i) {
+            Faction f = (Faction)i;
+            if (f != issuerFaction && DiplomaticRegistry::Get(issuerFaction, f) == Relation::Hostile)
+                rivals.push_back(f);
+        }
+        if (!rivals.empty()) {
+            Faction target = rivals[GetRandomValue(0, (int)rivals.size() - 1)];
+            Contract c;
+            c.id             = _nextContractId++;
+            c.type           = ContractType::Bounty;
+            c.issuerFaction  = issuerFaction;
+            c.targetFaction  = target;
+            c.killsRequired  = GetRandomValue(2, 5);
+            c.rewardCredits  = c.killsRequired * GetRandomValue(400, 700);
+            c.rewardReputation = 6.0f;
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "Destroy %d %s vessel%s", c.killsRequired,
+                          FactionName(target), c.killsRequired == 1 ? "" : "s");
+            c.title    = buf;
+            c.briefing = std::string(FactionName(issuerFaction)) + " wants " + FactionName(target) +
+                         " activity suppressed. Pay is on quota completion, not per kill.";
+            offers.push_back(std::move(c));
+        }
+    }
+
+    // Courier: haul a good to another currently-generated same-faction
+    // station (NPC stations only — player stations have nowhere canonical
+    // to route to and no faction of their own beyond the player's).
+    if (!isPlayerStation) {
+        unsigned int destId = 0;
+        uint64_t     destKey = 0;
+        uint64_t     originKey = WorldKey(_w->galaxyId, _w->systemId);
+        for (auto& [key, worldPtr] : _worlds) {
+            if (key == originKey) continue;
+            for (const SpaceStation& st : worldPtr->stations) {
+                if (st.alive && st.faction == issuerFaction) { destId = st.id; destKey = key; break; }
+            }
+            if (destId != 0) break;
+        }
+        StationEconomy* econ = destId != 0 ? FindStationEconomy(stationId, isPlayerStation) : nullptr;
+        if (econ) {
+            const auto& mats = MaterialRegistry::All();
+            if (!mats.empty()) {
+                const MatDef& pick = mats[GetRandomValue(0, (int)mats.size() - 1)];
+                int amount = std::min(econ->GetStock(pick.id), GetRandomValue(10, 30));
+                if (amount > 0) {
+                    Contract c;
+                    c.id              = _nextContractId++;
+                    c.type            = ContractType::Courier;
+                    c.issuerFaction   = issuerFaction;
+                    c.originStationId = stationId;
+                    c.destStationId   = destId;
+                    c.destWorldKey    = destKey;
+                    c.goodId          = pick.id;
+                    c.amount          = amount;
+                    c.timeLimit       = 240.0f;
+                    c.timeRemaining   = c.timeLimit;
+                    c.rewardCredits   = amount * GetRandomValue(15, 30);
+                    c.rewardReputation = 4.0f;
+                    char buf[128];
+                    std::snprintf(buf, sizeof(buf), "Haul %d %s cross-system", amount, pick.displayName);
+                    c.title    = buf;
+                    c.briefing = "Deliver within " + std::to_string((int)(c.timeLimit / 60.0f)) +
+                                 " minutes of accepting or the contract lapses.";
+                    offers.push_back(std::move(c));
+                }
+            }
+        }
+    }
+
+    // Escort: protect a currently-alive same-faction Trader-role NPC in this system.
+    {
+        unsigned int traderId = 0;
+        for (const NpcMeta& m : _w->npcMeta) {
+            if (m.alive && !m.wingman && m.role == NpcRole::Trader && m.npcFaction == issuerFaction) {
+                traderId = m.id;
+                break;
+            }
+        }
+        if (traderId != 0) {
+            Contract c;
+            c.id              = _nextContractId++;
+            c.type            = ContractType::Escort;
+            c.issuerFaction   = issuerFaction;
+            c.escortNpcId     = traderId;
+            c.timeLimit       = 120.0f;
+            c.timeRemaining   = c.timeLimit;
+            c.rewardCredits   = 1200;
+            c.rewardReputation = 8.0f;
+            c.title    = "Escort a trade convoy";
+            c.briefing = std::string("Keep the marked ") + FactionName(issuerFaction) +
+                         " trader alive for 2 minutes. Raiders are known to hunt this route.";
+            offers.push_back(std::move(c));
+        }
+    }
+
+    return offers;
+}
+
+void SpaceFlight::TickActiveContract(float dt) {
+    if (!_hasActiveContract) return;
+
+    if (_activeContract.type == ContractType::Bounty) {
+        if (_activeContract.killsDone >= _activeContract.killsRequired) CompleteActiveContract();
+        return;
+    }
+
+    if (_activeContract.type == ContractType::Escort) {
+        bool alive = false;
+        for (const NpcMeta& m : _w->npcMeta)
+            if (m.id == _activeContract.escortNpcId && m.alive) { alive = true; break; }
+        if (!alive) { FailActiveContract("Escort target destroyed."); return; }
+    }
+
+    _activeContract.timeRemaining -= dt;
+    if (_activeContract.timeRemaining <= 0.0f) {
+        FailActiveContract(_activeContract.type == ContractType::Courier
+                                ? "Delivery window expired." : "Escort window expired.");
+    }
+}
+
+void SpaceFlight::CompleteActiveContract() {
+    InventoryManager::Get().AddCredits(_activeContract.rewardCredits);
+    ReputationRegistry::Adjust(_activeContract.issuerFaction, _activeContract.rewardReputation);
+    AddCommsMessage("CONTRACT COMPLETE: " + _activeContract.title + " (+" +
+                     std::to_string(_activeContract.rewardCredits) + "cr)", true);
+    _hasActiveContract = false;
+    _activeContract = Contract{};
+}
+
+void SpaceFlight::FailActiveContract(const std::string& reason) {
+    AddCommsMessage("CONTRACT FAILED: " + reason, true);
+    _hasActiveContract = false;
+    _activeContract = Contract{};
+}
+
+SpaceStation* SpaceFlight::FindWorldStation(uint64_t worldKey, unsigned int stationId) {
+    auto it = _worlds.find(worldKey);
+    if (it == _worlds.end()) return nullptr;
+    for (SpaceStation& st : it->second->stations)
+        if (st.id == stationId && st.alive) return &st;
+    return nullptr;
+}
+
+// Epic 3.2/3.3: background station-economy simulation for Industrialist
+// (production) and Trader (cross-system hauling) role NPCs. Runs regardless
+// of the NPC's current NpcAiState/movement — Trader/Industrialist don't have
+// their own distinct movement pattern yet (Epic 2.6/2.7, blocked until this
+// landed; still unstarted), so they keep drifting/patrolling like any other
+// undifferentiated role while this quietly moves stock numbers around.
+void SpaceFlight::TickNpcEconomy(NpcMeta& m, float dt) {
+    if (m.role != NpcRole::Industrialist && m.role != NpcRole::Trader) return;
+    if (m.wingman) return; // wingmen work for the player, not their faction's economy
+
+    uint64_t homeKey = WorldKey(_w->galaxyId, _w->systemId);
+
+    // Lazy home-station assignment: the one same-faction SpaceStation in this
+    // NPC's current system, if one exists. Most systems are uncontrolled
+    // (StarSystemRegistry::Generate's kControlChance=0.15f) and NPCs can't
+    // warp between systems today, so most Industrialists/Traders never find
+    // a home and stay economically idle — same single-system-confinement
+    // scope limit as Explorer (Epic 2.3).
+    if (m.homeStationId == 0) {
+        for (const SpaceStation& st : _w->stations) {
+            if (st.alive && st.faction == m.npcFaction) {
+                m.homeStationId = st.id;
+                m.homeWorldKey  = homeKey;
+                break;
+            }
+        }
+        if (m.homeStationId == 0) return;
+    }
+    SpaceStation* home = FindWorldStation(m.homeWorldKey, m.homeStationId);
+    if (!home) { m.homeStationId = 0; return; } // home destroyed; re-search next tick
+
+    m.economyTickTimer -= dt;
+    if (m.economyTickTimer > 0.0f) return;
+
+    if (m.role == NpcRole::Industrialist) {
+        m.economyTickTimer = (float)GetRandomValue(8, 15);
+        const auto& mats = MaterialRegistry::All();
+        if (!mats.empty()) {
+            const MatDef& pick = mats[GetRandomValue(0, (int)mats.size() - 1)];
+            home->economy.AddStock(pick.id, GetRandomValue(5, 15));
+        }
+        TryColonizeAdjacentSystem(m.npcFaction);
+        return;
+    }
+
+    // Trader: needs a second, different-system, same-faction station to haul
+    // toward/from — a system holds at most one controlled station
+    // (SpawnPlanetsAndStations), so a route is necessarily cross-system.
+    // Re-search each tick until one turns up; the pool grows as the player
+    // visits more systems (only currently-generated worlds are searched).
+    SpaceStation* dest = (m.tradeDestId != 0) ? FindWorldStation(m.destWorldKey, m.tradeDestId) : nullptr;
+    if (!dest) {
+        m.tradeDestId = 0;
+        for (auto& [key, worldPtr] : _worlds) {
+            if (key == m.homeWorldKey) continue;
+            for (const SpaceStation& st : worldPtr->stations) {
+                if (st.alive && st.faction == m.npcFaction) {
+                    m.tradeDestId = st.id;
+                    m.destWorldKey = key;
+                    break;
+                }
+            }
+            if (m.tradeDestId != 0) break;
+        }
+        dest = (m.tradeDestId != 0) ? FindWorldStation(m.destWorldKey, m.tradeDestId) : nullptr;
+    }
+    m.economyTickTimer = (float)GetRandomValue(15, 30);
+    if (!dest) return; // nowhere to haul to yet
+
+    SpaceStation* origin = m.haulingToDest ? home : dest;
+    SpaceStation* target = m.haulingToDest ? dest : home;
+
+    // Pick the origin's biggest-surplus good to export; if nothing is above
+    // baseline right now, skip this leg rather than force a delivery.
+    std::string good;
+    {
+        int bestSurplus = StationEconomy::kBaselineStock;
+        auto consider = [&](const std::string& id) {
+            int s = origin->economy.GetStock(id);
+            if (s > bestSurplus) { bestSurplus = s; good = id; }
+        };
+        for (const MatDef&  mt : MaterialRegistry::All()) consider(mt.id);
+        for (const ItemDef& it : ItemRegistry::All())      consider(it.id);
+    }
+    if (good.empty()) return;
+
+    int amount = std::min(origin->economy.GetStock(good), 20);
+    if (amount <= 0) return;
+    origin->economy.RemoveStock(good, amount);
+    target->economy.AddStock(good, amount);
+    m.tradeGoodId    = good;
+    m.haulingToDest  = !m.haulingToDest;
+}
+
+// Epic 5.2: no literal NPC travel exists between systems, so "founding a
+// station" is modeled as a rare background roll on the Industrialist's own
+// economy tick rather than a physical journey — flips one adjacent (grid-
+// neighbor, same lattice math as Generate()) uncontrolled system's
+// StarSystemRegistry override. SpawnPlanetsAndStations already reads
+// isControlled to decide whether to spawn a station, so the very next time
+// that system's world is generated (player warps there, or it's swept up in
+// a future background-world pass), a real SpaceStation appears there for
+// free — no separate station-creation path to maintain.
+void SpaceFlight::TryColonizeAdjacentSystem(Faction f) {
+    if (GetRandomValue(1, 1000) > 15) return; // ~1.5% per Industrialist tick — rare by design
+
+    unsigned int dim = StarSystemRegistry::GridDim();
+    unsigned int idx = _w->systemId - 1;
+    long long cx = (long long)(idx % dim);
+    long long cy = (long long)(idx / dim);
+
+    std::vector<StarSystem> candidates;
+    for (long long dy = -1; dy <= 1; ++dy) {
+        for (long long dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            long long ncx = cx + dx, ncy = cy + dy;
+            if (ncx < 0 || ncy < 0 || ncx >= (long long)dim || ncy >= (long long)dim) continue;
+            unsigned int nid = (unsigned int)(ncy * (long long)dim + ncx + 1);
+            if (nid == 0 || nid > StarSystemRegistry::Count() || nid == 1) continue; // 1 = home, always Republic
+            auto sys = StarSystemRegistry::ById(nid);
+            if (sys && !sys->isControlled) candidates.push_back(*sys);
+        }
+    }
+    if (candidates.empty()) return;
+
+    const StarSystem& chosen = candidates[GetRandomValue(0, (int)candidates.size() - 1)];
+    StarSystemRegistry::SetControlled(chosen.id, f);
+    AddCommsMessage(std::string("INTEL: ") + FactionName(f) +
+                     " forces have established a new station at " +
+                     StarSystemRegistry::NameOf(chosen.seed) + ".");
+}
+
+// `suppressHostile` (Epic 12.3): while the tutorial protects the home
+// system, a roll that would have come up Hostile is downgraded to Neutral
+// instead — a wary bystander rather than a fight the player isn't ready for.
+static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2 pos, bool suppressHostile = false) {
     // 1. AUTO-INJECT: Pick a random ship definition directly from the JSON Registry
     const auto& allShips = ecs::ShipRegistry::AllShips();
     int randIdx = GetRandomValue(0, allShips.size() - 1);
@@ -884,7 +1521,9 @@ static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2
     // 2. Derive faction from ship palette then DiplomaticRegistry
     NpcMeta m;
     m.npcFaction = FactionFromPaletteId(chosenShip.paletteId);
-    NpcFaction faction = RelationToNpcFaction(DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction));
+    m.role = RollNpcRole(m.npcFaction);
+    NpcFaction faction = RelationToNpcFaction(ReputationRegistry::PlayerRelation(m.npcFaction));
+    if (suppressHostile && faction == NpcFaction::Hostile) faction = NpcFaction::Neutral;
     Color primaryColor;
     switch (faction) {
         case NpcFaction::Hostile:  primaryColor = RED;    break;
@@ -907,6 +1546,9 @@ static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2
     m.shipTypeName = chosenShip.displayName;
     m.radius = chosenShip.radius;
 
+    if (chosenShip.shipType == ShipType::Capital)
+        m.hardpoints = BuildCapitalHardpoints(chosenShip);
+
     // (Keep your existing random module loadout logic here)
     m.loadout.Resize(NpcMeta::WSlots, NpcMeta::ShSlots, NpcMeta::AuxSlots);
 
@@ -922,6 +1564,50 @@ static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2
     return { e, m };
 }
 
+void SpaceFlight::PlaceFriendlyShip(SystemWorld& world, const std::string& shipDefId, Vector2 pos) {
+    auto [alliedE, alliedM] = MakeNpcEntity(world.nextNpcId++, pos);
+    alliedM.faction    = NpcFaction::Friendly;
+    alliedM.shipTypeId = shipDefId;
+
+    std::string dName = "Ship";
+    float mHull = 100.0f;
+    const ecs::ShipDef* placedDef = ecs::ShipRegistry::ShipById(shipDefId);
+    if (placedDef) {
+        dName = placedDef->displayName;
+        mHull = placedDef->baseStats.hull;
+    }
+
+    // MakeNpcEntity() rolled m.npcFaction (the DiplomaticRegistry faction that
+    // ALL real hostility checks use) from a RANDOM ship pick before
+    // shipTypeId was overwritten above. Left uncorrected, a "friendly" green
+    // placed ship could diplomatically be Hostile toward the player's own
+    // faction purely by chance. Re-derive it from the actual placed def.
+    alliedM.npcFaction = placedDef ? FactionFromPaletteId(placedDef->paletteId) : Faction::Republic;
+    alliedM.role = RollNpcRole(alliedM.npcFaction); // re-roll: same stale-random-pick issue as npcFaction above
+
+    alliedM.shipTypeName = dName;
+    alliedM.wingman = false; // Player side but NOT part of escort
+    alliedE.health.maxStats.hull = mHull;
+    alliedE.health.currentHull   = mHull;
+    ApplyNpcLoadout(alliedE, alliedM); // Assign generic NPC loadout to fight with
+
+    // MakeNpcEntity() also rolled hardpoints (if any) for that same RANDOM
+    // ship type. Rebuild them from the actual placed def so a placed capital
+    // gets its own hardpoint layout/radius instead of a random pick's (or an
+    // empty list).
+    if (placedDef && placedDef->shipType == ShipType::Capital) {
+        alliedM.hardpoints = BuildCapitalHardpoints(*placedDef);
+        alliedM.radius     = placedDef->radius;
+    }
+    alliedE.network.networkId = alliedE.id;   // expose NPC to HostBroadcast
+    if (!world.npcFreeSlots.empty()) {
+        size_t slot = world.npcFreeSlots.back(); world.npcFreeSlots.pop_back();
+        world.entities[slot] = std::move(alliedE); world.npcMeta[slot] = std::move(alliedM);
+    } else {
+        world.entities.push_back(std::move(alliedE)); world.npcMeta.push_back(std::move(alliedM));
+    }
+}
+
 void SpaceFlight::SpawnNpcShips() {
     _w->entities.clear();
     _w->npcMeta.clear();
@@ -931,6 +1617,8 @@ void SpaceFlight::SpawnNpcShips() {
     int count = GetRandomValue(3, 5);
     float minDist = std::max(700.0f, _w->sun.active ? _w->sun.gravRange + 500.0f : 700.0f);
     float maxDist = std::max(1400.0f, _w->sun.active ? _w->sun.gravRange + 1500.0f : 1400.0f);
+    // Epic 12.3: suppress hostile rolls while the tutorial protects the home system.
+    bool suppressHostile = _tutorialActive && _w->galaxyId == 1 && _w->systemId == 1;
 
     for (int i = 0; i < count; ++i) {
         Vector2 pos = { 0.0f, 0.0f };
@@ -947,7 +1635,7 @@ void SpaceFlight::SpawnNpcShips() {
             }
         }
 
-        auto [entity, meta] = MakeNpcEntity(_w->nextNpcId++, pos);
+        auto [entity, meta] = MakeNpcEntity(_w->nextNpcId++, pos, suppressHostile);
         ApplyNpcLoadout(entity, meta);
         meta.preferredRange = meta.attackRange * 0.75f;
         entity.health.currentHull = entity.health.maxStats.hull;
@@ -958,12 +1646,95 @@ void SpaceFlight::SpawnNpcShips() {
     }
 }
 
+// Epic 5.3: destroyed NPC stations aren't permanent — after a cooldown, the
+// controlling faction rebuilds (fresh hull/hardpoints, economy reseeded at a
+// reduced level reflecting the setback). Host/singleplayer only: no net
+// message broadcasts a revival yet, so a connected client's copy of a
+// destroyed station just stays dead until its next full state sync happens
+// to include the rebuild — same class of flagged-but-unsynced gap as Epic
+// 3/4's own state (see tasks_spaceflight_dynamics.md's cross-cutting sync
+// note; #5 NPC-built stations is explicitly one of the epics that rule
+// covers).
+void SpaceFlight::TickStationRebuilds(float dt) {
+    if (net::Game().IsClient()) return;
+    for (SpaceStation& st : _w->stations) {
+        if (st.alive || !st.rebuilding) continue;
+        st.rebuildTimer -= dt;
+        if (st.rebuildTimer > 0.0f) continue;
+        st.alive      = true;
+        st.rebuilding = false;
+        st.hull       = st.maxHull;
+        BuildNpcStationHardpoints(st);
+        SeedStationEconomy(st.economy, 0.6f); // rebuilt smaller than a founding station
+        AddCommsMessage(std::string("INTEL: ") + FactionName(st.faction) + " forces have rebuilt a station.");
+    }
+}
+
+void SpaceFlight::TryStartAttackDistressCall(const NpcMeta& m, Vector2 pos) {
+    if (_w->hasActiveDistress) return;
+    if (GetRandomValue(0, 99) >= kDistressAttackCallChancePct) return;
+
+    DistressCall dc;
+    dc.type             = DistressType::ShipUnderAttack;
+    dc.position          = pos;
+    dc.npcId             = m.id;
+    dc.issuerFaction      = m.npcFaction;
+    dc.windowSeconds      = kDistressAttackWindowSeconds;
+    dc.rewardCredits      = GetRandomValue(300, 700);
+    dc.rewardReputation   = 10.0f;
+    _w->activeDistress    = dc;
+    _w->hasActiveDistress = true;
+    AddCommsMessage(std::string("DISTRESS CALL: ") + FactionName(m.npcFaction) + " " + m.shipTypeName +
+                     " under attack! Keep it alive to earn a reward.");
+}
+
+void SpaceFlight::TickDistressCalls(float dt) {
+    if (!_w->hasActiveDistress) return;
+    DistressCall& dc = _w->activeDistress;
+    dc.timer += dt;
+
+    if (dc.type == DistressType::Stranded) {
+        if (dc.timer < dc.windowSeconds) return;
+        if (_fuel < kMaxFuel - 0.01f) {
+            _fuel = std::min(kMaxFuel, _fuel + kDistressFuelAmount);
+            AddCommsMessage("DISTRESS CALL ANSWERED: a passing vessel transfers emergency fuel cells (+" +
+                             std::to_string((int)kDistressFuelAmount) + ").");
+        }
+        _w->hasActiveDistress = false;
+        _w->activeDistress    = DistressCall{};
+        return;
+    }
+
+    // ShipUnderAttack
+    bool stillAlive = false;
+    for (const NpcMeta& m : _w->npcMeta) {
+        if (m.id == dc.npcId && m.alive) { stillAlive = true; break; }
+    }
+    if (!stillAlive) {
+        AddCommsMessage("DISTRESS CALL FAILED: the vessel was lost.");
+        _w->hasActiveDistress = false;
+        _w->activeDistress    = DistressCall{};
+        return;
+    }
+    if (dc.timer >= dc.windowSeconds) {
+        InventoryManager::Get().AddCredits(dc.rewardCredits);
+        ReputationRegistry::Adjust(dc.issuerFaction, dc.rewardReputation);
+        AddCommsMessage("DISTRESS CALL RESOLVED: vessel saved (+" +
+                         std::to_string(dc.rewardCredits) + "cr)", true);
+        _w->hasActiveDistress = false;
+        _w->activeDistress    = DistressCall{};
+    }
+}
+
 void SpaceFlight::UpdateNpcShips(float dt) {
     // Player-built stations (FleetManager) aren't tagged with a system and
     // belong to the player's world — hide them from AI in background worlds.
     static const std::vector<PlayerStation> kNoPlayerStations;
     const auto& playerStations = _bgTick ? kNoPlayerStations
                                          : FleetManager::Get().PlayerStations;
+
+    TickStationRebuilds(dt);
+    TickDistressCalls(dt);
 
     for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
         NpcMeta&    m = _w->npcMeta[i];
@@ -983,6 +1754,22 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             }
             continue;
         }
+
+        // Epic 9.2 (fighter capture): ion-stunned — frozen in place (no
+        // movement/economy/firing this frame) until either the player
+        // captures it (UpdateCaptureProximity, separate from this loop) or
+        // the timer runs out and it re-engages on its own.
+        if (m.aiState == NpcAiState::Disabled) {
+            m.ionDisableTimer -= dt;
+            if (m.ionDisableTimer <= 0.0f) {
+                m.disabled = false;
+                m.aiState  = NpcAiState::Chase;
+                AddCommsMessage(m.shipTypeName + " has recovered from the ion strike!");
+            }
+            continue;
+        }
+
+        TickNpcEconomy(m, dt);
 
         float distToPlayer = Vector2Distance(e.transform.position, _playerEntity.transform.position);
 
@@ -1024,14 +1811,20 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     m.waypointSet = false;
                 }
                 break;
-            case NpcAiState::Attack:
+            case NpcAiState::Attack: {
                 if (distToClosestTarget > m.attackRange * 1.4f) m.aiState = NpcAiState::Chase;
-                if (e.health.currentHull / e.health.maxStats.hull < 0.20f) {
+                // Military holds the line for duty/discipline; Raiders press
+                // recklessly per their "strike without warning" doctrine —
+                // both flee later than the 20% default (Epic 2.4/2.5).
+                float fleeThreshold = m.role == NpcRole::Military ? 0.15f
+                                    : m.role == NpcRole::Raider   ? 0.10f : 0.20f;
+                if (e.health.currentHull / e.health.maxStats.hull < fleeThreshold) {
                     m.aiState = NpcAiState::Flee;
                     int idx = GetRandomValue(0, 1);
                     AddCommsMessage(std::string("HOSTILE: \"") + FleeLines[idx] + "\"");
                 }
                 break;
+            }
             case NpcAiState::Flee:
                 if (distToClosestTarget > m.aggroRange * 2.2f &&
                     !repair::FindNearestFriendlyDock(*_w, m.npcFaction, e.transform.position).valid) {
@@ -1085,7 +1878,10 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     }
                 }
                 if (e.health.currentHull / e.health.maxStats.hull < 0.20f) {
-                    if (m.aiState != NpcAiState::Flee) { m.aiState = NpcAiState::Flee; m.waypointSet = false; }
+                    if (m.aiState != NpcAiState::Flee) {
+                        m.aiState = NpcAiState::Flee; m.waypointSet = false;
+                        TryStartAttackDistressCall(m, e.transform.position);
+                    }
                 } else if (m.aiState == NpcAiState::Flee) {
                     if (closestHostileDist > m.aggroRange * 2.2f &&
                         !repair::FindNearestFriendlyDock(*_w, m.npcFaction, e.transform.position).valid) {
@@ -1120,6 +1916,126 @@ void SpaceFlight::UpdateNpcShips(float dt) {
 
         switch (m.aiState) {
         case NpcAiState::Patrol: {
+            // Player-allied capitals (built via StationModuleMenu, not wingmen)
+            // guard the player's nearest station, or cycle through random
+            // points across the system when no player station exists.
+            if (!m.hardpoints.empty() && m.faction == NpcFaction::Friendly) {
+                Vector2 guardTarget = {};
+                bool    hasStation  = false;
+                float   holdRadius  = 250.0f;
+                float   bestDist    = 0.0f;
+                for (const PlayerStation& ps : playerStations) {
+                    if (!ps.alive) continue;
+                    float dist = Vector2Distance(e.transform.position, ps.position);
+                    if (!hasStation || dist < bestDist) {
+                        guardTarget = ps.position;
+                        bestDist    = dist;
+                        hasStation  = true;
+                    }
+                }
+                if (!hasStation) {
+                    if (!m.waypointSet || Vector2Distance(e.transform.position, m.waypoint) < 200.0f) {
+                        float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
+                        float dist = (float)GetRandomValue(600, 2500);
+                        m.waypoint    = { cosf(ang) * dist, sinf(ang) * dist };
+                        m.waypointSet = true;
+                    }
+                    guardTarget = m.waypoint;
+                    holdRadius  = 0.0f; // no loiter — keep cycling waypoint to waypoint
+                }
+                if (Vector2Distance(e.transform.position, guardTarget) > holdRadius) {
+                    Vector2 toP = Vector2Subtract(guardTarget, e.transform.position);
+                    desiredRot  = atan2f(toP.x, -toP.y) * RAD2DEG;
+                    thrustMult  = 0.5f;
+                } else {
+                    thrustMult = 0.0f; // holding position near the guarded station
+                }
+                break;
+            }
+            // Explorer-role NPCs (Epic 2.3) actively roam the system between
+            // random waypoints instead of idly drifting forward — the same
+            // waypoint-cycle pattern the capital no-station fallback above
+            // already uses. Every other role keeps the old drift behavior
+            // until its own Epic 2.x behavior lands.
+            if (m.role == NpcRole::Explorer && !m.wingman) {
+                if (!m.waypointSet || Vector2Distance(e.transform.position, m.waypoint) < 150.0f) {
+                    float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
+                    float dist = (float)GetRandomValue(500, 3000);
+                    m.waypoint    = { cosf(ang) * dist, sinf(ang) * dist };
+                    m.waypointSet = true;
+                }
+                Vector2 toP = Vector2Subtract(m.waypoint, e.transform.position);
+                desiredRot = atan2f(toP.x, -toP.y) * RAD2DEG;
+                thrustMult = 0.6f;
+                break;
+            }
+            // Trader-role NPCs (Epic 2.6) fly a supply-run loop instead of
+            // drifting: haul out to a departure point away from their home
+            // station while TickNpcEconomy's haulingToDest flag (Epic 3.3)
+            // is true ("cargo loaded, outbound"), then return and idle at
+            // the dock while it's false ("delivering/between hauls"). Reuses
+            // the same flag the background economy tick already toggles per
+            // leg so movement roughly tracks the simulated trade route
+            // rather than running an unrelated random walk.
+            if (m.role == NpcRole::Trader && !m.wingman && m.homeStationId != 0) {
+                SpaceStation* home = FindWorldStation(m.homeWorldKey, m.homeStationId);
+                if (home) {
+                    Vector2 target;
+                    float   holdRadius;
+                    if (m.haulingToDest) {
+                        if (!m.waypointSet || Vector2Distance(e.transform.position, m.waypoint) < 200.0f) {
+                            float ang  = (float)GetRandomValue(0, 359) * DEG2RAD;
+                            float dist = (float)GetRandomValue(1500, 4000);
+                            m.waypoint    = Vector2Add(home->position, { cosf(ang) * dist, sinf(ang) * dist });
+                            m.waypointSet = true;
+                        }
+                        target     = m.waypoint;
+                        holdRadius = 0.0f;
+                    } else {
+                        target        = home->position;
+                        holdRadius    = 180.0f;
+                        m.waypointSet = false; // re-roll a fresh departure point next haul-out leg
+                    }
+                    if (Vector2Distance(e.transform.position, target) > holdRadius) {
+                        Vector2 toP = Vector2Subtract(target, e.transform.position);
+                        desiredRot  = atan2f(toP.x, -toP.y) * RAD2DEG;
+                        thrustMult  = 0.55f;
+                    } else {
+                        thrustMult = 0.0f; // idling at dock between hauls
+                    }
+                    break;
+                }
+            }
+            // Industrialist-role NPCs (Epic 2.7) loiter near an asteroid
+            // field instead of drifting — visual flavor for the background
+            // production Epic 3.2 already simulates numerically. Holds near
+            // the nearest alive asteroid; a small per-frame chance to
+            // re-scan while holding (rather than a dedicated timer field)
+            // catches the target asteroid being destroyed or drifting far.
+            if (m.role == NpcRole::Industrialist && !m.wingman) {
+                if (!m.waypointSet || GetRandomValue(1, 600) == 1) {
+                    Vector2 best = {};
+                    bool    found = false;
+                    float   bestDist = 0.0f;
+                    for (const Asteroid& a : _w->asteroids) {
+                        if (!a.alive) continue;
+                        float d = Vector2Distance(e.transform.position, a.position);
+                        if (!found || d < bestDist) { best = a.position; bestDist = d; found = true; }
+                    }
+                    if (found) { m.waypoint = best; m.waypointSet = true; }
+                }
+                if (m.waypointSet) {
+                    const float holdRadius = 220.0f;
+                    if (Vector2Distance(e.transform.position, m.waypoint) > holdRadius) {
+                        Vector2 toP = Vector2Subtract(m.waypoint, e.transform.position);
+                        desiredRot  = atan2f(toP.x, -toP.y) * RAD2DEG;
+                        thrustMult  = 0.5f;
+                    } else {
+                        thrustMult = 0.0f; // holding position, "mining" the field
+                    }
+                    break;
+                }
+            }
             thrustMult = 0.50f;
             break;
         }
@@ -1131,7 +2047,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                    if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
+                    if (d < best) { best = d; chaseTarget = GetNpcAimPos(*_w, j); }
                 }
                 for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
@@ -1145,7 +2061,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
-                    if (d < best) { best = d; chaseTarget = st.position; }
+                    if (d < best) { best = d; chaseTarget = GetStationAimPos(st); }
                 }
             }
             else {
@@ -1153,13 +2069,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                     if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                    if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
+                    if (d < best) { best = d; chaseTarget = GetNpcAimPos(*_w, j); }
                 }
                 for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
-                    if (d < best) { best = d; chaseTarget = st.position; }
+                    if (d < best) { best = d; chaseTarget = GetStationAimPos(st); }
                 }
                 if (m.retaliatingVsPlayer) {
                     float d = Vector2Distance(e.transform.position, _playerEntity.transform.position);
@@ -1169,7 +2085,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                         if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
                             float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                            if (d < best) { best = d; chaseTarget = _w->entities[j].transform.position; }
+                            if (d < best) { best = d; chaseTarget = GetNpcAimPos(*_w, j); }
                             break;
                         }
                     }
@@ -1184,14 +2100,14 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         case NpcAiState::Attack: {
             Vector2 attackTarget = _playerEntity.transform.position;
             bool    hasTarget    = false;
-            if (DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction) == Relation::Hostile) {
+            if (ReputationRegistry::PlayerRelation(m.npcFaction) == Relation::Hostile) {
                 float best = Vector2Distance(e.transform.position, _playerEntity.transform.position);
                 hasTarget  = true;
                 for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                     if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                    if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; }
+                    if (d < best) { best = d; attackTarget = GetNpcAimPos(*_w, j); }
                 }
                 for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
@@ -1205,7 +2121,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
-                    if (d < best) { best = d; attackTarget = st.position; }
+                    if (d < best) { best = d; attackTarget = GetStationAimPos(st); }
                 }
             } else {
                 float best = FLT_MAX;
@@ -1213,13 +2129,13 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                    if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; hasTarget = true; }
+                    if (d < best) { best = d; attackTarget = GetNpcAimPos(*_w, j); hasTarget = true; }
                 }
                 for (const SpaceStation& st : _w->stations) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
-                    if (d < best) { best = d; attackTarget = st.position; hasTarget = true; }
+                    if (d < best) { best = d; attackTarget = GetStationAimPos(st); hasTarget = true; }
                 }
                 if (m.retaliatingVsPlayer) {
                     float d = Vector2Distance(e.transform.position, _playerEntity.transform.position);
@@ -1229,7 +2145,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                         if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
                             float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                            if (d < best) { best = d; attackTarget = _w->entities[j].transform.position; hasTarget = true; }
+                            if (d < best) { best = d; attackTarget = GetNpcAimPos(*_w, j); hasTarget = true; }
                             break;
                         }
                     }
@@ -1242,20 +2158,29 @@ void SpaceFlight::UpdateNpcShips(float dt) {
 
             // Always face the target so weapons stay aimed
             desiredRot = atan2f(toP.x, -toP.y) * RAD2DEG;
-            desiredRot += sinf((float)GetTime() * 1.8f + (float)m.id) * 20.0f;
 
             // Range control: back off if too close, close in if too far, hold otherwise
             if      (dist < m.preferredRange * 0.65f)  thrustMult = -0.8f;
             else if (dist > m.preferredRange * 1.3f)   thrustMult =  1.0f;
             else                                        thrustMult =  0.0f;
 
-            // Strafe perpendicular to target line to orbit and dodge projectiles
-            if (dist > 1.0f) {
-                float sPhase = sinf((float)GetTime() * 0.45f + (float)m.id * 1.7f);
-                float sDir   = (sPhase > 0.0f ? 1.0f : -1.0f) * ((m.id % 2 == 0) ? 1.0f : -1.0f);
-                float str    = m.npcThrust * 0.55f * dt;
-                lateralBoost.x += (-toP.y / dist) * sDir * str;
-                lateralBoost.y += ( toP.x / dist) * sDir * str;
+            // Fighter-only dodge/orbit jitter — makes a small fast ship harder
+            // to hit. Capital ships (m.hardpoints non-empty) skip this: on a
+            // big slow hull it reads as an ugly wobble rather than a dodge,
+            // and their turrets already aim independently of hull facing
+            // (see UpdateCapitalFire), so there's no accuracy tradeoff to
+            // holding a straight line to the target instead.
+            if (m.hardpoints.empty()) {
+                desiredRot += sinf((float)GetTime() * 1.8f + (float)m.id) * 20.0f;
+
+                // Strafe perpendicular to target line to orbit and dodge projectiles
+                if (dist > 1.0f) {
+                    float sPhase = sinf((float)GetTime() * 0.45f + (float)m.id * 1.7f);
+                    float sDir   = (sPhase > 0.0f ? 1.0f : -1.0f) * ((m.id % 2 == 0) ? 1.0f : -1.0f);
+                    float str    = m.npcThrust * 0.55f * dt;
+                    lateralBoost.x += (-toP.y / dist) * sDir * str;
+                    lateralBoost.y += ( toP.x / dist) * sDir * str;
+                }
             }
             break;
         }
@@ -1284,7 +2209,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 break;
             }
             Vector2 threatPos = _playerEntity.transform.position;
-            if (DiplomaticRegistry::Get(m.npcFaction, kPlayerFaction) != Relation::Hostile) {
+            if (ReputationRegistry::PlayerRelation(m.npcFaction) != Relation::Hostile) {
                 float best = FLT_MAX;
                 for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                     if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
@@ -1318,6 +2243,15 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 static const float kFormRight[4] = {  60.f, -60.f,  120.f, -120.f };
                 static const float kFormBack[4]  = { -5.f, -5.f, -30.f, -30.f };
 
+                // Epic 10: these offsets/thresholds were sized for fighter-scale
+                // wingmen (radius ~18-25) — a wingman'd capital (radius ~140,
+                // reachable via Epic 9 capture or the StationModuleMenu build
+                // path) would otherwise get a "formation slot" well inside its
+                // own hull, physically overlapping the player. Scale by the
+                // wingman's own radius against a fighter-sized baseline so a
+                // capital instead holds a proportionally wider slot.
+                float formScale = std::max(1.0f, m.radius / 20.0f);
+
                 int     slot  = m.wingmanSlot;
                 float   pr    = _playerEntity.transform.rotation * DEG2RAD;
                 Vector2 fwd   = { sinf(pr), -cosf(pr) };
@@ -1325,16 +2259,16 @@ void SpaceFlight::UpdateNpcShips(float dt) {
 
                 Vector2 formTarget = _playerEntity.transform.position;
                 if (slot >= 0 && slot < 4) {
-                    formTarget.x += right.x * kFormRight[slot] + fwd.x * kFormBack[slot];
-                    formTarget.y += right.y * kFormRight[slot] + fwd.y * kFormBack[slot];
+                    formTarget.x += (right.x * kFormRight[slot] + fwd.x * kFormBack[slot]) * formScale;
+                    formTarget.y += (right.y * kFormRight[slot] + fwd.y * kFormBack[slot]) * formScale;
                 }
 
                 float dToTarget = Vector2Distance(e.transform.position, formTarget);
-                if (dToTarget > 120.0f) {
+                if (dToTarget > 120.0f * formScale) {
                     Vector2 toP = Vector2Subtract(formTarget, e.transform.position);
                     desiredRot = atan2f(toP.x, -toP.y) * RAD2DEG;
                     thrustMult = 1.0f;
-                } else if (dToTarget < 40.0f) {
+                } else if (dToTarget < 40.0f * formScale) {
                     Vector2 away2 = Vector2Subtract(e.transform.position, formTarget);
                     desiredRot = atan2f(away2.x, -away2.y) * RAD2DEG;
                     thrustMult = 0.3f;
@@ -1365,7 +2299,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         float diff = desiredRot - e.transform.rotation;
         while (diff > 180.0f) diff -= 360.0f;
         while (diff < -180.0f) diff += 360.0f;
-        float maxTurn = NpcTurnRate * dt;
+        float maxTurn = m.npcTurnRate * dt;
         e.transform.rotation += std::clamp(diff, -maxTurn, maxTurn);
 
         m.thrusting = (fabsf(thrustMult) > 0.01f && m.npcThrust > 0.0f);
@@ -1389,7 +2323,10 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             m.energyShield = std::min(m.energyShield + m.energyRechargeRate * dt, m.maxEnergyShield);
         if (m.asteroidHitCooldown > 0.0f) m.asteroidHitCooldown -= dt;
 
-        if (m.faction == NpcFaction::Hostile && !m.wingman &&
+        // Capital ships (m.hardpoints non-empty) fire exclusively through
+        // UpdateCapitalFire's independent per-turret logic — skip the
+        // single-shared-target fighter fire path so they don't double-fire.
+        if (m.faction == NpcFaction::Hostile && !m.wingman && m.hardpoints.empty() &&
             m.aiState == NpcAiState::Attack && m.npcHasWeapon) {
 
             Vector2      fireTarget = _playerEntity.transform.position;
@@ -1401,7 +2338,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!_w->npcMeta[j].alive || _w->npcMeta[j].id == m.id) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                    if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = _w->npcMeta[j].id; fireTargetIsStation = false; }
+                    if (d < best) { best = d; fireTarget = GetNpcAimPos(*_w, j); fireNpcId = _w->npcMeta[j].id; fireTargetIsStation = false; }
                 }
                 for (const PlayerStation& ps : playerStations) {
                     if (!ps.alive) continue;
@@ -1415,7 +2352,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                     if (!st.alive) continue;
                     if (DiplomaticRegistry::Get(m.npcFaction, st.faction) != Relation::Hostile) continue;
                     float d = Vector2Distance(e.transform.position, st.position);
-                    if (d < best) { best = d; fireTarget = st.position; fireNpcId = 0; fireTargetIsStation = true; }
+                    if (d < best) { best = d; fireTarget = GetStationAimPos(st); fireNpcId = 0; fireTargetIsStation = true; }
                 }
             }
             m.fireCooldown -= dt;
@@ -1567,14 +2504,17 @@ void SpaceFlight::UpdateNpcShips(float dt) {
             }
         }
 
-        if (m.faction != NpcFaction::Hostile && !m.wingman &&
+        // Capitals fire exclusively through UpdateCapitalFire (see the hostile
+        // fire block above) — guard here too in case a future capital is ever
+        // spawned on a friendly/neutral faction.
+        if (m.faction != NpcFaction::Hostile && !m.wingman && m.hardpoints.empty() &&
             m.aiState == NpcAiState::Attack && m.npcHasWeapon) {
 
             Vector2 fireTarget = {}; unsigned int fireNpcId = 0; bool fireTargetIsPlayer = false; float best = FLT_MAX;
             for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                 if (!_w->npcMeta[j].alive || DiplomaticRegistry::Get(m.npcFaction, _w->npcMeta[j].npcFaction) != Relation::Hostile) continue;
                 float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = _w->npcMeta[j].id; fireTargetIsPlayer = false; }
+                if (d < best) { best = d; fireTarget = GetNpcAimPos(*_w, j); fireNpcId = _w->npcMeta[j].id; fireTargetIsPlayer = false; }
             }
             if (m.retaliatingVsPlayer) {
                 float d = Vector2Distance(e.transform.position, _playerEntity.transform.position);
@@ -1584,7 +2524,7 @@ void SpaceFlight::UpdateNpcShips(float dt) {
                 for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
                     if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
                         float d = Vector2Distance(e.transform.position, _w->entities[j].transform.position);
-                        if (d < best) { best = d; fireTarget = _w->entities[j].transform.position; fireNpcId = m.retaliationTargetId; fireTargetIsPlayer = false; }
+                        if (d < best) { best = d; fireTarget = GetNpcAimPos(*_w, j); fireNpcId = m.retaliationTargetId; fireTargetIsPlayer = false; }
                         break;
                     }
                 }
@@ -1669,13 +2609,32 @@ void SpaceFlight::UpdateNpcShips(float dt) {
 
 void SpaceFlight::UpdateNpcCollisions() {
     // Block 1: player projectiles hit any non-escort NPC
+    // (capital ships — m.hardpoints non-empty — are excluded here: they take
+    // damage only through their own hardpoint hit-test below, never generic hull)
     for (Projectile& p : _w->projectiles) {
         if (!p.alive || !p.fromPlayer) continue;
         for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
             NpcMeta&     m = _w->npcMeta[i];
             ecs::Entity& e = _w->entities[i];
-            if (!m.alive || m.wingman) continue;
+            if (!m.alive || m.wingman || !m.hardpoints.empty()) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
+                // Epic 9.2 (fighter capture): an Ion weapon subdues a fighter
+                // that's already below the disable-hull threshold instead of
+                // finishing it off — fighters have no hardpoints to disable
+                // like capitals/stations, so this is the "hull-threshold +
+                // ion-effect status" definition from the locked design.
+                float hullPctBefore = (e.health.maxStats.hull > 0.0f)
+                    ? e.health.currentHull / e.health.maxStats.hull : 1.0f;
+                if (p.effect == WeaponEffect::Ion && m.faction != NpcFaction::Friendly &&
+                    !m.disabled && hullPctBefore <= kIonDisableHullPct) {
+                    p.alive = false;
+                    m.disabled = true;
+                    m.ionDisableTimer = (p.effectDuration > 0.0f) ? p.effectDuration : 6.0f;
+                    m.aiState = NpcAiState::Disabled;
+                    AddCommsMessage(m.shipTypeName + " ion-disabled! Approach to capture before it recovers.", true);
+                    break;
+                }
+
                 p.alive = false;
                 float dmg = p.damage;
                 if (e.health.currentShield > 0.0f) {
@@ -1691,6 +2650,11 @@ void SpaceFlight::UpdateNpcCollisions() {
                     if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
                     SpawnLootDrop(e.transform.position, m.faction);
                     AddCommsMessage(m.shipTypeName + " destroyed.");
+                    ReputationRegistry::Adjust(m.npcFaction, -8.0f); // Epic 6.3: killing their ship costs standing
+                    if (_hasActiveContract && _activeContract.type == ContractType::Bounty &&
+                        _activeContract.targetFaction == m.npcFaction) {
+                        _activeContract.killsDone++;
+                    }
                 }
                 break;
             }
@@ -1721,7 +2685,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
             NpcMeta&     m = _w->npcMeta[i];
             ecs::Entity& e = _w->entities[i];
-            if (!m.alive || m.id == p.ownerId) continue;
+            if (!m.alive || m.id == p.ownerId || !m.hardpoints.empty()) continue;
             if (DiplomaticRegistry::Get(shooterFaction, m.npcFaction) != Relation::Hostile) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
@@ -1764,7 +2728,8 @@ void SpaceFlight::UpdateNpcCollisions() {
             }
             if (skip) continue;
         }
-        if (Vector2Distance(p.position, _playerEntity.transform.position) < _playerMeta.radius) {
+        if (!_stationServicesMenu.isOpen && !_seated &&
+            Vector2Distance(p.position, _playerEntity.transform.position) < _playerMeta.radius) {
             p.alive = false;
             float dmg = p.damage;
             if (_playerEntity.health.currentShield > 0.0f) {
@@ -1789,40 +2754,14 @@ void SpaceFlight::UpdateNpcCollisions() {
             const PlayerStationDef* def = PlayerStationRegistry::ById(ps.stationDefId);
             float rad = def ? def->radius : 120.0f;
 
-            // 1. Check if outer defenses still exist to protect the core
-            bool hasOuterHardpoints = combat::CoreIsProtected(ps.hardpoints);
+            bool hitStation = ResolveHardpointHit(ps.hardpoints, p.position, p.damage,
+                [&](int i) { return GetHardpointPos(ps, i, rad); },
+                "", " Destroyed!", true);
+            if (hitStation) p.alive = false;
 
-            bool hitStation = false;
-            for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
-                HardpointState& hp = ps.hardpoints[i];
-                if (!hp.alive) continue;
-
-                // CORE INVULNERABILITY: Skip core collision if outer points exist
-                if (hp.isCore && hasOuterHardpoints) continue;
-
-                Vector2 hpPos = GetHardpointPos(ps, i, rad);
-                float hitRad = hp.isCore ? 18.0f : 14.0f;
-
-                if (Vector2Distance(p.position, hpPos) < hitRad + 3.5f) {
-                    p.alive = false;
-
-                    hp.hull -= p.damage;
-                    if (hp.hull <= 0.0f) {
-                        hp.alive = false;
-                        AddCommsMessage(hp.displayName + " Destroyed!", true);
-                    }
-                    hitStation = true;
-                    break;
-                }
-            }
-
-            // 2. If the core just died, or all hardpoints are dead, kill the station
+            // Station dies once every hardpoint is destroyed — no protected core.
             if (hitStation) {
-                bool coreAlive = false;
-                for (const HardpointState& hp : ps.hardpoints) {
-                    if (hp.isCore && hp.alive) { coreAlive = true; break; }
-                }
-                if (!coreAlive) {
+                if (combat::AllHardpointsDestroyed(ps.hardpoints)) {
                     ps.alive = false;
                     AddCommsMessage("CRITICAL FAILURE: Station Lost.", true);
                 }
@@ -1841,7 +2780,7 @@ void SpaceFlight::UpdateNpcCollisions() {
         for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
             NpcMeta&     m = _w->npcMeta[i];
             ecs::Entity& e = _w->entities[i];
-            if (!m.alive) continue;
+            if (!m.alive || !m.hardpoints.empty()) continue;
             if (Vector2Distance(p.position, e.transform.position) < m.radius + 3.5f) {
                 p.alive = false;
                 float dmg = p.damage;
@@ -1862,7 +2801,8 @@ void SpaceFlight::UpdateNpcCollisions() {
                 break;
             }
         }
-        if (p.alive && Vector2Distance(p.position, _playerEntity.transform.position) < _playerMeta.radius) {
+        if (p.alive && !_stationServicesMenu.isOpen && !_seated &&
+            Vector2Distance(p.position, _playerEntity.transform.position) < _playerMeta.radius) {
             p.alive = false;
             float dmg = p.damage;
             if (_playerEntity.health.currentShield > 0.0f) {
@@ -1883,26 +2823,12 @@ void SpaceFlight::UpdateNpcCollisions() {
             // Quick broad-phase: skip if not near the station at all
             if (Vector2Distance(p.position, st.position) > st.radius + 20.0f) continue;
 
-            bool hasOuterHardpoints = combat::CoreIsProtected(st.hardpoints);
-
-            bool hitStation = false;
-            for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
-                HardpointState& hp = st.hardpoints[i];
-                if (!hp.alive) continue;
-                if (hp.isCore && hasOuterHardpoints) continue; // core invulnerable while outer hardpoints live
-
-                Vector2 hpPos = GetNpcStationHardpointPos(st, i);
-                float   hitRad = hp.isCore ? 18.0f : 14.0f;
-                if (Vector2Distance(p.position, hpPos) >= hitRad + 3.5f) continue;
-
+            bool hitStation = ResolveHardpointHit(st.hardpoints, p.position, p.damage,
+                [&](int i) { return GetNpcStationHardpointPos(st, i); },
+                st.stationTypeId + " ", " destroyed.");
+            if (hitStation) {
                 p.alive = false;
-                hp.hull -= p.damage;
-                st.hull  = std::max(0.0f, st.hull - p.damage); // keep overall health bar in sync
-                if (hp.hull <= 0.0f) {
-                    hp.alive = false;
-                    AddCommsMessage(st.stationTypeId + " " + hp.displayName + " destroyed.");
-                }
-                hitStation = true;
+                st.hull = std::max(0.0f, st.hull - p.damage); // keep overall health bar in sync
 
                 // Trigger retaliation
                 st.retaliating    = true;
@@ -1914,17 +2840,103 @@ void SpaceFlight::UpdateNpcCollisions() {
                     st.retaliateAtPlayer = false;
                     st.retaliateAtNpcId  = p.ownerId;
                 }
-                break;
             }
 
             if (hitStation) {
-                // Station dies when its core is destroyed
-                bool coreAlive = false;
-                for (const HardpointState& hp : st.hardpoints)
-                    if (hp.isCore && hp.alive) { coreAlive = true; break; }
-                if (!coreAlive && st.alive) {
-                    st.alive = false;
+                // Station dies once every hardpoint is destroyed — no protected core.
+                if (combat::AllHardpointsDestroyed(st.hardpoints) && st.alive) {
+                    st.alive        = false;
+                    st.rebuilding   = true;
+                    st.rebuildTimer = kStationRebuildSeconds;
+                    int dropCount = GetRandomValue(1, 3);
+                    for (int d = 0; d < dropCount; ++d) {
+                        Vector2 jitter = { (float)GetRandomValue(-40, 40), (float)GetRandomValue(-40, 40) };
+                        SpawnLootDrop(Vector2Add(st.position, jitter), NpcFaction::Hostile);
+                    }
                     net::Game().HostBroadcastStationDead(_w->systemId, st.id);
+                    // Epic 11.1: a persistent, meaningful salvage reward — separate
+                    // from the routine 1-3 LootDrop scatter above (locked decision:
+                    // capitals/stations only, not routine fighter kills).
+                    SpawnDerelictWreck(st.position, false, GetRandomValue(800, 1500), st.stationTypeId);
+                    if (p.fromPlayer) {
+                        ReputationRegistry::Adjust(st.faction, -15.0f); // Epic 6.3
+                        if (_hasActiveContract && _activeContract.type == ContractType::Bounty &&
+                            _activeContract.targetFaction == st.faction) {
+                            _activeContract.killsDone++;
+                        }
+                    }
+                } else if (st.alive && !st.disabled && combat::IsDisabled(st.hardpoints)) {
+                    // Epic 9.1: every non-core hardpoint dead, station_core survives —
+                    // unarmed and awaiting an instant-capture approach.
+                    st.disabled = true;
+                    AddCommsMessage(st.stationTypeId + " disabled! Approach to capture.", true);
+                }
+                break; // projectile consumed
+            }
+        }
+    }
+
+    // Any projectile hits capital ship hardpoints — same "no core, per-
+    // hardpoint HP" model as NPC stations (Block 6) above, but the ship
+    // moves/rotates so hardpoint world positions come from B.03's
+    // GetCapitalHardpointWorldPos instead of a static ring. Blocks 1/2/5
+    // above already exclude capitals (m.hardpoints non-empty) from the
+    // generic ship-hull hit-test, so this is the only place capitals take
+    // damage. Friendly-fire rule matches Block 6: no hostility gate, only
+    // self-hit exclusion via ownerId.
+    for (Projectile& p : _w->projectiles) {
+        if (!p.alive) continue;
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
+            if (!m.alive || m.hardpoints.empty() || m.id == p.ownerId) continue;
+            // Quick broad-phase: skip if not near the ship at all
+            if (Vector2Distance(p.position, e.transform.position) > m.radius + 20.0f) continue;
+
+            bool hitCapital = ResolveHardpointHit(m.hardpoints, p.position, p.damage,
+                [&](int i) { return GetCapitalHardpointWorldPos(e.transform.position, e.transform.rotation, m.hardpoints[i].localOffset); },
+                m.shipTypeName + " ", " destroyed.");
+            if (hitCapital) {
+                p.alive = false;
+                if (!m.wingman && m.aiState == NpcAiState::Patrol) m.aiState = NpcAiState::Chase;
+
+                // Capitals take damage from anything regardless of diplomatic
+                // hostility (see this block's own header comment), so they
+                // need the same retaliation-target override the fighter fire
+                // scan uses for a non-Hostile attacker — otherwise a capital
+                // with no diplomatically-Hostile target in a turret's range
+                // never fires back at whatever is actually shooting it.
+                // UpdateCapitalFire consults these same NpcMeta fields.
+                if (p.fromPlayer) m.retaliatingVsPlayer = true;
+                else if (p.ownerId != 0) m.retaliationTargetId = p.ownerId;
+            }
+
+            if (hitCapital) {
+                if (combat::AllHardpointsDestroyed(m.hardpoints)) {
+                    m.alive = false;
+                    _w->npcFreeSlots.push_back(i);
+                    if (_npcTargetId == m.id) { _npcTargetId = 0; _target = TargetInfo{}; }
+                    int dropCount = GetRandomValue(1, 3);
+                    for (int d = 0; d < dropCount; ++d) {
+                        Vector2 jitter = { (float)GetRandomValue(-40, 40), (float)GetRandomValue(-40, 40) };
+                        SpawnLootDrop(Vector2Add(e.transform.position, jitter), m.faction);
+                    }
+                    AddCommsMessage(m.shipTypeName + " destroyed.");
+                    // Epic 11.1: capital wrecks pay out more than a station's —
+                    // the bigger, rarer kill.
+                    SpawnDerelictWreck(e.transform.position, true, GetRandomValue(2000, 4000), m.shipTypeName);
+                    if (p.fromPlayer) {
+                        ReputationRegistry::Adjust(m.npcFaction, -20.0f); // Epic 6.3
+                        if (_hasActiveContract && _activeContract.type == ContractType::Bounty &&
+                            _activeContract.targetFaction == m.npcFaction) {
+                            _activeContract.killsDone++;
+                        }
+                    }
+                } else if (!m.disabled && combat::IsDisabled(m.hardpoints)) {
+                    // Epic 9.1: every non-core hardpoint dead, command_bridge survives —
+                    // unarmed and awaiting an instant-capture approach.
+                    m.disabled = true;
+                    AddCommsMessage(m.shipTypeName + " disabled! Approach to capture.", true);
                 }
                 break; // projectile consumed
             }
@@ -1943,6 +2955,7 @@ void SpaceFlight::UpdateNpcCollisions() {
             for (auto& [netId, re] : _remoteEntities) {
                 if (re.id == 0) continue;
                 if (!PeerInCurrentWorld(netId)) continue;  // peer is in another system
+                if (_remoteDocked[netId]) continue;  // docked in a station menu — untargetable
                 if (Vector2Distance(p.position, re.transform.position) < 18.0f + 3.5f) {
                     p.alive = false;
                     float dmg = p.damage;
@@ -1966,12 +2979,13 @@ void SpaceFlight::UpdateNpcCollisions() {
             _remoteEntities.erase(id);
             _remoteFireCooldown.erase(id);
             _remoteJoinGrace.erase(id);
+            _remoteDocked.erase(id);
         }
     }
 
     for (LootDrop& ld : _w->lootDrops) {
-        if (ld.collected) continue;
-        if (Vector2Distance(_playerEntity.transform.position, ld.position) < 32.0f) {
+        if (ld.collected || _stationServicesMenu.isOpen) continue;
+        if (Vector2Distance(_playerEntity.transform.position, ld.position) < _playerMeta.radius) {
             bool itemAdded = false;
 
             for (StorageItem& slot : _storageMenu.slots) {
@@ -1994,8 +3008,8 @@ void SpaceFlight::UpdateNpcCollisions() {
     }
 
     for (MaterialDrop& md : _w->materialDrops) {
-        if (md.collected) continue;
-        if (Vector2Distance(_playerEntity.transform.position, md.position) >= 32.0f) continue;
+        if (md.collected || _stationServicesMenu.isOpen) continue;
+        if (Vector2Distance(_playerEntity.transform.position, md.position) >= _playerMeta.radius) continue;
         bool added = false;
         for (StorageItem& slot : _storageMenu.slots) {
             if (slot.type == StorageItemType::Material &&
@@ -2023,11 +3037,28 @@ void SpaceFlight::UpdateNpcCollisions() {
             const MatDef* m = FindMaterial(md.materialId);
             AddCommsMessage(std::string("MATERIAL ACQUIRED: ") + (m ? m->displayName : md.materialId), true);
             md.collected = true;
+            AdvanceTutorialStep(TutorialStep::CollectMaterial);
         }
         else {
             AddCommsMessage("STORAGE FULL: Cannot collect material!", true);
         }
     }
+
+    // Epic 11.1: derelict wrecks pay out credits directly on approach —
+    // no storage-slot contention, since the reward is meant to always land.
+    for (DerelictWreck& w : _w->derelictWrecks) {
+        if (w.collected || _stationServicesMenu.isOpen) continue;
+        if (Vector2Distance(_playerEntity.transform.position, w.position) >= _playerMeta.radius + w.radius) continue;
+        w.collected = true;
+        InventoryManager::Get().AddCredits(w.creditsReward);
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "SALVAGED WRECK: %s (+%d credits)", w.sourceName.c_str(), w.creditsReward);
+        AddCommsMessage(buf, true);
+    }
+    _w->derelictWrecks.erase(
+        std::remove_if(_w->derelictWrecks.begin(), _w->derelictWrecks.end(),
+                        [](const DerelictWreck& w) { return w.collected; }),
+        _w->derelictWrecks.end());
 }
 
 ModuleDef SpaceFlight::GenerateDrop(ModuleGrade grade) {
@@ -2048,11 +3079,67 @@ void SpaceFlight::SpawnMaterialDrop(Vector2 pos, const std::string& materialId) 
     _w->materialDrops.push_back(md);
 }
 
+void SpaceFlight::SpawnDerelictWreck(Vector2 pos, bool isCapital, int creditsReward, const std::string& sourceName) {
+    DerelictWreck w;
+    w.position      = pos;
+    w.isCapital     = isCapital;
+    w.radius        = isCapital ? 70.0f : 45.0f;
+    w.creditsReward = creditsReward;
+    w.sourceName    = sourceName;
+    _w->derelictWrecks.push_back(w);
+}
+
 const ecs::ShipDef* SpaceFlight::ResolveShipDefByHash(uint32_t shipNameHash) const {
     if (shipNameHash == 0) return nullptr;
     for (const ecs::ShipDef& def : ecs::ShipRegistry::AllShips())
         if (Fnv1a32(def.id) == shipNameHash) return &def;
     return nullptr;
+}
+
+// Faction-tinted oval + per-hardpoint markers, shared by local NPC capitals
+// (DrawNpcShips) and remote capitals (DrawRemotePlayers) so both draw paths
+// stay in lockstep with GetCapitalHardpointWorldPos.
+static void DrawCapitalBody(Vector2 pos, float rotation, float radius, NpcFaction faction,
+                             const std::vector<HardpointState>& hardpoints) {
+    Color bodyTint = faction == NpcFaction::Hostile  ? Color{ 200,  60,  60, 255 }
+                    : faction == NpcFaction::Friendly ? Color{  60, 200,  90, 255 }
+                                                        : Color{  90, 150, 220, 255 };
+    constexpr int kOvalSegments = 20;
+    Vector2 pts[kOvalSegments + 2];
+    pts[0] = pos;
+    float a = radius, b = radius * 0.62f;
+    float rotRad = rotation * DEG2RAD;
+    float cr = cosf(rotRad), sr = sinf(rotRad);
+    for (int k = 0; k <= kOvalSegments; ++k) {
+        float ang = (float)k / (float)kOvalSegments * 2.0f * PI;
+        float lx = sinf(ang) * a, ly = -cosf(ang) * b;
+        pts[k + 1] = { pos.x + lx * cr - ly * sr, pos.y + lx * sr + ly * cr };
+    }
+    DrawTriangleFan(pts, kOvalSegments + 2,
+        Color{ (unsigned char)(bodyTint.r / 4), (unsigned char)(bodyTint.g / 4), (unsigned char)(bodyTint.b / 4), 235 });
+    DrawLineStrip(&pts[1], kOvalSegments + 1, bodyTint);
+
+    for (const HardpointState& hp : hardpoints) {
+        Vector2 hpPos = GetCapitalHardpointWorldPos(pos, rotation, hp.localOffset);
+        float   hpDrawRad = hp.isCore ? 16.0f : 12.0f;
+        if (!hp.alive) {
+            DrawCircleLinesV(hpPos, hpDrawRad, Color{ 80, 80, 80, 140 });
+            DrawLine((int)(hpPos.x - hpDrawRad * 0.6f), (int)(hpPos.y - hpDrawRad * 0.6f),
+                     (int)(hpPos.x + hpDrawRad * 0.6f), (int)(hpPos.y + hpDrawRad * 0.6f), Color{ 80, 80, 80, 140 });
+            DrawLine((int)(hpPos.x - hpDrawRad * 0.6f), (int)(hpPos.y + hpDrawRad * 0.6f),
+                     (int)(hpPos.x + hpDrawRad * 0.6f), (int)(hpPos.y - hpDrawRad * 0.6f), Color{ 80, 80, 80, 140 });
+            continue;
+        }
+        float hpHullPct = hp.maxHull > 0.0f ? std::clamp(hp.hull / hp.maxHull, 0.0f, 1.0f) : 0.0f;
+        Color ringCol = hpHullPct > 0.5f ? Color{ 48,188,68,255 }
+            : hpHullPct > 0.25f ? Color{ 212,168,28,255 } : Color{ 208,42,32,255 };
+        DrawCircleV(hpPos, hpDrawRad, Color{ 15, 25, 40, 240 });
+        DrawCircleLinesV(hpPos, hpDrawRad, ringCol);
+        bool hasWeapon = !hp.weapons.empty() && hp.weapons[0].has_value();
+        Color iconCol = hp.isCore ? Color{ 200, 160, 30, 255 }
+            : hasWeapon ? Color{ 220, 90, 60, 255 } : Color{ 100, 180, 255, 200 };
+        DrawCircleV(hpPos, hpDrawRad * 0.4f, iconCol);
+    }
 }
 
 void SpaceFlight::DrawRemotePlayers() const {
@@ -2061,6 +3148,12 @@ void SpaceFlight::DrawRemotePlayers() const {
         if (!PeerInCurrentWorld(id)) continue;  // host: peer is in another system
         const Vector2& pos = re.transform.position;
         const float    rot = re.transform.rotation;
+        auto capIt = _remoteCapitalHardpoints.find(id);
+        if (capIt != _remoteCapitalHardpoints.end()) {
+            const RemoteCapitalInfo& info = capIt->second;
+            DrawCapitalBody(pos, rot, info.radius, info.faction, info.hardpoints);
+            continue;
+        }
         Texture2D* tex = re.sprite.texture;
         if (tex && tex->id > 0) {
             float tw = (float)tex->width, th = (float)tex->height;
@@ -2087,7 +3180,40 @@ void SpaceFlight::DrawNpcShips() const {
         const ecs::Entity& e = _w->entities[i];
         if (!m.alive) continue;
 
+        // Epic 7.3: the Escort contract's own briefing text promises "the
+        // marked <faction> trader" but nothing ever drew a marker — fixed
+        // here, a pulsing ring + label over whichever NPC is escortNpcId,
+        // same visual language as the derelict-wreck label below.
+        if (_hasActiveContract && _activeContract.type == ContractType::Escort &&
+            _activeContract.escortNpcId == m.id) {
+            float pulse = sinf((float)GetTime() * 3.0f) * 0.5f + 0.5f;
+            unsigned char a = (unsigned char)(120 + 100 * pulse);
+            DrawCircleLines((int)e.transform.position.x, (int)e.transform.position.y,
+                (int)(m.radius + 16.0f), Color{ 80, 200, 255, a });
+            const char* label = "ESCORT TARGET";
+            Vector2 ts = MeasureTextEx(_hudFontVal, label, 11.0f, 1.0f);
+            DrawTextEx(_hudFontVal, label,
+                { e.transform.position.x - ts.x / 2.0f, e.transform.position.y - m.radius - 26.0f },
+                11.0f, 1.0f, Color{ 120, 220, 255, 230 });
+        }
+
         const ecs::ShipDef* shipDef = ecs::ShipRegistry::ShipById(m.shipTypeId);
+
+        // Gated on !m.hardpoints.empty() too, not just shipType: combat/collision
+        // code (UpdateNpcCollisions, UpdateCapitalFire) treats "is a capital"
+        // as "has a populated hardpoint list" — if a malformed ship def ever
+        // produced a Capital with no hardpoints, that ship must fall through
+        // to the normal fighter draw/hit-test path below rather than render as
+        // an oval no code path can damage.
+        if (shipDef && shipDef->shipType == ShipType::Capital && !m.hardpoints.empty()) {
+            // Placeholder capital art: faction-tinted oval + hardpoint markers,
+            // composited the same way DrawStations() draws station hardpoints.
+            // Flat shapes aren't lit (see DrawAsteroid's non-textured fallback) —
+            // only textured draws call _lighting.BeginLit/EndLit.
+            DrawCapitalBody(e.transform.position, e.transform.rotation, m.radius, m.faction, m.hardpoints);
+            continue;
+        }
+
         Texture2D* texPtr = nullptr;
         if (m.shipTypeId == "gargos") {
             texPtr = const_cast<Texture2D*>(&_gargosTex);
@@ -2164,6 +3290,27 @@ void SpaceFlight::DrawNpcShips() const {
             { core.r, core.g, core.b, alpha8(pulse, 100, 190) });
         DrawCircleLines((int)md.position.x, (int)md.position.y, 17,
             { core.r, core.g, core.b, alpha8(pulse, 50, 120) });
+    }
+
+    // Epic 11.1: derelict wrecks — dark hulk + a slow amber salvage-beacon
+    // pulse (distinct from the faster blue/gold LootDrop/MaterialDrop pulse
+    // above, since this is a rarer, more deliberate target) and a persistent
+    // label since it never expires and isn't a targetable NpcMeta/SpaceStation.
+    for (const DerelictWreck& w : _w->derelictWrecks) {
+        if (w.collected) continue;
+        float pulse = sinf((float)GetTime() * 2.0f) * 0.5f + 0.5f;
+        auto  alpha8 = [](float p, int lo, int hi) -> unsigned char {
+            return (unsigned char)(lo + (int)((hi - lo) * p));
+        };
+        float hullR = w.isCapital ? 34.0f : 22.0f;
+        DrawCircleV(w.position, hullR, Color{ 40, 36, 30, 230 });
+        DrawCircleLines((int)w.position.x, (int)w.position.y, (int)hullR, Color{ 90, 80, 60, 255 });
+        DrawCircleLines((int)w.position.x, (int)w.position.y, (int)(hullR + 14.0f),
+            Color{ 230, 170, 60, alpha8(pulse, 90, 200) });
+        const char* label = "DERELICT WRECK";
+        Vector2 ts = MeasureTextEx(_hudFontVal, label, 11.0f, 1.0f);
+        DrawTextEx(_hudFontVal, label, { w.position.x - ts.x / 2.0f, w.position.y - hullR - 22.0f },
+            11.0f, 1.0f, Color{ 230, 190, 110, 230 });
     }
 }
 
@@ -2320,26 +3467,30 @@ void SpaceFlight::UpdateCollisions() {
         }
     }
 
-    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
-        NpcMeta&     m = _w->npcMeta[i];
-        ecs::Entity& e = _w->entities[i];
-        if (!m.alive) continue;
+    // Skipped while docked or seated in a turret (Epic 8) — a frozen,
+    // invisible player shouldn't get rammed or physically pushed around by NPCs.
+    if (!_stationServicesMenu.isOpen && !_seated) {
+        for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+            NpcMeta&     m = _w->npcMeta[i];
+            ecs::Entity& e = _w->entities[i];
+            if (!m.alive) continue;
 
-        float dist = Vector2Distance(_playerEntity.transform.position, e.transform.position);
-        float minDist = _playerMeta.radius + m.radius;
+            float dist = Vector2Distance(_playerEntity.transform.position, e.transform.position);
+            float minDist = _playerMeta.radius + m.radius;
 
-        if (dist < minDist && dist > 0.01f) {
-            Vector2 norm = Vector2Scale(Vector2Subtract(_playerEntity.transform.position, e.transform.position), 1.0f / dist);
-            float overlap = minDist - dist;
+            if (dist < minDist && dist > 0.01f) {
+                Vector2 norm = Vector2Scale(Vector2Subtract(_playerEntity.transform.position, e.transform.position), 1.0f / dist);
+                float overlap = minDist - dist;
 
-            _playerEntity.transform.position = Vector2Add(_playerEntity.transform.position, Vector2Scale(norm, overlap * 0.5f));
-            e.transform.position = Vector2Subtract(e.transform.position, Vector2Scale(norm, overlap * 0.5f));
+                _playerEntity.transform.position = Vector2Add(_playerEntity.transform.position, Vector2Scale(norm, overlap * 0.5f));
+                e.transform.position = Vector2Subtract(e.transform.position, Vector2Scale(norm, overlap * 0.5f));
 
-            float vRelN = Vector2DotProduct(Vector2Subtract(_playerEntity.transform.velocity, e.transform.velocity), norm);
-            if (vRelN < 0.0f) {
-                float bounceImpulse = -1.25f * vRelN;
-                _playerEntity.transform.velocity = Vector2Add(_playerEntity.transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
-                e.transform.velocity = Vector2Subtract(e.transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
+                float vRelN = Vector2DotProduct(Vector2Subtract(_playerEntity.transform.velocity, e.transform.velocity), norm);
+                if (vRelN < 0.0f) {
+                    float bounceImpulse = -1.25f * vRelN;
+                    _playerEntity.transform.velocity = Vector2Add(_playerEntity.transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
+                    e.transform.velocity = Vector2Subtract(e.transform.velocity, Vector2Scale(norm, bounceImpulse * 0.5f));
+                }
             }
         }
     }
@@ -2353,12 +3504,13 @@ void SpaceFlight::UpdateCollisions() {
                 if (!a.alive) continue;
                 if (Vector2Distance(p.position, a.position) < a.radius + 3.5f) {
                     p.alive = false;
-                    a.health -= 1;
+                    a.health -= (int)std::lround(p.damage);
                     if (a.health <= 0) {
                         for (const auto& mc : a.materials)
                             if (GetRandomValue(1, 100) <= mc.percent)
                                 SpawnMaterialDrop(a.position, mc.materialId);
                         DestroyAsteroid(a, spawns);
+                        if (!_bgTick) AdvanceTutorialStep(TutorialStep::DestroyAsteroid);
                     }
                     break;
                 }
@@ -2395,7 +3547,8 @@ void SpaceFlight::UpdateCollisions() {
                 b.velocity = Vector2Subtract(b.velocity, Vector2Scale(norm, impulse / massB));
 
                 if (a.tier > b.tier) {
-                    if (--b.health <= 0) {
+                    b.health -= (int)std::lround(AsteroidDamage(a.tier));
+                    if (b.health <= 0) {
                         for (const auto& mc : b.materials)
                             if (GetRandomValue(1, 100) <= mc.percent)
                                 SpawnMaterialDrop(b.position, mc.materialId);
@@ -2403,7 +3556,8 @@ void SpaceFlight::UpdateCollisions() {
                     }
                 }
                 else if (b.tier > a.tier) {
-                    if (--a.health <= 0) {
+                    a.health -= (int)std::lround(AsteroidDamage(b.tier));
+                    if (a.health <= 0) {
                         for (const auto& mc : a.materials)
                             if (GetRandomValue(1, 100) <= mc.percent)
                                 SpawnMaterialDrop(a.position, mc.materialId);
@@ -2415,7 +3569,7 @@ void SpaceFlight::UpdateCollisions() {
         }
     }
 
-    if (_hitCooldown <= 0.0f) {
+    if (_hitCooldown <= 0.0f && !_stationServicesMenu.isOpen && !_seated) {
         for (Asteroid& a : _w->asteroids) {
             if (!a.alive) continue;
             if (Vector2Distance(_playerEntity.transform.position, a.position) < _playerMeta.radius + a.radius) {
@@ -2497,6 +3651,7 @@ void SpaceFlight::UpdateCollisions() {
                 if (re.id == 0) continue;
                 if (p.ownerId == netId) continue;  // don't let a client's projectile hit themselves
                 if (!PeerInCurrentWorld(netId)) continue;  // peer is in another system
+                if (_remoteDocked[netId]) continue;  // docked in a station menu — untargetable
                 if (Vector2Distance(p.position, re.transform.position) < 18.0f + 3.5f) {
                     p.alive = false;
                     re.health.currentHull = std::max(0.0f, re.health.currentHull - p.damage);
@@ -2514,6 +3669,7 @@ void SpaceFlight::UpdateCollisions() {
             _remoteEntities.erase(id);
             _remoteFireCooldown.erase(id);
             _remoteJoinGrace.erase(id);
+            _remoteDocked.erase(id);
         }
     }
 
@@ -2547,6 +3703,14 @@ static void DrawHudDockIcon(Vector2 c, float s, Color color) {
     DrawLineEx({ c.x + s * 0.5f, by - s * 0.28f }, { c.x + s * 0.5f, by }, 2.0f, color);
     DrawLineEx({ c.x - s * 0.5f, by }, { c.x + s * 0.5f, by }, 2.0f, color);
 }
+// Crosshair-in-a-ring — reads as "man a turret" (Epic 8).
+static void DrawHudTurretIcon(Vector2 c, float s, Color color) {
+    DrawRing(c, s * 0.38f, s * 0.5f, 0.0f, 360.0f, 20, color);
+    DrawLineEx({ c.x - s * 0.62f, c.y }, { c.x - s * 0.3f, c.y }, 2.0f, color);
+    DrawLineEx({ c.x + s * 0.3f, c.y },  { c.x + s * 0.62f, c.y }, 2.0f, color);
+    DrawLineEx({ c.x, c.y - s * 0.62f }, { c.x, c.y - s * 0.3f }, 2.0f, color);
+    DrawLineEx({ c.x, c.y + s * 0.3f },  { c.x, c.y + s * 0.62f }, 2.0f, color);
+}
 
 void SpaceFlight::UpdateTarget() {
     Vector2 mouse = GetMousePosition();
@@ -2564,6 +3728,8 @@ void SpaceFlight::UpdateTarget() {
             _target.isStellar = false;
             _target.iconTex = nullptr;
             _target.npcFaction = m.faction;
+            _target.role = m.role;
+            _target.disabled = m.disabled; // Epic 9.1
             _target.worldPos = e.transform.position;
             _target.name = m.wingman
                 ? ("WINGMAN " + m.shipTypeName)
@@ -2597,7 +3763,11 @@ void SpaceFlight::UpdateTarget() {
             _target.valid = true;
             _target.isNpc = false;
             _target.isStellar = false;
-            _target.iconTex = nullptr;
+            {
+                const Texture2D* atex = a.tier == 2 ? &_asteroidTexLarge
+                    : a.tier == 1 ? &_asteroidTexMedium : &_asteroidTexSmall;
+                _target.iconTex = atex->id > 0 ? atex : nullptr;
+            }
             _target.worldPos = a.position;
             _target.name = a.tier == 2 ? "LARGE ASTEROID"
                 : a.tier == 1 ? "MEDIUM ASTEROID" : "SMALL ASTEROID";
@@ -2629,7 +3799,8 @@ void SpaceFlight::UpdateTarget() {
             _target.typeDesc    = "Orbital platform";
             _target.hasFaction  = true;
             _target.gameFaction = s.faction;
-            _target.npcFaction  = RelationToNpcFaction(DiplomaticRegistry::Get(s.faction, kPlayerFaction));
+            _target.npcFaction  = RelationToNpcFaction(ReputationRegistry::PlayerRelation(s.faction));
+            _target.disabled    = s.disabled; // Epic 9.1
             _target.health = s.hull;
             _target.maxHealth = s.maxHull;
             _target.distance = Vector2Distance(_playerEntity.transform.position, s.position);
@@ -2888,6 +4059,18 @@ void SpaceFlight::DrawHUD() const {
                     char fb[48];
                     std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
                     DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    Relation stand = ReputationRegistry::PlayerRelation(_target.gameFaction);
+                    char sb[48];
+                    std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand));
+                    DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                }
+                if (hasSensors && _target.role != NpcRole::None) {
+                    char rb[48];
+                    std::snprintf(rb, sizeof(rb), "ROLE  %s", NpcRoleName(_target.role));
+                    DrawTextEx(_hudFontVal, rb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                }
+                if (hasSensors && _target.disabled) {
+                    DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255, 200, 60, 255 }); dy += 16;
                 }
                 if (_target.isWingman && _target.maxKineticShield > 0.0f) {
                     std::snprintf(db, sizeof(db), "KS  %.0f / %.0f",
@@ -2931,7 +4114,14 @@ void SpaceFlight::DrawHUD() const {
                 if (_target.hasFaction) {
                     char fb[48];
                     std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
-                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 });
+                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    Relation stand = ReputationRegistry::PlayerRelation(_target.gameFaction);
+                    char sb[48];
+                    std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand));
+                    DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                }
+                if (_target.disabled) {
+                    DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255, 200, 60, 255 });
                 }
             }
         }
@@ -2944,10 +4134,18 @@ void SpaceFlight::DrawHUD() const {
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
             DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
             DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, Color{ 30,30,55,180 });
-            int   sides = _target.tier == 2 ? 8 : _target.tier == 1 ? 7 : 6;
-            float spin = (float)(GetTime() * 22.0);
-            DrawPoly(tc, sides, tAreaR * 0.65f, spin, Color{ 30,26,21,255 });
-            DrawPolyLinesEx(tc, sides, tAreaR * 0.65f, spin, 1.0f, Color{ 130,115,90,255 });
+            if (_target.iconTex && _target.iconTex->id > 0) {
+                float tw = (float)_target.iconTex->width, th = (float)_target.iconTex->height;
+                float sc2 = (tAreaR * 1.3f) / std::max(tw, th);
+                DrawTexturePro(*_target.iconTex,
+                    { 0, 0, tw, th }, { tc.x, tc.y, tw * sc2, th * sc2 },
+                    { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, WHITE);
+            } else {
+                int   sides = _target.tier == 2 ? 8 : _target.tier == 1 ? 7 : 6;
+                float spin = (float)(GetTime() * 22.0);
+                DrawPoly(tc, sides, tAreaR * 0.65f, spin, Color{ 30,26,21,255 });
+                DrawPolyLinesEx(tc, sides, tAreaR * 0.65f, spin, 1.0f, Color{ 130,115,90,255 });
+            }
             if (hasSensors) {
                 char pctBuf[8];
                 std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", tHpPct * 100.0f);
@@ -3066,8 +4264,8 @@ void SpaceFlight::DrawHUD() const {
         }
     }
 
-    Rectangle enterBtn, buildBtn, commsBtn;
-    ComputeHudButtons(sw, sh, enterBtn, buildBtn, commsBtn);
+    Rectangle enterBtn, buildBtn, commsBtn, seatBtn;
+    ComputeHudButtons(sw, sh, enterBtn, buildBtn, commsBtn, seatBtn);
     bool nearStation = IsNearEnterableStation();
     bool nearPlanet  = nearStation || IsNearPlanet();
     bool hovEnter    = nearPlanet && CheckCollisionPointRec(mouse, enterBtn);
@@ -3106,14 +4304,16 @@ void SpaceFlight::DrawHUD() const {
             9.0f, 1.0f, fg);
     }
 
-    // COMMS — radar dish icon, label below
+    // COMMS — radar dish icon, label below. Epic 13: also actionable with a
+    // station targeted (hail for its contract board without needing to dock).
     {
-        bool npcActive = (_npcTargetId != 0);
-        bool hovComms = npcActive && CheckCollisionPointRec(mouse, commsBtn);
-        Color bg = npcActive ? (hovComms ? Color{ 20,60,80,230 } : Color{ 10,28,40,200 })
+        bool commsAvailable = (_npcTargetId != 0) ||
+            (_target.valid && _target.isStellar && _target.hasFaction);
+        bool hovComms = commsAvailable && CheckCollisionPointRec(mouse, commsBtn);
+        Color bg = commsAvailable ? (hovComms ? Color{ 20,60,80,230 } : Color{ 10,28,40,200 })
             : Color{ 16,16,16,150 };
-        Color bdr = npcActive ? Color{ 30,100,160,200 } : HudDiv;
-        Color fg = npcActive ? (hovComms ? WHITE : Color{ 50,140,190,255 })
+        Color bdr = commsAvailable ? Color{ 30,100,160,200 } : HudDiv;
+        Color fg = commsAvailable ? (hovComms ? WHITE : Color{ 50,140,190,255 })
             : Color{ 45,50,55,150 };
         DrawHudChamferRect(commsBtn, 6.0f, bg, bdr, 1.5f);
         DrawHudRadarIcon({ commsBtn.x + commsBtn.width / 2.0f, commsBtn.y + commsBtn.height * 0.38f }, 16.0f, fg);
@@ -3124,14 +4324,54 @@ void SpaceFlight::DrawHUD() const {
             9.0f, 1.0f, fg);
     }
 
+    // SEAT — turret-crosshair icon (Epic 8). Always actionable while seated
+    // (doubles as EXIT); otherwise only when a friendly capital hardpoint is
+    // in range.
+    {
+        unsigned int seatNpcId; int seatHpIdx; Vector2 seatPos;
+        // Epic 8 is host/singleplayer-only for now: only the host resolves
+        // hit detection (UpdateCollisions/UpdateNpcCollisions are skipped
+        // entirely for clients), so a client's local turret shots would
+        // fly but never damage anything — gate seating out for clients
+        // rather than ship a control that silently does nothing.
+        bool seatAvailable = !net::Game().IsClient() && (_seated || FindNearestFriendlySeat(seatNpcId, seatHpIdx, seatPos));
+        bool hovSeat = seatAvailable && CheckCollisionPointRec(mouse, seatBtn);
+        Color bg = seatAvailable ? (hovSeat ? Color{ 70,40,20,230 } : Color{ 35,20,10,200 })
+            : Color{ 16,16,16,150 };
+        Color bdr = seatAvailable ? Color{ 200,120,50,200 } : HudDiv;
+        Color fg = seatAvailable ? (hovSeat ? WHITE : Color{ 220,150,80,255 })
+            : Color{ 45,50,55,150 };
+        DrawHudChamferRect(seatBtn, 6.0f, bg, bdr, 1.5f);
+        DrawHudTurretIcon({ seatBtn.x + seatBtn.width / 2.0f, seatBtn.y + seatBtn.height * 0.38f }, 16.0f, fg);
+        const char* seatLbl = _seated ? "EXIT SEAT" : "MAN TURRET";
+        Vector2 seatTs = MeasureTextEx(_hudFontUi, seatLbl, 9.0f, 1.0f);
+        DrawTextEx(_hudFontUi, seatLbl,
+            { seatBtn.x + (seatBtn.width - seatTs.x) / 2.0f, seatBtn.y + seatBtn.height - seatTs.y - 3.0f },
+            9.0f, 1.0f, fg);
+    }
+
     (void)rDiv;
 
     Vector2 escMapTs = MeasureTextEx(_hudFontVal, "[ESC] MAP", 11.0f, 1.0f);
     DrawTextEx(_hudFontVal, "[ESC] MAP", { (float)(hx + hw) - escMapTs.x - 8.0f, (float)(hy + HudH - 15) },
         11.0f, 1.0f, HudLabel);
 
+    // Epic 12.1: received-comms panel toggle, always available once there's a
+    // log to read.
+    Vector2 logHintTs = MeasureTextEx(_hudFontVal, "[L] LOG", 11.0f, 1.0f);
+    DrawTextEx(_hudFontVal, "[L] LOG", { (float)(hx + hw) - logHintTs.x - 8.0f, (float)(hy + HudH - 30) },
+        11.0f, 1.0f, HudLabel);
+
+    // Epic 12.2: persistent skip control, visible for the whole tutorial, not
+    // just a one-time start prompt.
+    if (_tutorialActive) {
+        Vector2 skipTs = MeasureTextEx(_hudFontVal, "[T] SKIP TUTORIAL", 11.0f, 1.0f);
+        DrawTextEx(_hudFontVal, "[T] SKIP TUTORIAL", { (float)(hx + hw) - skipTs.x - 8.0f, (float)(hy + HudH - 45) },
+            11.0f, 1.0f, HudCaution);
+    }
+
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
-        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
+        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _commsLogOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     if (!menuOpen && mouse.y < hy) {
         int cs = 8;
@@ -3312,6 +4552,8 @@ void SpaceFlight::ApplyLoadout() {
     _playerMeta.burstCount    = 1;
     _playerMeta.spreadAngle   = 0.0f;
     _playerMeta.weaponTurnRate= 0.0f;
+    _playerMeta.weaponEffect         = WeaponEffect::None;
+    _playerMeta.weaponEffectDuration = 0.0f;
 
     if (_loadout.armor)
         _playerEntity.health.maxStats.hull += _loadout.armor->armor.hullBonus;
@@ -3353,6 +4595,8 @@ void SpaceFlight::ApplyLoadout() {
         _playerMeta.burstCount     = ws.burstCount;
         _playerMeta.spreadAngle    = ws.spreadAngle;
         _playerMeta.weaponTurnRate = (ws.projType == WeaponProjType::Seeking) ? 3.0f : 0.0f;
+        _playerMeta.weaponEffect         = ws.effect;
+        _playerMeta.weaponEffectDuration = ws.effectDuration;
     }
 
     _hasSensors = false;
@@ -3424,6 +4668,34 @@ void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
 
     if (meta.loadout.engine && !meta.loadout.engine->engine.isHyperdrive)
         meta.npcThrust = meta.loadout.engine->engine.thrustBonus;
+
+    // Capital ships get a flat, slow, ship-defined speed/turn rate instead of
+    // the fighter engine-module roll above — mass/momentum (thrust vs. total
+    // module mass) is a deferred follow-up milestone for ALL moving craft.
+    // TODO(mass-momentum): replace this flat override with thrust-vs-mass —
+    // see project_capital_ships.md; applies to every ship, not just capitals.
+    if (const ecs::ShipDef* def = ecs::ShipRegistry::ShipById(meta.shipTypeId);
+        def && def->shipType == ShipType::Capital) {
+        meta.npcThrust   = def->baseStats.thrust;
+        meta.npcTurnRate = def->turnSpeed;
+        // Hold at a much longer standoff range than fighters so it lets its
+        // turrets do the work instead of closing to fighter brawling range.
+        // (preferredRange is derived from attackRange by the caller right
+        // after ApplyNpcLoadout returns — see SpawnNpcShips et al.)
+        meta.attackRange = std::max(meta.attackRange, 900.0f);
+    }
+
+    // Role-based combat posture (Epic 2.4/2.5 — Military and Raider are the
+    // first two officer roles to get distinct combat behavior; Trader/
+    // Industrialist/Explorer keep the stock ranges since they aren't
+    // combat-focused roles). See also the per-role Flee threshold in
+    // UpdateNpcShips's Attack-state case.
+    if (meta.role == NpcRole::Military) {
+        meta.aggroRange *= 1.3f; // disciplined patrols spot and engage threats sooner
+    } else if (meta.role == NpcRole::Raider) {
+        meta.aggroRange  *= 1.15f;
+        meta.attackRange *= 1.1f; // presses the attack rather than holding at range
+    }
 }
 
 // ── World state save/load helpers ─────────────────────────────────────────────
@@ -3621,10 +4893,18 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         nm.wingmanSlot                = ns.wingmanSlot;
         nm.escortTargetId             = ns.escortTargetId;
         nm.shipTypeId                 = ns.shipTypeId;
-        nm.shipTypeName               = (ns.shipTypeId == "gargos") ? "Gargos" : "AR-3 Saber";
         {
-            const auto* sd = ecs::ShipRegistry::ShipById(nm.shipTypeId);
+            const ecs::ShipDef* sd = ecs::ShipRegistry::ShipById(nm.shipTypeId);
+            nm.shipTypeName = sd ? sd->displayName
+                                  : (ns.shipTypeId == "gargos" ? "Gargos" : "AR-3 Saber");
             nm.npcFaction = sd ? FactionFromPaletteId(sd->paletteId) : Faction::Merchant;
+            // Capital hardpoint state (per-hardpoint HP/alive) isn't part of
+            // the save format yet — rebuild a fresh, undamaged hardpoint set
+            // from the ship def so the ship still renders/fires correctly
+            // after loading, rather than silently falling back to the
+            // pre-capital-ships single-point fighter behavior.
+            if (sd && sd->shipType == ShipType::Capital)
+                nm.hardpoints = BuildCapitalHardpoints(*sd);
         }
         nm.preferredRange             = nm.attackRange * 0.75f;
         nm.loadout.Resize(NpcMeta::WSlots, NpcMeta::ShSlots, 0);
@@ -3677,6 +4957,10 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         const StationTypeDef& typeDef = stTypes[st.id % stTypes.size()];
         st.stationTypeId = typeDef.id;
         BuildNpcStationHardpoints(st);
+        // SaveGameState doesn't carry economy stock yet (follow-up once the
+        // save system's schema is revisited) — reseed fresh on load rather
+        // than leaving every good at 0 stock forever.
+        SeedStationEconomy(st.economy);
         _w->stations.push_back(std::move(st));
     }
 
@@ -3726,9 +5010,11 @@ void SpaceFlight::OnEnter() {
     _peerFaction.clear();
     _peerFactionDiscovered.clear();
     _bgTick = false;
+    _fuel = kMaxFuel; // Epic 4: fresh session starts with a full tank
 
     auto& cfg = FleetManager::Get().PlayerShip;
     kPlayerFaction = cfg.PlayerFaction;
+    ReputationRegistry::ResetForPlayerFaction(kPlayerFaction); // Epic 6.1: seed standing from the static matrix
 
     SaveManager::GameState gs;
     bool didLoad = SaveManager::Get().HasPendingLoad();
@@ -3768,6 +5054,17 @@ void SpaceFlight::OnEnter() {
         _playerEntity.transform.position    = { 0.0f, 0.0f };
     }
 
+    // Epic 12: a fresh (non-loaded) session starts the tutorial; loading an
+    // existing save skips it outright — a returning player doesn't need it,
+    // and SaveManager has no "has completed tutorial" field to check instead.
+    _tutorialActive   = !didLoad;
+    _tutorialStep     = TutorialStep::Move;
+    _tutorialStartPos = _playerEntity.transform.position;
+    _commsLogOpen     = false;
+    if (_tutorialActive) {
+        AddCommsMessage("TUTORIAL: Fly at least 300 units from your starting position.", true);
+    }
+
     _camera = Camera2D{};
     _camera.target = _playerEntity.transform.position;
     _camera.offset = { (float)GetScreenWidth() / 2.0f, (float)GetScreenHeight() / 2.0f };
@@ -3784,6 +5081,8 @@ void SpaceFlight::OnEnter() {
     _selectedWeapon = 0;
     _enterPopupOpen      = false;
     _stationServicesMenu.isOpen = false;
+    _dockedStationId       = 0;
+    _dockedIsPlayerStation = false;
     _inPlacementMode     = false;
     _placementConfirmOpen= false;
     _placingStationDefId.clear();
@@ -3793,6 +5092,8 @@ void SpaceFlight::OnEnter() {
     _w->npcMeta.clear();
     _w->lootDrops.clear();
     _w->materialDrops.clear();
+    _w->derelictWrecks.clear();
+    _w->hasActiveDistress = false;
     _playerDead = false;
     _deathTimer = 0.0f;
     _commsLog.clear();
@@ -3801,6 +5102,9 @@ void SpaceFlight::OnEnter() {
     _commsMenuNpcId = 0;
     _commsMenuNpcName = {};
     _commsMenuNpcText = {};
+    _commsMenuIsStation = false;
+    _commsMenuStationId = 0;
+    _commsMenuIsDistress = false;
     _escortMenuOpen = false;
     _escortMenuSelId = 0;
     _escortModuleNpcId = 0;
@@ -3827,6 +5131,19 @@ void SpaceFlight::OnEnter() {
     }
     UniverseRegistry::Init(_gameSeed);
     StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
+    // Bug fix (2026-07-08): the home system (id==1) used to always report
+    // Faction::Republic regardless of the player's actual chosen faction —
+    // StarSystemRegistry is a free-standing header with no access to
+    // kPlayerFaction, so this is the one place that can correct it. Host/
+    // offline only: StarSystemRegistry's override map is per-process static
+    // state, not network-synced, so a client independently calling this with
+    // its own (possibly different) faction would make its local view of
+    // system 1's owner diverge from the host's and other clients' — the
+    // actual in-game station's faction reaches clients via the normal
+    // station-sync snapshot instead, so clients don't need this override.
+    if (!net::Game().IsClient()) {
+        StarSystemRegistry::SetControlled(1, kPlayerFaction);
+    }
 
     // ── Loadout: restore from save, or fall back to default starter kit ───────
     if (didLoad && gs.hasWorldState && !gs.engineId.empty()) {
@@ -3981,6 +5298,8 @@ void SpaceFlight::OnEnter() {
         // Show "Syncing..." overlay until WorldSync arrives (see Update).
         _worldSynced = false;
         _remoteEntities.clear();
+        _remoteCapitalHardpoints.clear();
+        _remotePlayerStations.clear();
         uint32_t localId = net::Game().LocalNetworkId();
         _playerEntity.id                 = localId;  // non-zero so it can be identified
         _playerEntity.network.networkId  = localId;
@@ -4034,10 +5353,46 @@ void SpaceFlight::BeginWarpSequence(unsigned int targetSystemId) {
     auto curSys = StarSystemRegistry::ById(_currentSystemId);
     auto tgtSys = StarSystemRegistry::ById(targetSystemId);
     Vector2 dir = { 0.0f, -1.0f };
+    float   jumpDist = 0.0f;
     if (curSys && tgtSys) {
         Vector2 delta = Vector2Subtract(tgtSys->galacticPos, curSys->galacticPos);
-        float   len   = Vector2Length(delta);
-        if (len > 0.01f) dir = Vector2Scale(delta, 1.0f / len);
+        jumpDist = Vector2Length(delta);
+        if (jumpDist > 0.01f) dir = Vector2Scale(delta, 1.0f / jumpDist);
+    }
+
+    // Epic 4: hard-gate the jump on fuel — no soft warning, the drive simply
+    // won't engage. Any queued beacon-chain hops are abandoned too, since a
+    // hop mid-chain running dry leaves the player stranded wherever the last
+    // successful hop put them (locked decision: "blocks warp until refueled/
+    // rescued", not a partial-chain fallback).
+    float cost = JumpFuelCost(jumpDist);
+    if (cost > _fuel + 0.01f) {
+        AddCommsMessage("HYPERDRIVE: Insufficient fuel for this jump. Refuel at a station.");
+        _warpChainQueue.clear();
+        // Epic 11.2: a failed jump for lack of fuel is exactly the "stranded"
+        // condition Epic 4.3 flagged as needing a rescue hook — send one
+        // distress call per stranding (a later failed jump before this
+        // resolves doesn't re-send/reset the rescue-ETA timer).
+        if (!_w->hasActiveDistress) {
+            DistressCall dc;
+            dc.type          = DistressType::Stranded;
+            dc.position       = _playerEntity.transform.position;
+            dc.windowSeconds  = (float)GetRandomValue(45, 90);
+            _w->activeDistress    = dc;
+            _w->hasActiveDistress = true;
+            AddCommsMessage("DISTRESS CALL SENT: awaiting a passing vessel to deliver emergency fuel.");
+        }
+        return;
+    }
+    _fuel = std::max(0.0f, _fuel - cost);
+
+    // Epic 12.4: warping away always lifts home-station protection, even if
+    // the tutorial isn't finished (the fallback for a player who skips by
+    // leaving) — completes step 8 if that's genuinely where the player is,
+    // otherwise just ends the tutorial quietly with no completion message.
+    if (_tutorialActive) {
+        if (_tutorialStep == TutorialStep::Warp) AdvanceTutorialStep(TutorialStep::Warp);
+        else _tutorialActive = false;
     }
 
     _warpTargetSystemId  = targetSystemId;
@@ -4066,6 +5421,33 @@ void SpaceFlight::BeginGalaxyWarpSequence(unsigned int targetGalaxyId) {
     Vector2 delta  = Vector2Subtract(tgtPos, curPos);
     float   len    = Vector2Length(delta);
     Vector2 dir    = (len > 0.01f) ? Vector2Scale(delta, 1.0f / len) : Vector2{ 0.0f, -1.0f };
+
+    // Epic 4: same fuel gate as an in-galaxy hop (see BeginWarpSequence) —
+    // cross-galaxy jumps only reach a drive's own targetable range anyway
+    // (GalaxyMap gates which galaxies are even selectable), so the same
+    // distance-vs-range cost formula applies without adjustment.
+    float cost = JumpFuelCost(len);
+    if (cost > _fuel + 0.01f) {
+        AddCommsMessage("HYPERDRIVE: Insufficient fuel for this jump. Refuel at a station.");
+        // Epic 11.2: same stranding-distress-call hook as BeginWarpSequence.
+        if (!_w->hasActiveDistress) {
+            DistressCall dc;
+            dc.type          = DistressType::Stranded;
+            dc.position       = _playerEntity.transform.position;
+            dc.windowSeconds  = (float)GetRandomValue(45, 90);
+            _w->activeDistress    = dc;
+            _w->hasActiveDistress = true;
+            AddCommsMessage("DISTRESS CALL SENT: awaiting a passing vessel to deliver emergency fuel.");
+        }
+        return;
+    }
+    _fuel = std::max(0.0f, _fuel - cost);
+
+    // Epic 12.4: same warp-away tutorial hook as BeginWarpSequence.
+    if (_tutorialActive) {
+        if (_tutorialStep == TutorialStep::Warp) AdvanceTutorialStep(TutorialStep::Warp);
+        else _tutorialActive = false;
+    }
 
     _warpTargetSystemId  = 1; // every galaxy's home/arrival system
     _warpTargetGalaxyId  = targetGalaxyId;
@@ -4209,6 +5591,8 @@ void SpaceFlight::ApplyWorldSyncClient(const net::WorldSyncData& ws) {
 
     // Cross-system leftovers: remote ships/projectiles and target locks.
     _remoteEntities.clear();
+    _remoteCapitalHardpoints.clear();
+    _remotePlayerStations.clear();
     _remoteProjectiles.clear();
     _target       = TargetInfo{};
     _targetId     = 0;
@@ -4269,6 +5653,8 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
                 // warp and hold on black until its WorldSync arrives.
                 net::Game().ClientSendWarpNotify(_warpTargetSystemId);
                 _remoteEntities.clear();
+                _remoteCapitalHardpoints.clear();
+                _remotePlayerStations.clear();
                 _remoteProjectiles.clear();
                 _worldSynced    = false;   // also stops Input sends while in limbo
                 _warpPhase      = WarpPhase::AwaitSync;
@@ -4379,6 +5765,8 @@ void SpaceFlight::DrawWarpParticles() const {
 
 void SpaceFlight::Update(float dt) {
     net::Game().Poll(dt);   // pump ENet every frame (no-op when Offline)
+    ReputationRegistry::Tick(dt); // Epic 6.2: decay every faction's player-standing score toward neutral
+    TickActiveContract(dt);       // Epic 7: contract timers/quota/escort-alive checks
 
     // ── Warp cinematic: fully blocks player interaction until it completes ────
     if (_warpPhase != WarpPhase::None) {
@@ -4413,6 +5801,7 @@ void SpaceFlight::Update(float dt) {
             _remoteEntities.erase(peerId);
             _remoteFireCooldown.erase(peerId);
             _remoteJoinGrace.erase(peerId);
+            _remoteDocked.erase(peerId);
             _peerSystem.erase(peerId);
             _peerFaction.erase(peerId);
         }
@@ -4477,6 +5866,7 @@ void SpaceFlight::Update(float dt) {
             re.transform.position = { cmd.posX, cmd.posY };
             re.transform.rotation = cmd.aimRotation;
             re.network.networkId  = cmd.networkId;
+            _remoteDocked[cmd.networkId] = (cmd.docked != 0);
 
             // Spawn a server-side projectile when the client fires — into the
             // world the firing client is actually in.
@@ -4501,6 +5891,26 @@ void SpaceFlight::Update(float dt) {
         }
         net::Game().pendingInputs.clear();
 
+        // Drain client build/placement requests (Epic C, host-authoritative):
+        // only the host ever creates the object; it then reaches every peer
+        // through the normal Snapshot broadcast below. Credits/materials were
+        // already validated+spent locally by the requesting client.
+        for (const auto& req : net::Game().pendingBuildStationRequests) {
+            // Player stations aren't system-tagged today (pre-existing gap,
+            // see [[project-multiplayer]] known limitations) — SpawnStation
+            // is already system-agnostic, so this matches existing behavior.
+            FleetManager::Get().SpawnStation(req.stationDefId, { req.posX, req.posY });
+        }
+        net::Game().pendingBuildStationRequests.clear();
+
+        for (const auto& req : net::Game().pendingPlaceShipRequests) {
+            unsigned int sysId = _currentSystemId;
+            auto sysIt = _peerSystem.find(req.requesterId);
+            if (sysIt != _peerSystem.end()) sysId = sysIt->second;
+            PlaceFriendlyShip(GetOrCreateWorld(sysId), req.shipDefId, { req.posX, req.posY });
+        }
+        net::Game().pendingPlaceShipRequests.clear();
+
         // Simulate every other occupied system; unoccupied worlds stay frozen
         // in memory (state preserved, no ticking) until someone returns. Worlds
         // left behind in a previously-visited galaxy are always skipped here —
@@ -4521,6 +5931,33 @@ void SpaceFlight::Update(float dt) {
         if (_netTickAccum >= 0.05f) {
             _netTickAccum = 0.0f;
 
+            // Player-built stations aren't system-tagged today (pre-existing
+            // gap — see [[project-multiplayer]] known limitations), so the
+            // same full list is broadcast to every occupied system's
+            // snapshot, matching how DrawPlayerStations() already shows them
+            // regardless of the local player's current system.
+            std::vector<net::PlayerStationSnapshot> stationSnaps;
+            std::vector<net::PlayerStationHardpointSnapshot> stationHpSnaps;
+            for (const PlayerStation& ps : FleetManager::Get().PlayerStations) {
+                if (!ps.alive) continue;
+                net::PlayerStationSnapshot ss;
+                ss.id           = ps.id;
+                ss.stationDefId = ps.stationDefId;
+                ss.posX         = ps.position.x;
+                ss.posY         = ps.position.y;
+                ss.alive        = 1;
+                stationSnaps.push_back(ss);
+                for (size_t h = 0; h < ps.hardpoints.size(); ++h) {
+                    const HardpointState& hp = ps.hardpoints[h];
+                    net::PlayerStationHardpointSnapshot shs;
+                    shs.stationId = ps.id;
+                    shs.hpIndex   = static_cast<uint8_t>(h);
+                    shs.hull      = static_cast<uint16_t>(hp.hull);
+                    shs.alive     = hp.alive ? 1 : 0;
+                    stationHpSnaps.push_back(shs);
+                }
+            }
+
             for (auto& [key, worldPtr] : _worlds) {
                 if (WorldKeyGalaxyId(key) != _currentGalaxyId) continue; // frozen, previously-visited galaxy
                 unsigned int sysId = WorldKeySystemId(key);
@@ -4539,14 +5976,17 @@ void SpaceFlight::Update(float dt) {
                     npcCopy.network.shipNameHash = Fnv1a32(world.npcMeta[i].shipTypeId);
                     broadcastList.push_back(npcCopy);
                 }
-                if (sysId == _currentSystemId && !_playerDead) {
+                // Docked (in a station menu) players are omitted from the
+                // broadcast entirely — clients evict anything absent from a
+                // snapshot, so this is how a docked ship disappears for peers.
+                if (sysId == _currentSystemId && !_playerDead && !_stationServicesMenu.isOpen) {
                     ecs::Entity pCopy = _playerEntity;
                     pCopy.network.isLocalPlayer = false;
                     broadcastList.push_back(pCopy);
                 }
                 // Remote entities in this system, so its occupants see each other.
                 for (const auto& [netId, re] : _remoteEntities) {
-                    if (re.id == 0) continue;
+                    if (re.id == 0 || _remoteDocked[netId]) continue;
                     auto it = _peerSystem.find(netId);
                     if (it != _peerSystem.end() && it->second == sysId)
                         broadcastList.push_back(re);
@@ -4580,8 +6020,24 @@ void SpaceFlight::Update(float dt) {
                     projSnaps.push_back(ps);
                 }
 
+                std::vector<net::CapitalHardpointSnapshot> capSnaps;
+                for (size_t i = 0; i < world.npcMeta.size(); ++i) {
+                    const NpcMeta& m = world.npcMeta[i];
+                    if (!m.alive || m.hardpoints.empty()) continue;
+                    for (size_t h = 0; h < m.hardpoints.size(); ++h) {
+                        const HardpointState& hp = m.hardpoints[h];
+                        net::CapitalHardpointSnapshot cs;
+                        cs.capitalId = m.id;
+                        cs.hpIndex   = static_cast<uint8_t>(h);
+                        cs.hull      = static_cast<uint16_t>(hp.hull);
+                        cs.alive     = hp.alive ? 1 : 0;
+                        capSnaps.push_back(cs);
+                    }
+                }
+
                 net::Game().HostSendSnapshot(occupants, sysId,
-                                             broadcastList, asteroidSnaps, projSnaps);
+                                             broadcastList, asteroidSnaps, projSnaps, capSnaps,
+                                             stationSnaps, stationHpSnaps);
             }
         }
     }
@@ -4601,7 +6057,12 @@ void SpaceFlight::Update(float dt) {
         for (const auto& [sysId, deadId] : net::Game().pendingStationDeads) {
             if (sysId != _currentSystemId) continue;  // other systems sync on arrival
             for (auto& st : _w->stations)
-                if (st.id == deadId) { st.alive = false; break; }
+                if (st.id == deadId) {
+                    st.alive        = false;
+                    st.rebuilding   = true;
+                    st.rebuildTimer = kStationRebuildSeconds;
+                    break;
+                }
         }
         net::Game().pendingStationDeads.clear();
 
@@ -4668,6 +6129,14 @@ void SpaceFlight::Update(float dt) {
                         re.sprite.texture = ResourceManager::Load(def->assetPath);
                         re.sprite.tint    = WHITE;
                         re.sprite.scale   = def->pixelScale;
+                        if (def->shipType == ShipType::Capital) {
+                            RemoteCapitalInfo info;
+                            info.hardpoints = BuildCapitalHardpoints(*def);
+                            info.radius     = def->radius;
+                            Faction capFaction = FactionFromPaletteId(def->paletteId);
+                            info.faction = RelationToNpcFaction(ReputationRegistry::PlayerRelation(capFaction));
+                            _remoteCapitalHardpoints[snap.networkId] = std::move(info);
+                        }
                     } else {
                         // Unknown/unmatched ship type — fall back to a red circle.
                         re.sprite.texture = nullptr;
@@ -4722,9 +6191,65 @@ void SpaceFlight::Update(float dt) {
                     if (snap.networkId == it->first) { inSnap = true; break; }
                 it = inSnap ? std::next(it) : _remoteEntities.erase(it);
             }
+            for (auto it = _remoteCapitalHardpoints.begin(); it != _remoteCapitalHardpoints.end(); ) {
+                it = _remoteEntities.count(it->first) ? std::next(it) : _remoteCapitalHardpoints.erase(it);
+            }
+
+            // ── Capital hardpoint sync: patch hull/alive on remote capitals ──────
+            for (const auto& cs : net::Game().latestCapitalSnapshots) {
+                auto it = _remoteCapitalHardpoints.find(cs.capitalId);
+                if (it == _remoteCapitalHardpoints.end()) continue;
+                auto& hardpoints = it->second.hardpoints;
+                if (cs.hpIndex < hardpoints.size()) {
+                    hardpoints[cs.hpIndex].hull  = cs.hull;
+                    hardpoints[cs.hpIndex].alive = (cs.alive != 0);
+                }
+            }
 
             // ── Projectile sync: replace list from server snapshot ─────────────
             _remoteProjectiles = net::Game().latestProjectileSnapshots;
+
+            // ── Player-station sync: create/update remote stations, evict gone ones,
+            // patch hardpoint hull/alive (Epic C MP sync, [[tasks-multiplayer]]) ──
+            for (const auto& ss : net::Game().latestPlayerStationSnapshots) {
+                PlayerStation& rs = _remotePlayerStations[ss.id];
+                rs.id       = ss.id;
+                rs.stationDefId = ss.stationDefId;
+                rs.position = { ss.posX, ss.posY };
+                rs.alive    = (ss.alive != 0);
+                if (rs.displayName.empty()) {
+                    const PlayerStationDef* def = PlayerStationRegistry::ById(ss.stationDefId);
+                    rs.displayName = def ? def->displayName : ss.stationDefId;
+                }
+                if (rs.hardpoints.empty()) {
+                    if (const PlayerStationDef* def = PlayerStationRegistry::ById(ss.stationDefId)) {
+                        for (const StationHardpointDef& hd : def->hardpoints) {
+                            HardpointState hp;
+                            hp.id          = hd.id;
+                            hp.displayName = hd.displayName;
+                            hp.isCore      = hd.isCore;
+                            hp.maxHull     = hd.maxHull;
+                            hp.hull        = hd.maxHull;
+                            rs.hardpoints.push_back(hp);
+                        }
+                    }
+                }
+            }
+            for (auto it = _remotePlayerStations.begin(); it != _remotePlayerStations.end(); ) {
+                bool inSnap = false;
+                for (const auto& ss : net::Game().latestPlayerStationSnapshots)
+                    if (ss.id == it->first) { inSnap = true; break; }
+                it = inSnap ? std::next(it) : _remotePlayerStations.erase(it);
+            }
+            for (const auto& shs : net::Game().latestPlayerStationHardpointSnapshots) {
+                auto it = _remotePlayerStations.find(shs.stationId);
+                if (it == _remotePlayerStations.end()) continue;
+                auto& hardpoints = it->second.hardpoints;
+                if (shs.hpIndex < hardpoints.size()) {
+                    hardpoints[shs.hpIndex].hull  = shs.hull;
+                    hardpoints[shs.hpIndex].alive = (shs.alive != 0);
+                }
+            }
         }
 
         // ── Dead reckoning: advance remote entity and projectile positions ───────
@@ -4768,9 +6293,12 @@ void SpaceFlight::Update(float dt) {
         addDebugMaterial("hull_frame", "Hull Frame", 8);
         addDebugMaterial("circuit_board", "Circuit Board", 4);
         addDebugMaterial("titanium_alloy", "Titanium Alloy", 3);
+        addDebugMaterial("weapons_rack", "Weapons Rack", 5);
+        addDebugMaterial("power_cell", "Power Cell", 5);
+        InventoryManager::Get().AddCredits(50000);
 
         // Flash a status verification onto the UI logging feed
-        AddCommsMessage("DEBUG: Added Mining Station materials to storage.", true);
+        AddCommsMessage("DEBUG: Added Mining Station materials and 50,000 credits to storage.", true);
     }
 
     if (_playerEntity.health.currentHull <= 0.0f) {
@@ -4822,7 +6350,7 @@ void SpaceFlight::Update(float dt) {
     static bool blockFireUntilRelease = false;
 
     if (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
-        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _localMapOpen ||
+        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _commsLogOpen || _enterPopupOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen ||
         _stationServicesMenu.isOpen) {
         blockFireUntilRelease = true;
@@ -4865,6 +6393,9 @@ void SpaceFlight::Update(float dt) {
         else if (_escortMenuOpen) {
             _escortMenuOpen = false;
         }
+        else if (_commsLogOpen) {
+            _commsLogOpen = false;
+        }
         else if (_localMapOpen) {
             _localMapOpen = false;
         }
@@ -4873,6 +6404,22 @@ void SpaceFlight::Update(float dt) {
         }
         else {
             _galaxyMap.Open();
+        }
+    }
+
+    // Epic 12.1/12.2: LOG toggles the received-comms panel; SKIP TUTORIAL
+    // ends the tutorial early. Both no-op while some other menu already has
+    // input (L still closes the log panel itself, per the toggle).
+    {
+        bool otherMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
+            _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _localMapOpen ||
+            _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen ||
+            _stationServicesMenu.isOpen;
+        if (IsKeyPressed(KEY_L) && (!otherMenuOpen || _commsLogOpen)) {
+            _commsLogOpen = !_commsLogOpen;
+        }
+        if (IsKeyPressed(KEY_T) && _tutorialActive && !otherMenuOpen && !_commsLogOpen) {
+            SkipTutorial();
         }
     }
 
@@ -4891,9 +6438,10 @@ void SpaceFlight::Update(float dt) {
             SystemMapData mapData;
             mapData.playerPos       = _playerEntity.transform.position;
             mapData.hyperdriveRange = _hyperdriveRange;
+            mapData.fuel            = _fuel;
+            mapData.maxFuel         = kMaxFuel;
             mapData.mapSensorRange  = _mapSensorRange;
             mapData.mapSensorTier   = _mapSensorTier;
-            mapData.playerFaction   = kPlayerFaction;
             for (const NpcMeta& n : _w->npcMeta) if (n.alive && n.wingman) mapData.wingmanCount++;
             for (const SpacePlanet& p : _w->planets) {
                 bool disc = std::find(_discoveredIds.begin(), _discoveredIds.end(), p.id) != _discoveredIds.end();
@@ -5125,6 +6673,8 @@ void SpaceFlight::Update(float dt) {
                     _w->npcMeta.clear();
                     _w->lootDrops.clear();
                     _w->materialDrops.clear();
+                    _w->derelictWrecks.clear();
+                    _w->hasActiveDistress = false;
                     auto homeSys = StarSystemRegistry::ById(_currentSystemId);
                     SpawnPlanetsAndStations(homeSys ? homeSys->seed : 0);
                     SpawnInitialAsteroids();
@@ -5151,7 +6701,45 @@ void SpaceFlight::Update(float dt) {
     }
 
     if (_stationServicesMenu.isOpen) {
+        // Epic 12.2 step 6: a credits increase while the dock menu is open is
+        // treated as "sold an item" — cheaper than threading a dedicated
+        // signal through StationServicesMenu for a single tutorial checkbox.
+        int creditsBeforeMenu = InventoryManager::Get().Credits;
         _stationServicesMenu.Update();
+        if (InventoryManager::Get().Credits > creditsBeforeMenu)
+            AdvanceTutorialStep(TutorialStep::Sell);
+
+        if (_stationServicesMenu.isOpen) {
+            // World keeps simulating around the docked player — only player
+            // input/movement/camera/net-input stay frozen (this whole branch
+            // returns before reaching that code further down).
+            TickWorldWhileDocked(dt);
+            SendClientInput(/*docked=*/true, /*firing=*/false);
+
+            // If the station the player is inside was destroyed by that
+            // simulation this frame, the player dies with it — reuse the
+            // existing death path (checked at the top of Update()) by
+            // zeroing hull; force-close the menu directly (not Close(),
+            // which only closes from the Main sub-screen) so next frame's
+            // death check isn't hidden behind a still-open menu.
+            bool stationStillAlive = false;
+            if (_dockedIsPlayerStation) {
+                for (const PlayerStation& ps : FleetManager::Get().PlayerStations)
+                    if (ps.id == _dockedStationId) { stationStillAlive = ps.alive; break; }
+            } else {
+                for (const SpaceStation& st : _w->stations)
+                    if (st.id == _dockedStationId) { stationStillAlive = st.alive; break; }
+            }
+            if (!stationStillAlive) {
+                _playerEntity.health.currentHull = 0.0f;
+                _stationServicesMenu.isOpen       = false;
+                _dockedStationId       = 0;
+                _dockedIsPlayerStation = false;
+            }
+        } else {
+            _dockedStationId       = 0;
+            _dockedIsPlayerStation = false;
+        }
         return;
     }
 
@@ -5221,30 +6809,24 @@ void SpaceFlight::Update(float dt) {
         Rectangle yesBtn = { (float)(px2 + 30),        (float)(py2 + PopH - 50), 120.0f, 32.0f };
         Rectangle noBtn = { (float)(px2 + PopW - 150),  (float)(py2 + PopH - 50), 120.0f, 32.0f };
 
+        bool isCapital = false;
+        if (const auto* hoveredDef = ecs::ShipRegistry::ShipById(_placingShipDefId))
+            isCapital = hoveredDef->shipType == ShipType::Capital;
+        bool canAffordCapital = !isCapital || InventoryManager::Get().Credits >= kCapitalShipBuildCost;
+
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-            if (CheckCollisionPointRec(m2, yesBtn)) {
-                // Spawn Friendly NPC Ship
-                auto [alliedE, alliedM] = MakeNpcEntity(_w->nextNpcId++, _shipPlacementPos);
-                alliedM.faction = NpcFaction::Friendly;
-                alliedM.shipTypeId = _placingShipDefId;
+            if (CheckCollisionPointRec(m2, yesBtn) && canAffordCapital) {
+                if (isCapital) InventoryManager::Get().SpendCredits(kCapitalShipBuildCost);
 
-                std::string dName = "Ship";
-                float mHull = 100.0f;
-                if (const auto* ship = ecs::ShipRegistry::ShipById(_placingShipDefId)) {
-                    dName = ship->displayName;
-                    mHull = ship->baseStats.hull;
-                }
-
-                alliedM.shipTypeName = dName;
-                alliedM.wingman = false; // Player side but NOT part of escort
-                alliedE.health.maxStats.hull = mHull;
-                alliedE.health.currentHull   = mHull;
-                ApplyNpcLoadout(alliedE, alliedM); // Assign generic NPC loadout to fight with
-                if (!_w->npcFreeSlots.empty()) {
-                    size_t slot = _w->npcFreeSlots.back(); _w->npcFreeSlots.pop_back();
-                    _w->entities[slot] = std::move(alliedE); _w->npcMeta[slot] = std::move(alliedM);
+                // Credits/materials are spent locally above regardless of role
+                // (co-op trust model). Only object CREATION is host-authoritative:
+                // a client sends a request and waits for the host's Snapshot to
+                // show it; the host (and single-player) keep creating directly.
+                // See [[tasks-multiplayer]] Epic C.
+                if (net::Game().IsClient()) {
+                    net::Game().ClientSendPlaceShipRequest(_placingShipDefId, _shipPlacementPos.x, _shipPlacementPos.y);
                 } else {
-                    _w->entities.push_back(std::move(alliedE)); _w->npcMeta.push_back(std::move(alliedM));
+                    PlaceFriendlyShip(*_w, _placingShipDefId, _shipPlacementPos);
                 }
 
                 _shipPlacementConfirmOpen = false;
@@ -5313,7 +6895,15 @@ void SpaceFlight::Update(float dt) {
                     }
                 }
 
-                FleetManager::Get().SpawnStation(_placingStationDefId, _placementPos);
+                // Materials are spent locally above regardless of role. Object
+                // CREATION is host-authoritative: a client sends a request and
+                // waits for the host's Snapshot to show it; host/single-player
+                // keep creating directly. See [[tasks-multiplayer]] Epic C.
+                if (net::Game().IsClient()) {
+                    net::Game().ClientSendBuildStationRequest(_placingStationDefId, _placementPos.x, _placementPos.y);
+                } else {
+                    FleetManager::Get().SpawnStation(_placingStationDefId, _placementPos);
+                }
                 _placementConfirmOpen = false;
                 _inPlacementMode = false;
                 _placingStationDefId.clear();
@@ -5359,7 +6949,11 @@ void SpaceFlight::Update(float dt) {
         Rectangle noBtn  = { (float)(px2 + PopW - 150),(float)(py2 + PopH - 50), 120.0f, 32.0f };
         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
             if (CheckCollisionPointRec(m2, yesBtn)) {
-                FleetManager::Get().SpawnStation(_placingStationDefId, _placementPos);
+                if (net::Game().IsClient()) {
+                    net::Game().ClientSendBuildStationRequest(_placingStationDefId, _placementPos.x, _placementPos.y);
+                } else {
+                    FleetManager::Get().SpawnStation(_placingStationDefId, _placementPos);
+                }
                 _placementConfirmOpen = false;
                 _inPlacementMode      = false;
                 _placingStationDefId.clear();
@@ -5406,6 +7000,49 @@ void SpaceFlight::Update(float dt) {
     }
 
     if (_commsMenuOpen) {
+        // Epic 13: station hail (remote contract board) is a separate,
+        // simpler flow — no NPC roll/response phases, just an offer list.
+        if (_commsMenuIsStation) {
+            bool stationAlive = false;
+            for (const SpaceStation& s : _w->stations)
+                if (s.id == _commsMenuStationId && s.alive) { stationAlive = true; break; }
+            if (!stationAlive) { _commsMenuOpen = false; return; }
+
+            int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
+            static constexpr int CW = 560, CH = 360;
+            int mcx = sw2 / 2 - CW / 2, mcy = sh2 / 2 - CH / 2;
+            Rectangle backBtn = { (float)(mcx + 20), (float)(mcy + CH - 52), 120.0f, 34.0f };
+            Vector2   m2 = GetMousePosition();
+            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                if (CheckCollisionPointRec(m2, backBtn)) {
+                    _commsMenuOpen = false;
+                }
+                else if (!_hasActiveContract) {
+                    static constexpr float RowH = 70.0f, RowGap = 10.0f;
+                    float listY = (float)mcy + 60.0f;
+                    for (size_t oi = 0; oi < _contractOffers.size(); ++oi) {
+                        Rectangle row  = { (float)mcx + 20.0f, listY + oi * (RowH + RowGap),
+                                           (float)CW - 40.0f, RowH };
+                        Rectangle btn  = { row.x + row.width - 120.0f, row.y + row.height / 2.0f - 16.0f,
+                                           100.0f, 32.0f };
+                        if (!CheckCollisionPointRec(m2, btn)) continue;
+
+                        Contract& offer = _contractOffers[oi];
+                        if (offer.type == ContractType::Courier) {
+                            StationEconomy* econ = FindStationEconomy(_commsMenuStationId, false);
+                            if (!econ || econ->GetStock(offer.goodId) < offer.amount) break;
+                            econ->RemoveStock(offer.goodId, offer.amount);
+                        }
+                        _activeContract    = offer;
+                        _hasActiveContract = true;
+                        AddCommsMessage("CONTRACT ACCEPTED (remote hail): " + offer.title, true);
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+
         bool npcAlive = false;
         for (const NpcMeta& n : _w->npcMeta)
             if (n.id == _commsMenuNpcId && n.alive) { npcAlive = true; break; }
@@ -5422,51 +7059,69 @@ void SpaceFlight::Update(float dt) {
                 _commsMenuOpen = false;
             }
             else if (_commsMenuPhase == 0 && CheckCollisionPointRec(m2, joinBtn)) {
-                int roll = GetRandomValue(0, 99);
-                for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci) {
-                    NpcMeta& npc = _w->npcMeta[ci];
-                    if (npc.id != _commsMenuNpcId || !npc.alive) continue;
-                    bool isFriendly = (npc.faction == NpcFaction::Friendly);
-                    bool isNeutral  = (npc.faction == NpcFaction::Neutral);
-                    int acceptChance = isFriendly ? 75 : isNeutral ? 50 : 25;
-                    bool accepted = (roll < acceptChance);
-                    if (accepted) {
-                        int wingCount = 0;
-                        for (const NpcMeta& w : _w->npcMeta)
-                            if (w.alive && w.wingman) wingCount++;
-                        if (wingCount >= 4) {
-                            _commsMenuNpcText = "Wing is full. Dismiss an escort first.";
-                        }
-                        else {
-                            bool usedSlots[4] = {};
-                            for (const NpcMeta& w : _w->npcMeta)
-                                if (w.alive && w.wingman && w.wingmanSlot >= 0 && w.wingmanSlot < 4)
-                                    usedSlots[w.wingmanSlot] = true;
-                            int newSlot = 0;
-                            for (int s = 0; s < 4; ++s)
-                                if (!usedSlots[s]) { newSlot = s; break; }
-                            npc.wingman     = true;
-                            npc.wingmanSlot = newSlot;
-                            npc.faction = NpcFaction::Friendly;
-                            npc.aiState = NpcAiState::Escort;
-                            npc.waypointSet = false;
-                            _commsMenuNpcText = isFriendly
-                                ? JoinAcceptLines[GetRandomValue(0, 2)]
-                                : HostileJoinLines[GetRandomValue(0, 1)];
-                        }
+                if (_commsMenuIsDistress) {
+                    // Epic 13: acknowledging the distress call doesn't change
+                    // the survive-the-window payout in TickDistressCalls at
+                    // all — it's a flat goodwill bump for actively responding
+                    // rather than the reward just happening ambiently.
+                    if (_w->hasActiveDistress &&
+                        _w->activeDistress.type == DistressType::ShipUnderAttack &&
+                        _w->activeDistress.npcId == _commsMenuNpcId) {
+                        _w->activeDistress.acknowledged = true;
+                        ReputationRegistry::Adjust(_w->activeDistress.issuerFaction, 5.0f);
+                        AddCommsMessage("DISTRESS ACKNOWLEDGED: assistance pledged to " +
+                                        std::string(FactionName(_w->activeDistress.issuerFaction)) + ".", true);
                     }
-                    else {
-                        if (isFriendly) {
-                            _commsMenuNpcText = FriendlyRefusalLines[GetRandomValue(0, 1)];
-                        }
-                        else {
-                            _commsMenuNpcText = HostileRefusalLines[GetRandomValue(0, 1)];
-                            npc.aiState = NpcAiState::Chase;
-                        }
-                    }
-                    break;
+                    _commsMenuNpcText = DistressAckLines[GetRandomValue(0, 2)];
+                    _commsMenuPhase = 1;
                 }
-                _commsMenuPhase = 1;
+                else {
+                    int roll = GetRandomValue(0, 99);
+                    for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci) {
+                        NpcMeta& npc = _w->npcMeta[ci];
+                        if (npc.id != _commsMenuNpcId || !npc.alive) continue;
+                        bool isFriendly = (npc.faction == NpcFaction::Friendly);
+                        bool isNeutral  = (npc.faction == NpcFaction::Neutral);
+                        int acceptChance = isFriendly ? 75 : isNeutral ? 50 : 25;
+                        bool accepted = (roll < acceptChance);
+                        if (accepted) {
+                            int wingCount = 0;
+                            for (const NpcMeta& w : _w->npcMeta)
+                                if (w.alive && w.wingman) wingCount++;
+                            if (wingCount >= 4) {
+                                _commsMenuNpcText = "Wing is full. Dismiss an escort first.";
+                            }
+                            else {
+                                bool usedSlots[4] = {};
+                                for (const NpcMeta& w : _w->npcMeta)
+                                    if (w.alive && w.wingman && w.wingmanSlot >= 0 && w.wingmanSlot < 4)
+                                        usedSlots[w.wingmanSlot] = true;
+                                int newSlot = 0;
+                                for (int s = 0; s < 4; ++s)
+                                    if (!usedSlots[s]) { newSlot = s; break; }
+                                npc.wingman     = true;
+                                npc.wingmanSlot = newSlot;
+                                npc.faction = NpcFaction::Friendly;
+                                npc.aiState = NpcAiState::Escort;
+                                npc.waypointSet = false;
+                                _commsMenuNpcText = isFriendly
+                                    ? JoinAcceptLines[GetRandomValue(0, 2)]
+                                    : HostileJoinLines[GetRandomValue(0, 1)];
+                            }
+                        }
+                        else {
+                            if (isFriendly) {
+                                _commsMenuNpcText = FriendlyRefusalLines[GetRandomValue(0, 1)];
+                            }
+                            else {
+                                _commsMenuNpcText = HostileRefusalLines[GetRandomValue(0, 1)];
+                                npc.aiState = NpcAiState::Chase;
+                            }
+                        }
+                        break;
+                    }
+                    _commsMenuPhase = 1;
+                }
             }
         }
         return;
@@ -5484,6 +7139,7 @@ void SpaceFlight::Update(float dt) {
             }
             else {
                 ApplyLoadout();
+                AdvanceTutorialStep(TutorialStep::EquipModule);
             }
         }
         if (!_modulesMenu.isOpen) _escortModuleNpcId = 0;
@@ -5563,6 +7219,19 @@ void SpaceFlight::Update(float dt) {
         return;
     }
 
+    // Epic 12.1: received-comms panel — same centered-overlay convention as
+    // the ranks menu above.
+    if (_commsLogOpen) {
+        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
+        static constexpr int PW = 520, PH = 320;
+        int px = sw2 / 2 - PW / 2, py = sh2 / 2 - PH / 2;
+        Rectangle closeBtn = { (float)(px + PW / 2 - 60), (float)(py + PH - 46), 120.0f, 32.0f };
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) &&
+            CheckCollisionPointRec(GetMousePosition(), closeBtn))
+            _commsLogOpen = false;
+        return;
+    }
+
     if (_storageMenu.isOpen) {
         _storageMenu.Update();
         return;
@@ -5599,37 +7268,132 @@ void SpaceFlight::Update(float dt) {
     bool clickedHudBtn = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen || _ranksMenuOpen || (mousePos.y >= hy);
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Rectangle enterBtn, buildBtn, commsBtn;
-        ComputeHudButtons(GetScreenWidth(), GetScreenHeight(), enterBtn, buildBtn, commsBtn);
+        Rectangle enterBtn, buildBtn, commsBtn, seatBtn;
+        ComputeHudButtons(GetScreenWidth(), GetScreenHeight(), enterBtn, buildBtn, commsBtn, seatBtn);
         Vector2 m = GetMousePosition();
-        if ((IsNearEnterableStation() || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
-            if (IsNearEnterableStation()) _stationServicesMenu.Open(&_playerEntity, &_storageMenu.slots);
-            else                 _enterPopupOpen   = true;
+
+        // Epic 8: SEAT button toggles manning/unmanning a friendly capital's
+        // turret. Checked ahead of the other buttons since it's a toggle
+        // (both entry and exit share the same rect) rather than an
+        // enable/disable-gated single action.
+        {
+            unsigned int seatNpcId; int seatHpIdx; Vector2 seatPos;
+            // Epic 8 is host/singleplayer-only for now: only the host resolves
+        // hit detection (UpdateCollisions/UpdateNpcCollisions are skipped
+        // entirely for clients), so a client's local turret shots would
+        // fly but never damage anything — gate seating out for clients
+        // rather than ship a control that silently does nothing.
+        bool seatAvailable = !net::Game().IsClient() && (_seated || FindNearestFriendlySeat(seatNpcId, seatHpIdx, seatPos));
+            if (seatAvailable && CheckCollisionPointRec(m, seatBtn)) {
+                if (_seated) {
+                    // Unseat: park the player's ship at the hardpoint's last
+                    // known position (found again below since _seatedNpcId
+                    // may have moved/died since the frame started).
+                    Vector2 exitPos = _playerEntity.transform.position;
+                    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+                        if (_w->npcMeta[i].id != _seatedNpcId || !_w->npcMeta[i].alive) continue;
+                        if (_seatedHardpointIdx >= 0 && _seatedHardpointIdx < (int)_w->npcMeta[i].hardpoints.size()) {
+                            exitPos = GetCapitalHardpointWorldPos(_w->entities[i].transform.position,
+                                _w->entities[i].transform.rotation,
+                                _w->npcMeta[i].hardpoints[_seatedHardpointIdx].localOffset);
+                        }
+                        break;
+                    }
+                    _playerEntity.transform.position = exitPos;
+                    _playerEntity.transform.velocity = { 0.0f, 0.0f };
+                    _seated = false;
+                    _seatedNpcId = 0;
+                    _seatedHardpointIdx = -1;
+                } else {
+                    _seated = true;
+                    _seatedNpcId = seatNpcId;
+                    _seatedHardpointIdx = seatHpIdx;
+                    _playerEntity.transform.position = seatPos;
+                    _playerEntity.transform.velocity = { 0.0f, 0.0f };
+                }
+                clickedHudBtn = true;
+            }
+        }
+        EnterableStation es = FindEnterableStation();
+        if ((es.found || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
+            if (es.found) {
+                _dockedStationId       = es.id;
+                _dockedIsPlayerStation = es.isPlayerStation;
+                AdvanceTutorialStep(TutorialStep::Dock);
+
+                // Epic 7.2: docking at the active Courier contract's
+                // destination auto-delivers the cargo before the menu opens.
+                if (_hasActiveContract && _activeContract.type == ContractType::Courier &&
+                    _activeContract.destStationId == es.id &&
+                    _activeContract.destWorldKey == WorldKey(_currentGalaxyId, _currentSystemId)) {
+                    StationEconomy* destEcon = FindStationEconomy(es.id, es.isPlayerStation);
+                    if (destEcon) destEcon->AddStock(_activeContract.goodId, _activeContract.amount);
+                    CompleteActiveContract();
+                }
+
+                Faction stationFaction = FindStationFaction(es.id, es.isPlayerStation);
+                _contractOffers = GenerateContractOffers(stationFaction, es.id, es.isPlayerStation);
+                _stationServicesMenu.Open(&_playerEntity, &_storageMenu.slots,
+                                           FindStationEconomy(es.id, es.isPlayerStation),
+                                           &_fuel, kMaxFuel, stationFaction,
+                                           &_contractOffers, &_activeContract, &_hasActiveContract);
+            } else {
+                _enterPopupOpen = true;
+            }
             clickedHudBtn = true;
         }
         else if (CheckCollisionPointRec(m, buildBtn)) {
             _buildMenu.Open(&_storageMenu.slots);
             clickedHudBtn = true;
         }
-        else if (_npcTargetId != 0 && CheckCollisionPointRec(m, commsBtn)) {
-            _commsMenuOpen = true;
+        else if (CheckCollisionPointRec(m, commsBtn) &&
+                 (_npcTargetId != 0 || (_target.valid && _target.isStellar && _target.hasFaction))) {
+            _commsMenuOpen  = true;
             _commsMenuPhase = 0;
-            _commsMenuNpcId = _npcTargetId;
-            for (const NpcMeta& npc : _w->npcMeta) {
-                if (npc.id != _npcTargetId || !npc.alive) continue;
-                if (npc.faction == NpcFaction::Friendly) {
-                    _commsMenuNpcName = "FRIENDLY " + npc.shipTypeName;
-                    _commsMenuNpcText = FriendlyLines[GetRandomValue(0, 4)];
+            if (_npcTargetId != 0) {
+                _commsMenuIsStation  = false;
+                _commsMenuNpcId      = _npcTargetId;
+                // Epic 13: hailing the specific ship broadcasting an active
+                // ShipUnderAttack distress call swaps the recruit-hail flow
+                // below for an ACKNOWLEDGE action instead.
+                _commsMenuIsDistress = _w->hasActiveDistress &&
+                    _w->activeDistress.type == DistressType::ShipUnderAttack &&
+                    _w->activeDistress.npcId == _npcTargetId &&
+                    !_w->activeDistress.acknowledged;
+                for (const NpcMeta& npc : _w->npcMeta) {
+                    if (npc.id != _npcTargetId || !npc.alive) continue;
+                    if (npc.faction == NpcFaction::Friendly) {
+                        _commsMenuNpcName = "FRIENDLY " + npc.shipTypeName;
+                        _commsMenuNpcText = FriendlyLines[GetRandomValue(0, 4)];
+                    }
+                    else if (npc.faction == NpcFaction::Neutral) {
+                        _commsMenuNpcName = "UNKNOWN " + npc.shipTypeName;
+                        _commsMenuNpcText = FriendlyLines[GetRandomValue(0, 4)];
+                    }
+                    else {
+                        _commsMenuNpcName = "HOSTILE " + npc.shipTypeName;
+                        _commsMenuNpcText = HostileLines[GetRandomValue(0, 3)];
+                    }
+                    if (_commsMenuIsDistress) _commsMenuNpcText = DistressHailLines[GetRandomValue(0, 2)];
+                    break;
                 }
-                else if (npc.faction == NpcFaction::Neutral) {
-                    _commsMenuNpcName = "UNKNOWN " + npc.shipTypeName;
-                    _commsMenuNpcText = FriendlyLines[GetRandomValue(0, 4)];
+            }
+            else {
+                // Epic 13: hailing a station opens its contract board from
+                // range, reusing the exact same GenerateContractOffers /
+                // _activeContract flow docking already goes through —
+                // hailing is just a second entry point into it.
+                _commsMenuIsStation  = true;
+                _commsMenuIsDistress = false;
+                _commsMenuStationId  = _targetId;
+                Faction stFaction = FindStationFaction(_targetId, false);
+                _commsMenuNpcName = std::string(FactionName(stFaction)) + " " + _target.name;
+                _commsMenuNpcText = _hasActiveContract
+                    ? "We've nothing further for you while that job's active."
+                    : "Comms open. State your business.";
+                if (!_hasActiveContract) {
+                    _contractOffers = GenerateContractOffers(stFaction, _targetId, false);
                 }
-                else {
-                    _commsMenuNpcName = "HOSTILE " + npc.shipTypeName;
-                    _commsMenuNpcText = HostileLines[GetRandomValue(0, 3)];
-                }
-                break;
             }
             clickedHudBtn = true;
         }
@@ -5678,7 +7442,9 @@ void SpaceFlight::Update(float dt) {
     }
 
     // ── Player ship update ────────────────────────────────────────────────────
-    {
+    if (_seated) {
+        UpdateSeatedTurret(dt, mouseWorld, clickedHudBtn);
+    } else {
         const bool fireEnabled = !clickedHudBtn && !blockFireUntilRelease;
         auto& pos  = _playerEntity.transform.position;
         auto& vel  = _playerEntity.transform.velocity;
@@ -5727,6 +7493,7 @@ void SpaceFlight::Update(float dt) {
                         p.position = pos;
                         p.velocity = { aimDir.x * _playerMeta.projSpeed, aimDir.y * _playerMeta.projSpeed };
                         p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
+                        p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
                         _w->projectiles.push_back(p);
                     }
                 }
@@ -5751,6 +7518,7 @@ void SpaceFlight::Update(float dt) {
                             p.position = pos;
                             p.velocity = { d.x * _playerMeta.projSpeed, d.y * _playerMeta.projSpeed };
                             p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
+                            p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
                             _w->projectiles.push_back(p);
                         }
                         _playerMeta._fireCooldown = _playerMeta.fireRate;
@@ -5773,6 +7541,7 @@ void SpaceFlight::Update(float dt) {
                         p.isHoming = true;
                         p.targetId = passLockId;
                         p.turnRate = _playerMeta.weaponTurnRate;
+                        p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
                         _w->projectiles.push_back(p);
                         _playerMeta._fireCooldown = _playerMeta.fireRate;
                     }
@@ -5793,7 +7562,116 @@ void SpaceFlight::Update(float dt) {
 
     if (_hitCooldown > 0.0f) _hitCooldown -= dt;
 
-    // Dynamically update Hardpoint Max Hull based on equipped Armor modules
+    UpdatePlayerStations(dt);
+    UpdateWorldStationFire(dt);
+    UpdateCapitalFire(dt);
+
+    if (!net::Game().IsClient()) {
+        UpdateCollisions();
+        UpdateNpcCollisions();
+        UpdateCollisions();
+        UpdateNpcCollisions();
+        if (!_stationServicesMenu.isOpen && !_seated) UpdateCaptureProximity(); // Epic 9.1
+    }
+
+    TickDiscovery();
+
+    if (!net::Game().IsClient()) {
+        CullAndRespawnAround(dt, _playerEntity.transform.position);
+    } else {
+        // Clients don't own world content (snapshots reconcile it), but local
+        // station-fire visuals and snapshot-killed asteroids still need erasing.
+        auto isDead = [](const auto& e) { return !e.alive; };
+        _w->projectiles.erase(std::remove_if(_w->projectiles.begin(), _w->projectiles.end(), isDead), _w->projectiles.end());
+        _w->asteroids.erase(std::remove_if(_w->asteroids.begin(), _w->asteroids.end(), isDead), _w->asteroids.end());
+    }
+
+    UpdateTarget();
+    TickTutorial();
+
+    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
+                       _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _commsLogOpen ||
+                       _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
+                       _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
+    if (!anyMenuOpen) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f)
+            _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
+    }
+    _camera.zoom = _cameraZoom;
+
+    _camera.target.x += (_playerEntity.transform.position.x - _camera.target.x) * 6.0f * dt;
+    _camera.target.y += (_playerEntity.transform.position.y - _camera.target.y) * 6.0f * dt;
+
+    // ── Client: send current position + aim to host every frame ───────────────
+    SendClientInput(/*docked=*/false,
+        (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !blockFireUntilRelease));
+}
+
+void SpaceFlight::SendClientInput(bool docked, bool firing) {
+    if (!(net::Game().IsClient() && _worldSynced)) return;
+    static uint32_t s_inputSeq = 0;
+    net::InputCommand cmd;
+    cmd.networkId   = net::Game().LocalNetworkId();
+    cmd.aimRotation = _playerEntity.transform.rotation;
+    cmd.posX        = _playerEntity.transform.position.x;
+    cmd.posY        = _playerEntity.transform.position.y;
+    cmd.sequence    = s_inputSeq++;
+    cmd.firing      = firing ? 1 : 0;
+    cmd.docked      = docked ? 1 : 0;
+    net::Game().ClientSendInput(cmd);
+}
+
+void SpaceFlight::TickStationMining(PlayerStation& ps, float dt) {
+    if (ps.stationDefId != "mining_station" || ps.storage.empty()) return;
+
+    // Find the Material Probe installed in any aux slot (only the Mining
+    // Drill hardpoint has one, per station_defs.json).
+    const ModuleDef* probe = nullptr;
+    for (const HardpointState& hp : ps.hardpoints) {
+        if (!hp.alive) continue;
+        for (const auto& a : hp.aux) {
+            if (a.has_value() && a->id == "aux_material_probe") { probe = &(*a); break; }
+        }
+        if (probe) break;
+    }
+    if (!probe) return;   // no probe installed — station collects nothing
+
+    ps.miningTimer -= dt;
+    if (ps.miningTimer > 0.0f) return;
+
+    // Higher-grade probes collect faster.
+    int   gradeIdx  = static_cast<int>(probe->grade);   // 0=Common .. 6=Mythic
+    float interval  = std::max(2.0f, 9.0f - gradeIdx * 1.0f);
+    ps.miningTimer  = interval;
+
+    std::string matId = RollMiningMaterialId();
+    for (StorageItem& slot : ps.storage) {
+        if (slot.type == StorageItemType::Material && slot.materialId == matId &&
+            slot.count < StorageMenu::MaxStack) {
+            slot.count++;
+            return;
+        }
+    }
+    for (StorageItem& slot : ps.storage) {
+        if (slot.type == StorageItemType::Empty) {
+            slot.type        = StorageItemType::Material;
+            slot.materialId   = matId;
+            const MatDef* m   = FindMaterial(matId);
+            slot.displayName  = m ? m->displayName : matId;
+            slot.count        = 1;
+            return;
+        }
+    }
+    // Storage full — the timer already reset, so collection simply retries
+    // (and keeps failing) each interval until a slot frees up.
+}
+
+// Per-PlayerStation upkeep: armor-derived hardpoint max-hull, mining tick,
+// and autonomous fire at the nearest hostile NPC. Self-contained (no player
+// input dependency), so it runs identically whether the player is flying
+// around or docked inside a station menu (TickWorldWhileDocked).
+void SpaceFlight::UpdatePlayerStations(float dt) {
     for (PlayerStation& ps : FleetManager::Get().PlayerStations) {
         if (!ps.alive) continue;
         for (HardpointState& hp : ps.hardpoints) {
@@ -5814,17 +7692,23 @@ void SpaceFlight::Update(float dt) {
         float closestDist = FLT_MAX;
         Vector2 targetPos = { 0, 0 };
         unsigned int targetId = 0;
+        size_t targetIdx = 0;
 
         for (size_t li = 0; li < _w->npcMeta.size(); ++li) {
             const NpcMeta& npc = _w->npcMeta[li];
             if (!npc.alive || npc.faction != NpcFaction::Hostile) continue;
+            // Nearest-target selection uses the raw center as a distance
+            // proxy (fine); the actual fire/aim position is redirected to an
+            // alive hardpoint below so shots don't converge on a dead one.
             float d = Vector2Distance(ps.position, _w->entities[li].transform.position);
             if (d < closestDist) {
                 closestDist = d;
                 targetPos = _w->entities[li].transform.position;
                 targetId = npc.id;
+                targetIdx = li;
             }
         }
+        if (targetId != 0) targetPos = GetNpcAimPos(*_w, targetIdx);
 
         // 2. If a hostile is detected, let armed hardpoints open fire
         if (targetId != 0) {
@@ -5891,17 +7775,10 @@ void SpaceFlight::Update(float dt) {
             }
         }
     }
+}
 
-    UpdateWorldStationFire(dt);
-
-    if (!net::Game().IsClient()) {
-        UpdateCollisions();
-        UpdateNpcCollisions();
-        UpdateCollisions();
-        UpdateNpcCollisions();
-    }
-
-    // Discovery: mark stellar objects the player has flown near
+// Marks planets/world-stations within range of the player as discovered.
+void SpaceFlight::TickDiscovery() {
     static constexpr float DiscoveryRange = 400.0f;
     for (const SpacePlanet& p : _w->planets) {
         if (Vector2Distance(_playerEntity.transform.position, p.position) < p.radius + DiscoveryRange) {
@@ -5916,90 +7793,42 @@ void SpaceFlight::Update(float dt) {
                 _discoveredIds.push_back(s.id);
         }
     }
+}
+
+// World-sim tick run while the player is docked inside _stationServicesMenu:
+// everything Update()'s normal tail runs (NPCs, projectiles, station/capital
+// fire, collisions, discovery, cull/respawn) except player input, movement,
+// camera, and target-lock — the player isn't flying or fighting right now.
+void SpaceFlight::TickWorldWhileDocked(float dt) {
+    AdvanceProjectilesAndAsteroids(dt);
+
+    _w->age += dt;
+    UpdateOrbits(dt);
+    UpdateNpcShips(dt);
+    ApplySunGravity(dt);
+
+    if (_hitCooldown > 0.0f) _hitCooldown -= dt;
+
+    UpdatePlayerStations(dt);
+    UpdateWorldStationFire(dt);
+    UpdateCapitalFire(dt);
+
+    if (!net::Game().IsClient()) {
+        UpdateCollisions();
+        UpdateNpcCollisions();
+        UpdateCollisions();
+        UpdateNpcCollisions();
+    }
+
+    TickDiscovery();
 
     if (!net::Game().IsClient()) {
         CullAndRespawnAround(dt, _playerEntity.transform.position);
     } else {
-        // Clients don't own world content (snapshots reconcile it), but local
-        // station-fire visuals and snapshot-killed asteroids still need erasing.
         auto isDead = [](const auto& e) { return !e.alive; };
         _w->projectiles.erase(std::remove_if(_w->projectiles.begin(), _w->projectiles.end(), isDead), _w->projectiles.end());
         _w->asteroids.erase(std::remove_if(_w->asteroids.begin(), _w->asteroids.end(), isDead), _w->asteroids.end());
     }
-
-    UpdateTarget();
-
-    bool anyMenuOpen = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
-                       _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen ||
-                       _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
-                       _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
-    if (!anyMenuOpen) {
-        float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f)
-            _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
-    }
-    _camera.zoom = _cameraZoom;
-
-    _camera.target.x += (_playerEntity.transform.position.x - _camera.target.x) * 6.0f * dt;
-    _camera.target.y += (_playerEntity.transform.position.y - _camera.target.y) * 6.0f * dt;
-
-    // ── Client: send current position + aim to host every frame ───────────────
-    if (net::Game().IsClient() && _worldSynced) {
-        static uint32_t s_inputSeq = 0;
-        net::InputCommand cmd;
-        cmd.networkId   = net::Game().LocalNetworkId();
-        cmd.aimRotation = _playerEntity.transform.rotation;
-        cmd.posX        = _playerEntity.transform.position.x;
-        cmd.posY        = _playerEntity.transform.position.y;
-        cmd.sequence    = s_inputSeq++;
-        cmd.firing      = (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !blockFireUntilRelease) ? 1 : 0;
-        net::Game().ClientSendInput(cmd);
-    }
-}
-
-void SpaceFlight::TickStationMining(PlayerStation& ps, float dt) {
-    if (ps.stationDefId != "mining_station" || ps.storage.empty()) return;
-
-    // Find the Material Probe installed in any aux slot (only the Mining
-    // Drill hardpoint has one, per station_defs.json).
-    const ModuleDef* probe = nullptr;
-    for (const HardpointState& hp : ps.hardpoints) {
-        if (!hp.alive) continue;
-        for (const auto& a : hp.aux) {
-            if (a.has_value() && a->id == "aux_material_probe") { probe = &(*a); break; }
-        }
-        if (probe) break;
-    }
-    if (!probe) return;   // no probe installed — station collects nothing
-
-    ps.miningTimer -= dt;
-    if (ps.miningTimer > 0.0f) return;
-
-    // Higher-grade probes collect faster.
-    int   gradeIdx  = static_cast<int>(probe->grade);   // 0=Common .. 6=Mythic
-    float interval  = std::max(2.0f, 9.0f - gradeIdx * 1.0f);
-    ps.miningTimer  = interval;
-
-    std::string matId = RollMiningMaterialId();
-    for (StorageItem& slot : ps.storage) {
-        if (slot.type == StorageItemType::Material && slot.materialId == matId &&
-            slot.count < StorageMenu::MaxStack) {
-            slot.count++;
-            return;
-        }
-    }
-    for (StorageItem& slot : ps.storage) {
-        if (slot.type == StorageItemType::Empty) {
-            slot.type        = StorageItemType::Material;
-            slot.materialId   = matId;
-            const MatDef* m   = FindMaterial(matId);
-            slot.displayName  = m ? m->displayName : matId;
-            slot.count        = 1;
-            return;
-        }
-    }
-    // Storage full — the timer already reset, so collection simply retries
-    // (and keeps failing) each interval until a slot frees up.
 }
 
 // In-world (NPC faction) station firing, per hardpoint. Operates on `_w`, so
@@ -6019,13 +7848,25 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
         // future hostile-capable unit (ships, turrets, ...) can reuse the
         // exact same "nearest hostile in range" rule stations use here.
         combat::HostileTarget pick = combat::FindNearestHostileTarget(
-            *_w, _playerEntity, kPlayerFaction, st.faction, st.position, maxRange, st.id);
+            *_w, _playerEntity, st.faction, st.position, maxRange, st.id,
+            !_stationServicesMenu.isOpen && !_seated);
 
         Vector2      fireTarget        = pick.position;
         bool         hasFireTarget     = pick.valid;
         float        bestDist          = pick.valid ? Vector2Distance(st.position, pick.position) : maxRange;
         unsigned int fireTargetId      = pick.id;
         bool         fireTargetIsPlayer= (pick.kind == combat::HostileTargetKind::Player);
+
+        // Redirect aim from the target's raw center to one of its own alive
+        // hardpoints — otherwise fire keeps converging on st.position/ship
+        // center (often exactly where a now-dead core/hardpoint sat).
+        if (pick.valid && pick.kind == combat::HostileTargetKind::Station) {
+            for (const SpaceStation& tst : _w->stations)
+                if (tst.id == pick.id) { fireTarget = GetStationAimPos(tst); break; }
+        } else if (pick.valid && pick.kind == combat::HostileTargetKind::Npc) {
+            for (size_t j = 0; j < _w->npcMeta.size(); ++j)
+                if (_w->npcMeta[j].id == pick.id) { fireTarget = GetNpcAimPos(*_w, j); break; }
+        }
 
         if (st.retaliating && st.retaliateTimer > 0.0f) {
             if (st.retaliateAtPlayer) {
@@ -6039,7 +7880,7 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
                     if (_w->npcMeta[j].id == st.retaliateAtNpcId && _w->npcMeta[j].alive) {
                         float d = Vector2Distance(st.position, _w->entities[j].transform.position);
                         if (!hasFireTarget || d < bestDist) {
-                            bestDist = d; fireTarget = _w->entities[j].transform.position;
+                            bestDist = d; fireTarget = GetNpcAimPos(*_w, j);
                             hasFireTarget = true; fireTargetId = _w->npcMeta[j].id; fireTargetIsPlayer = false;
                         }
                         break;
@@ -6094,6 +7935,176 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
     }
 }
 
+// Capital ships fire differently from stations: each weapon hardpoint picks
+// its OWN nearest hostile independently (no single shared ship target), so
+// one capital can engage several enemies at once with different batteries.
+// Per-shot projectile spawning mirrors UpdateWorldStationFire verbatim.
+void SpaceFlight::UpdateCapitalFire(float dt) {
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta& m = _w->npcMeta[i];
+        if (!m.alive || m.hardpoints.empty()) continue;
+        Vector2 shipPos = _w->entities[i].transform.position;
+        float   shipRot = _w->entities[i].transform.rotation;
+
+        for (int hIdx = 0; hIdx < (int)m.hardpoints.size(); ++hIdx) {
+            HardpointState& hp = m.hardpoints[hIdx];
+            if (!hp.alive || hp.weapons.empty() || !hp.weapons[0].has_value()) continue;
+            // Epic 8: the player fires this hardpoint directly while seated
+            // in it — UpdateSeatedTurret manages its cooldown/firing instead.
+            if (_seated && m.id == _seatedNpcId && hIdx == _seatedHardpointIdx) continue;
+            if (hp.fireCooldown > 0.0f) { hp.fireCooldown -= dt; continue; }
+
+            const WeaponStats& ws = hp.weapons[0]->weapon;
+            Vector2 hpPos = GetCapitalHardpointWorldPos(shipPos, shipRot, hp.localOffset);
+
+            combat::HostileTarget pick = combat::FindNearestHostileTarget(
+                *_w, _playerEntity, m.npcFaction, hpPos, ws.projRange, 0,
+                !_stationServicesMenu.isOpen && !_seated);
+
+            // A capital can take damage from an attacker it isn't
+            // diplomatically Hostile to (see UpdateNpcCollisions' capital
+            // hit block), so it must also be able to retaliate against one —
+            // mirrors the retaliatingVsPlayer/retaliationTargetId override
+            // the fighter fire-target scan applies for the same reason.
+            float bestDist = pick.valid ? Vector2Distance(hpPos, pick.position) : ws.projRange;
+            if (m.retaliatingVsPlayer && !_stationServicesMenu.isOpen && !_seated) {
+                float d = Vector2Distance(hpPos, _playerEntity.transform.position);
+                if (d <= ws.projRange && (!pick.valid || d < bestDist)) {
+                    bestDist = d;
+                    pick = { combat::HostileTargetKind::Player, 0, _playerEntity.transform.position, true };
+                }
+            }
+            if (m.retaliationTargetId != 0) {
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j) {
+                    if (_w->npcMeta[j].id == m.retaliationTargetId && _w->npcMeta[j].alive) {
+                        float d = Vector2Distance(hpPos, _w->entities[j].transform.position);
+                        if (d <= ws.projRange && (!pick.valid || d < bestDist)) {
+                            bestDist = d;
+                            pick = { combat::HostileTargetKind::Npc, m.retaliationTargetId, _w->entities[j].transform.position, true };
+                        }
+                        break;
+                    }
+                }
+            }
+            if (!pick.valid) continue;
+
+            // Redirect aim to one of the target's own alive hardpoints rather
+            // than its raw center (see UpdateWorldStationFire for the same fix).
+            Vector2 aimPos = pick.position;
+            if (pick.kind == combat::HostileTargetKind::Station) {
+                for (const SpaceStation& tst : _w->stations)
+                    if (tst.id == pick.id) { aimPos = GetStationAimPos(tst); break; }
+            } else if (pick.kind == combat::HostileTargetKind::Npc) {
+                for (size_t j = 0; j < _w->npcMeta.size(); ++j)
+                    if (_w->npcMeta[j].id == pick.id) { aimPos = GetNpcAimPos(*_w, j); break; }
+            }
+
+            Vector2 toT = Vector2Subtract(aimPos, hpPos);
+            float   len = Vector2Length(toT);
+            if (len < 1.0f) { hp.fireCooldown = ws.fireRate; continue; }
+
+            int shots = (ws.projType == WeaponProjType::Burst || ws.projType == WeaponProjType::Spread)
+                        ? ws.burstCount : 1;
+            float spread = ws.spreadAngle;
+            float aimAng = atan2f(toT.x, -toT.y) * RAD2DEG;
+            for (int b = 0; b < shots; ++b) {
+                float spOff = (shots > 1) ? spread * ((float)b / (shots - 1) - 0.5f) : 0.0f;
+                float fRad  = (aimAng + spOff) * DEG2RAD;
+                Vector2 fd  = { sinf(fRad), -cosf(fRad) };
+                Projectile sp;
+                sp.position   = hpPos;
+                sp.velocity   = { fd.x * ws.projSpeed, fd.y * ws.projSpeed };
+                sp.maxLife    = ws.projRange / ws.projSpeed;
+                sp.damage     = ws.damage;
+                sp.fromPlayer = false;
+                sp.ownerId    = m.id;
+                if (ws.fireMode == WeaponFireMode::LockOn) {
+                    sp.isHoming = true; sp.turnRate = 3.0f;
+                    sp.targetId = pick.id; sp.targetIsPlayer = (pick.kind == combat::HostileTargetKind::Player);
+                }
+                _w->projectiles.push_back(sp);
+            }
+            hp.fireCooldown = ws.fireRate + ws.chargeTime;
+        }
+    }
+}
+
+// Epic 8: manning a capital's hardpoint. Movement/aiming/firing here
+// deliberately mirror UpdateCapitalFire's own shot-spawning (same burst/
+// spread/homing handling) rather than the player's own ship weapon code —
+// hardpoint weapons don't have the player ship's charge-fire distinction,
+// so "hold left mouse, fire on cooldown" is the correct model to copy.
+void SpaceFlight::UpdateSeatedTurret(float dt, Vector2 mouseWorld, bool clickedHudBtn) {
+    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
+        NpcMeta& m = _w->npcMeta[i];
+        if (m.id != _seatedNpcId) continue;
+        if (!m.alive || _seatedHardpointIdx < 0 || _seatedHardpointIdx >= (int)m.hardpoints.size() ||
+            !m.hardpoints[_seatedHardpointIdx].alive) {
+            // Capital destroyed, or this specific hardpoint died since
+            // seating — auto-eject, leaving the player parked exactly where
+            // the seat last was rather than snapping back to some stale
+            // pre-seat position.
+            _seated = false;
+            _seatedNpcId = 0;
+            _seatedHardpointIdx = -1;
+            AddCommsMessage("Turret lost — ejected.", true);
+            return;
+        }
+
+        ecs::Entity&    e  = _w->entities[i];
+        HardpointState& hp = m.hardpoints[_seatedHardpointIdx];
+        Vector2 hpPos = GetCapitalHardpointWorldPos(e.transform.position, e.transform.rotation, hp.localOffset);
+
+        _playerEntity.transform.position = hpPos;
+        _playerEntity.transform.velocity = { 0.0f, 0.0f };
+        _playerEntity.transform.rotation = e.transform.rotation;
+
+        if (hp.fireCooldown > 0.0f) hp.fireCooldown -= dt;
+        if (clickedHudBtn || hp.weapons.empty() || !hp.weapons[0].has_value()) return;
+        if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) || hp.fireCooldown > 0.0f) return;
+
+        const WeaponStats& ws  = hp.weapons[0]->weapon;
+        Vector2             toT = Vector2Subtract(mouseWorld, hpPos);
+        float               len = Vector2Length(toT);
+        if (len < 1.0f) return;
+
+        int   shots  = (ws.projType == WeaponProjType::Burst || ws.projType == WeaponProjType::Spread)
+                       ? ws.burstCount : 1;
+        float spread = ws.spreadAngle;
+        float aimAng = atan2f(toT.x, -toT.y) * RAD2DEG;
+        for (int b = 0; b < shots; ++b) {
+            float spOff = (shots > 1) ? spread * ((float)b / (shots - 1) - 0.5f) : 0.0f;
+            float fRad  = (aimAng + spOff) * DEG2RAD;
+            Vector2 fd  = { sinf(fRad), -cosf(fRad) };
+            Projectile sp;
+            sp.position   = hpPos;
+            sp.velocity   = { fd.x * ws.projSpeed, fd.y * ws.projSpeed };
+            sp.maxLife    = ws.projRange / ws.projSpeed;
+            sp.damage     = ws.damage;
+            sp.fromPlayer = true;
+            // Owned by the capital being manned (matches UpdateCapitalFire's own
+            // AI-fired convention), not 0 (the normal player-ship convention) —
+            // the capital-hardpoint hit-test block's self-exclusion is keyed off
+            // m.id == p.ownerId, so ownerId=0 left every hardpoint on the manned
+            // capital, including the one just fired from, eligible to take a hit
+            // from its own outgoing shot on the very next collision pass.
+            sp.ownerId    = m.id;
+            sp.effect         = ws.effect; // Epic 9.2: a friendly capital's own Ion Cannon can capture fighters too
+            sp.effectDuration = ws.effectDuration;
+            _w->projectiles.push_back(sp);
+        }
+        hp.fireCooldown = ws.fireRate + ws.chargeTime;
+        return;
+    }
+
+    // The seated NPC no longer exists at all (e.g. despawned/culled) — same
+    // auto-eject fallback as the died-in-place case above.
+    _seated = false;
+    _seatedNpcId = 0;
+    _seatedHardpointIdx = -1;
+    AddCommsMessage("Turret lost — ejected.", true);
+}
+
 // Advance projectiles (movement, lifetime, homing) and drift asteroids for
 // the world `_w` points at. Shared by the active system and background ticks.
 void SpaceFlight::AdvanceProjectilesAndAsteroids(float dt) {
@@ -6118,10 +8129,10 @@ void SpaceFlight::AdvanceProjectilesAndAsteroids(float dt) {
                 if (a.id == p.targetId && a.alive) { tPos = a.position; found = true; break; }
             if (!found)
                 for (size_t li = 0; li < _w->npcMeta.size(); ++li)
-                    if (_w->npcMeta[li].id == p.targetId && _w->npcMeta[li].alive) { tPos = _w->entities[li].transform.position; found = true; break; }
+                    if (_w->npcMeta[li].id == p.targetId && _w->npcMeta[li].alive) { tPos = GetNpcAimPos(*_w, li); found = true; break; }
             if (!found)
                 for (const SpaceStation& st : _w->stations)
-                    if (st.id == p.targetId && st.alive) { tPos = st.position; found = true; break; }
+                    if (st.id == p.targetId && st.alive) { tPos = GetStationAimPos(st); found = true; break; }
         }
         if (!found) { p.isHoming = false; continue; }
         float speed = Vector2Length(p.velocity);
@@ -6196,6 +8207,8 @@ void SpaceFlight::CullAndRespawnAround(float dt, Vector2 anchor) {
         }
         int liveNpcs = (int)std::count_if(_w->npcMeta.begin(), _w->npcMeta.end(),
             [](const NpcMeta& m) { return m.alive; });
+        // Epic 12.3: suppress hostile rolls while the tutorial protects the home system.
+        bool suppressHostile = _tutorialActive && _w->galaxyId == 1 && _w->systemId == 1;
         for (int s = 0; s < 2 && liveNpcs < MaxNpcShips; ++s, ++liveNpcs) {
             Vector2 pos = { 0.0f, 0.0f };
 
@@ -6215,7 +8228,7 @@ void SpaceFlight::CullAndRespawnAround(float dt, Vector2 anchor) {
                 }
             }
 
-            auto [ne, nm] = MakeNpcEntity(_w->nextNpcId++, pos);
+            auto [ne, nm] = MakeNpcEntity(_w->nextNpcId++, pos, suppressHostile);
             ApplyNpcLoadout(ne, nm);
             nm.preferredRange = nm.attackRange * 0.75f;
             ne.health.currentHull = ne.health.maxStats.hull;
@@ -6252,6 +8265,7 @@ void SpaceFlight::TickBackgroundWorld(float dt, SystemWorld& world) {
     UpdateNpcShips(dt);
     ApplySunGravity(dt);
     UpdateWorldStationFire(dt);
+    UpdateCapitalFire(dt);
     UpdateCollisions();
     UpdateNpcCollisions();
 
@@ -6273,7 +8287,7 @@ void SpaceFlight::TickBackgroundWorld(float dt, SystemWorld& world) {
 
 void SpaceFlight::Draw() {
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
-        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
+        _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _commsLogOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
     Vector2 mouse = GetMousePosition();
     int hy = GetScreenHeight() - HudH - 6;
@@ -6332,15 +8346,17 @@ void SpaceFlight::Draw() {
 
     if (!previewShipId.empty() && !_shipPlacementConfirmOpen) {
         Vector2 worldMouse = GetScreenToWorld2D(GetMousePosition(), _camera);
-        Texture2D* playerTexPtr = nullptr;
-        if (const auto* sd = ecs::ShipRegistry::ShipById(_playerMeta.defId))
-            playerTexPtr = ResourceManager::Load(sd->assetPath);
+        const ecs::ShipDef* previewDef = ecs::ShipRegistry::ShipById(previewShipId);
+        Texture2D* previewTexPtr = nullptr;
+        if (previewDef) previewTexPtr = ResourceManager::Load(previewDef->assetPath);
         const Texture2D& tex = (previewShipId == "gargos") ? _gargosTex
-            : (playerTexPtr ? *playerTexPtr : Texture2D{});
+            : (previewTexPtr ? *previewTexPtr : Texture2D{});
 
         if (tex.id > 0) {
-            float tw = (float)tex.width, th = (float)tex.height;
-            DrawTexturePro(tex, { 0, 0, tw, th }, { worldMouse.x, worldMouse.y, tw, th }, { tw / 2, th / 2 }, 0.0f, Color{ 255, 255, 255, 140 });
+            float ps = previewDef ? previewDef->pixelScale : 1.0f;
+            float tw = (float)tex.width * ps, th = (float)tex.height * ps;
+            DrawTexturePro(tex, { 0, 0, (float)tex.width, (float)tex.height },
+                           { worldMouse.x, worldMouse.y, tw, th }, { tw / 2, th / 2 }, 0.0f, Color{ 255, 255, 255, 140 });
         }
         else {
             DrawCircleV(worldMouse, 20.0f, Color{ 60, 130, 220, 80 });
@@ -6380,7 +8396,8 @@ void SpaceFlight::Draw() {
         DrawCircleV({ rp.posX, rp.posY }, 6.0f, Color{ 255, 160,  40,  55 });
     }
 
-    if (_hitCooldown <= 0.0f || (int)(_hitCooldown * 8) % 2 == 0) {
+    if (!_stationServicesMenu.isOpen && !_seated &&
+        (_hitCooldown <= 0.0f || (int)(_hitCooldown * 8) % 2 == 0)) {
         const Vector2& pos = _playerEntity.transform.position;
         const float rot = _playerEntity.transform.rotation;
         const ecs::ShipDef* pDefPtr = ecs::ShipRegistry::ShipById(_playerMeta.defId);
@@ -6560,7 +8577,74 @@ void SpaceFlight::Draw() {
         return;
     }
 
-    if (_commsMenuOpen) {
+    if (_commsMenuOpen && _commsMenuIsStation) {
+        // Epic 13: station hail — a condensed remote view of the contract
+        // board, same offers/accept flow as StationServicesMenu's Contracts
+        // screen, just reachable without docking.
+        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
+        DrawRectangle(0, 0, sw2, sh2, Color{ 0, 0, 0, 140 });
+        static constexpr int CW = 560, CH = 360;
+        int mcx = sw2 / 2 - CW / 2, mcy = sh2 / 2 - CH / 2;
+        DrawRectangle(mcx, mcy, CW, CH, Color{ 8, 14, 22, 245 });
+        DrawRectangleLinesEx({ (float)mcx, (float)mcy, (float)CW, (float)CH },
+            1.5f, Color{ 40, 130, 200, 220 });
+
+        std::string hdrStr = "COMMS  --  " + _commsMenuNpcName;
+        const char* hdr = hdrStr.c_str();
+        DrawText(hdr, mcx + CW / 2 - MeasureText(hdr, 14) / 2, mcy + 14, 14,
+            Color{ 60, 160, 220, 255 });
+        DrawRectangle(mcx + 16, mcy + 36, CW - 32, 1, Color{ 40, 100, 160, 160 });
+
+        if (_hasActiveContract) {
+            DrawText(_commsMenuNpcText.c_str(), mcx + 24, mcy + 60, 14,
+                Color{ 190, 215, 245, 230 });
+        }
+        else if (_contractOffers.empty()) {
+            const char* msg = "NO CONTRACTS AVAILABLE";
+            DrawText(msg, mcx + CW / 2 - MeasureText(msg, 14) / 2, mcy + 60, 14,
+                Color{ 220, 180, 80, 230 });
+        }
+        else {
+            static constexpr float RowH = 70.0f, RowGap = 10.0f;
+            float listY = (float)mcy + 60.0f;
+            Vector2 mHov = GetMousePosition();
+            for (size_t oi = 0; oi < _contractOffers.size(); ++oi) {
+                const Contract& c = _contractOffers[oi];
+                Rectangle row = { (float)mcx + 20.0f, listY + oi * (RowH + RowGap),
+                                   (float)CW - 40.0f, RowH };
+                DrawRectangle((int)row.x, (int)row.y, (int)row.width, (int)row.height,
+                    Color{ 4, 10, 18, 200 });
+                DrawRectangleLinesEx(row, 1.0f, Color{ 20, 60, 100, 180 });
+                DrawText(c.title.c_str(), (int)(row.x + 14), (int)(row.y + 10), 14,
+                    Color{ 190, 215, 245, 230 });
+                DrawText(c.briefing.c_str(), (int)(row.x + 14), (int)(row.y + 32), 11,
+                    Color{ 130, 160, 190, 210 });
+                char rew[48];
+                std::snprintf(rew, sizeof(rew), "+%d CR", c.rewardCredits);
+                DrawText(rew, (int)(row.x + 14), (int)(row.y + 52), 12, Color{ 80, 200, 100, 220 });
+
+                Rectangle btn = { row.x + row.width - 120.0f, row.y + row.height / 2.0f - 16.0f, 100.0f, 32.0f };
+                bool hovAccept = CheckCollisionPointRec(mHov, btn);
+                DrawRectangleRec(btn, hovAccept ? Color{ 40, 90, 50, 230 } : Color{ 14, 28, 18, 200 });
+                DrawRectangleLinesEx(btn, 1.0f, Color{ 40, 160, 80, 200 });
+                const char* albl = "ACCEPT";
+                DrawText(albl, (int)(btn.x + (btn.width - MeasureText(albl, 12)) / 2),
+                    (int)(btn.y + 10), 12, hovAccept ? WHITE : Color{ 80, 200, 100, 220 });
+            }
+        }
+
+        DrawRectangle(mcx + 16, mcy + CH - 64, CW - 32, 1, Color{ 40, 100, 160, 160 });
+        Vector2   m2b = GetMousePosition();
+        Rectangle backBtn2 = { (float)(mcx + 20), (float)(mcy + CH - 52), 120.0f, 34.0f };
+        bool      hovBack2 = CheckCollisionPointRec(m2b, backBtn2);
+        DrawRectangleRec(backBtn2, hovBack2 ? Color{ 40, 80, 100, 230 } : Color{ 12, 28, 40, 200 });
+        DrawRectangleLinesEx(backBtn2, 1.0f, Color{ 40, 130, 200, 200 });
+        const char* blbl2 = "< BACK";
+        DrawText(blbl2, (int)(backBtn2.x + (backBtn2.width - MeasureText(blbl2, 12)) / 2),
+            (int)(backBtn2.y + 11), 12,
+            hovBack2 ? WHITE : Color{ 120, 185, 240, 220 });
+    }
+    else if (_commsMenuOpen) {
         int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
         DrawRectangle(0, 0, sw2, sh2, Color{ 0, 0, 0, 140 });
         static constexpr int CW = 500, CH = 210;
@@ -6598,7 +8682,7 @@ void SpaceFlight::Draw() {
             bool hovJoin = CheckCollisionPointRec(m2, joinBtn);
             DrawRectangleRec(joinBtn, hovJoin ? Color{ 40, 90, 50, 230 } : Color{ 14, 28, 18, 200 });
             DrawRectangleLinesEx(joinBtn, 1.0f, Color{ 40, 160, 80, 200 });
-            const char* jlbl = "REQUEST JOIN";
+            const char* jlbl = _commsMenuIsDistress ? "ACKNOWLEDGE" : "REQUEST JOIN";
             DrawText(jlbl, (int)(joinBtn.x + (joinBtn.width - MeasureText(jlbl, 12)) / 2),
                 (int)(joinBtn.y + 11), 12,
                 hovJoin ? WHITE : Color{ 80, 200, 100, 220 });
@@ -6646,6 +8730,42 @@ void SpaceFlight::Draw() {
             DrawText(f.displayName.c_str(), px + 20, rowY, 12, HudValue);
             DrawText(rankName, px + PW - 20 - MeasureText(rankName, 12), rowY, 12, HudLabel);
             rowY += 26;
+        }
+
+        DrawRectangle(px + 16, py + PH - 58, PW - 32, 1, HudDiv);
+
+        Vector2 m2 = GetMousePosition();
+        Rectangle closeBtn = { (float)(px + PW / 2 - 60), (float)(py + PH - 46), 120.0f, 32.0f };
+        bool hovClose = CheckCollisionPointRec(m2, closeBtn);
+        DrawRectangleRec(closeBtn, hovClose ? Color{ 50,95,50,230 } : Color{ 12,22,12,200 });
+        DrawRectangleLinesEx(closeBtn, 1.0f, HudDiv);
+        const char* clbl = "CLOSE";
+        DrawText(clbl, (int)(closeBtn.x + (closeBtn.width - MeasureText(clbl, 12)) / 2),
+            (int)(closeBtn.y + 10), 12, hovClose ? WHITE : HudLabel);
+    }
+
+    // Epic 12.1: received-comms panel — surfaces the existing _commsLog feed
+    // (also where tutorial hints land) rather than a new message system.
+    if (_commsLogOpen) {
+        int sw2 = GetScreenWidth(), sh2 = GetScreenHeight();
+        DrawRectangle(0, 0, sw2, sh2, Color{ 0, 0, 0, 140 });
+        static constexpr int PW = 520, PH = 320;
+        int px = sw2 / 2 - PW / 2, py = sh2 / 2 - PH / 2;
+        DrawRectangle(px, py, PW, PH, HudBg);
+        DrawRectangleLinesEx({ (float)px, (float)py, (float)PW, (float)PH }, 1.5f, HudBorder);
+
+        const char* hdr = "RECEIVED COMMS";
+        DrawText(hdr, px + PW / 2 - MeasureText(hdr, 14) / 2, py + 14, 14, HudLabel);
+        DrawRectangle(px + 16, py + 36, PW - 32, 1, HudDiv);
+
+        int rowY = py + 48;
+        if (_commsLog.empty()) {
+            DrawText("No messages yet.", px + 20, rowY, 12, HudLabel);
+        } else {
+            for (const CommsEntry& e : _commsLog) {
+                DrawText(e.text.c_str(), px + 20, rowY, 12, e.fromPlayer ? HudValue : HudLabel);
+                rowY += 24;
+            }
         }
 
         DrawRectangle(px + 16, py + PH - 58, PW - 32, 1, HudDiv);
@@ -6725,26 +8845,36 @@ void SpaceFlight::Draw() {
         DrawRectangleLinesEx({ (float)px2,(float)py2,(float)PopW,(float)PopH }, 1.5f, Color{ 40,100,200,220 });
 
         std::string dName = "Ship";
-        if (const auto* ship = ecs::ShipRegistry::ShipById(_placingShipDefId))
+        bool isCapital = false;
+        if (const auto* ship = ecs::ShipRegistry::ShipById(_placingShipDefId)) {
             dName = ship->displayName;
+            isCapital = ship->shipType == ShipType::Capital;
+        }
+        bool canAfford = !isCapital || InventoryManager::Get().Credits >= kCapitalShipBuildCost;
 
         char msgbuf[128];
         std::snprintf(msgbuf, sizeof(msgbuf), "Build %s here?", dName.c_str());
         DrawText(msgbuf, sw2 / 2 - MeasureText(msgbuf, 14) / 2, py2 + 24, 14, Color{ 190,220,255,240 });
-        DrawText("Friendly ships defend the sector autonomously.",
-            sw2 / 2 - MeasureText("Friendly ships defend the sector autonomously.", 11) / 2,
-            py2 + 48, 11, Color{ 110,140,180,200 });
+        if (isCapital) {
+            std::snprintf(msgbuf, sizeof(msgbuf), "Cost: %d credits", kCapitalShipBuildCost);
+            DrawText(msgbuf, sw2 / 2 - MeasureText(msgbuf, 11) / 2, py2 + 48, 11,
+                canAfford ? Color{ 110,140,180,200 } : Color{ 200,80,80,220 });
+        } else {
+            DrawText("Friendly ships defend the sector autonomously.",
+                sw2 / 2 - MeasureText("Friendly ships defend the sector autonomously.", 11) / 2,
+                py2 + 48, 11, Color{ 110,140,180,200 });
+        }
 
         Vector2 m2 = GetMousePosition();
         Rectangle yesBtn = { (float)(px2 + 30),        (float)(py2 + PopH - 50), 120.0f, 32.0f };
         Rectangle noBtn = { (float)(px2 + PopW - 150),  (float)(py2 + PopH - 50), 120.0f, 32.0f };
-        bool hovY = CheckCollisionPointRec(m2, yesBtn);
+        bool hovY = CheckCollisionPointRec(m2, yesBtn) && canAfford;
         bool hovN = CheckCollisionPointRec(m2, noBtn);
 
-        DrawRectangleRec(yesBtn, hovY ? Color{ 20,80,40,230 } : Color{ 12,40,20,200 });
-        DrawRectangleLinesEx(yesBtn, 1.0f, Color{ 40,160,80,200 });
+        DrawRectangleRec(yesBtn, !canAfford ? Color{ 30,30,30,200 } : hovY ? Color{ 20,80,40,230 } : Color{ 12,40,20,200 });
+        DrawRectangleLinesEx(yesBtn, 1.0f, !canAfford ? Color{ 90,90,90,180 } : Color{ 40,160,80,200 });
         DrawText("YES", (int)(yesBtn.x + (yesBtn.width - MeasureText("YES", 12)) / 2),
-            (int)(yesBtn.y + 10), 12, hovY ? WHITE : Color{ 80,200,100,220 });
+            (int)(yesBtn.y + 10), 12, !canAfford ? Color{ 110,110,110,200 } : hovY ? WHITE : Color{ 80,200,100,220 });
 
         DrawRectangleRec(noBtn, hovN ? Color{ 80,20,20,230 } : Color{ 40,12,12,200 });
         DrawRectangleLinesEx(noBtn, 1.0f, Color{ 160,40,40,200 });
@@ -6832,8 +8962,12 @@ void SpaceFlight::OnExit() {
     _w->npcMeta.clear();
     _w->lootDrops.clear();
     _w->materialDrops.clear();
+    _w->derelictWrecks.clear();
+    _w->hasActiveDistress = false;
     _commsLog.clear();
     _remoteEntities.clear();
+    _remoteCapitalHardpoints.clear();
+    _remotePlayerStations.clear();
     _remoteFireCooldown.clear();
     _remoteJoinGrace.clear();
     _remoteProjectiles.clear();

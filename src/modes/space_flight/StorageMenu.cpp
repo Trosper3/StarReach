@@ -1,7 +1,12 @@
 #include "StorageMenu.h"
+#include "shared/ui/HudTheme.h"
 #include <algorithm>
 #include <cstdio>
 #include "core/InventoryManager.h"
+
+// ── Shared chrome/glass HUD theme (see shared/ui/HudTheme.h) — same helpers
+// ModulesMenu/StationServicesMenu/BuildMenu already use. Grade/type colors
+// stay as-is (semantic rarity/module-type), only structural chrome changes.
 
 // ── Static helpers ────────────────────────────────────────────────────────────
 
@@ -70,13 +75,13 @@ void StorageMenu::GetRects(int x, int y, int w, int count, Rectangle* out) {
 
 void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
                                   bool hovered, bool dimmed) {
-    Color border = hovered ? Color{ 80,200, 80,255 } : Color{ 34, 98, 34,160 };
-    DrawRectangleRec(r, Color{ 10, 18, 10, 220 });
-    DrawRectangleLinesEx(r, hovered ? 2.0f : 1.0f, border);
+    using namespace hudtheme;
+    Color border = hovered ? HudGood : HudDiv;
+    DrawHudChamferRect(r, 8.0f, Color{ 10, 16, 24, 220 }, border, hovered ? 2.0f : 1.0f);
 
     if (dimmed) {
         // ghost / placeholder during drag
-        DrawRectangleLinesEx(r, 1.0f, Color{50,80,50,120});
+        DrawRectangleLinesEx(r, 1.0f, Color{ 50, 65, 80, 120 });
         return;
     }
 
@@ -85,7 +90,7 @@ void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
         DrawText(em,
                  (int)(r.x + (r.width - MeasureText(em, 9)) / 2.0f),
                  (int)(r.y + r.height / 2.0f - 5), 9,
-                 Color{ 50, 70, 50, 110 });
+                 Color{ 60, 75, 90, 140 });
         return;
     }
 
@@ -118,16 +123,16 @@ void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
 
     if (item.type == StorageItemType::Material) {
         DrawText(item.displayName.c_str(), (int)r.x+6, (int)r.y+10, 11,
-                 Color{180,200,180,255});
+                 hudtheme::HudValue);
         char cnt[16];
         std::snprintf(cnt, sizeof(cnt), "x%d", item.count);
         DrawText(cnt, (int)r.x+6, (int)(r.y + r.height - 18), 12,
-                 Color{140,220,140,255});
+                 hudtheme::HudGood);
         return;
     }
 
     if (item.type == StorageItemType::Hardpoint) {
-        static constexpr Color hc = { 210,160, 60,255 };
+        const Color hc = hudtheme::HudCaution;
         DrawRectangleLinesEx({ r.x+1, r.y+1, r.width-2, r.height-2 }, 2.0f,
                              { hc.r, hc.g, hc.b, 170 });
         const char* letter = "H";
@@ -149,32 +154,31 @@ void StorageMenu::DrawItemInSlot(Rectangle r, const StorageItem& item,
 
 void StorageMenu::DrawItemTooltip(const StorageItem& item, int x, int y) {
     if (item.type == StorageItemType::Empty) return;
+    using namespace hudtheme;
     static constexpr int TW = 300, TH = 110;
-    DrawRectangle(x, y, TW, TH, Color{  6, 14,  6, 235 });
-    DrawRectangleLinesEx({ (float)x,(float)y,(float)TW,(float)TH }, 1.0f,
-                          Color{ 34, 98, 34, 200 });
+    DrawRectangle(x, y, TW, TH, Color{ 4, 8, 14, 245 });
+    DrawRectangleLinesEx({ (float)x,(float)y,(float)TW,(float)TH }, 1.0f, HudBorder);
     int ty = y + 10;
-    DrawText(item.displayName.c_str(), x+10, ty, 14, Color{192,218,192,255}); ty += 22;
+    DrawText(item.displayName.c_str(), x+10, ty, 14, HudValue); ty += 22;
     if (item.type == StorageItemType::Module) {
         Color gc = GradeColor(item.module.grade);
         Color tc = TypeColor(item.module.type);
         DrawText(TypeName(item.module.type), x+10, ty, 12, tc); ty += 18;
         DrawText(GradeName(item.module.grade), x+10, ty, 12, gc); ty += 18;
         if (!item.module.description.empty())
-            DrawText(item.module.description.c_str(), x+10, ty, 11,
-                     Color{130,175,130,200});
+            DrawText(item.module.description.c_str(), x+10, ty, 11, HudLabel);
     } else if (item.type == StorageItemType::Hardpoint) {
         const StationHardpointDef& hp = item.hardpoint;
         char buf[80];
         std::snprintf(buf, sizeof(buf), "Hull %.0f", hp.maxHull);
-        DrawText(buf, x+10, ty, 12, Color{ 210,160, 60,220 }); ty += 18;
+        DrawText(buf, x+10, ty, 12, HudCaution); ty += 18;
         std::snprintf(buf, sizeof(buf), "W:%d  A:%d  S:%d  E:%d  X:%d",
                       hp.wSlots, hp.arSlots, hp.shSlots, hp.enSlots, hp.auxSlots);
-        DrawText(buf, x+10, ty, 12, Color{170,190,170,210});
+        DrawText(buf, x+10, ty, 12, HudLabel);
     } else {
         char cnt[32];
         std::snprintf(cnt, sizeof(cnt), "%d / %d", item.count, MaxStack);
-        DrawText(cnt, x+10, ty, 12, Color{140,200,140,220});
+        DrawText(cnt, x+10, ty, 12, HudGood);
     }
 }
 
@@ -255,8 +259,21 @@ bool StorageMenu::Update() {
 
     // Drop
     if (_dragging && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-        if (CheckCollisionPointRec(mouse, trash) && _dragIdx >= 0 && _dragIdx < n)
+        if (CheckCollisionPointRec(mouse, trash) && _dragIdx >= 0 && _dragIdx < n) {
             slots[_dragIdx] = StorageItem{};
+        } else if (_dragIdx >= 0 && _dragIdx < n) {
+            // Move to another empty slot; anywhere else (occupied slot, back
+            // on itself, outside the grid) snaps back — slots[_dragIdx] was
+            // never cleared during the drag, so doing nothing is correct.
+            for (int i = 0; i < n; ++i) {
+                if (i == _dragIdx || !CheckCollisionPointRec(mouse, rects[i])) continue;
+                if (slots[i].type == StorageItemType::Empty) {
+                    slots[i]         = _dragItem;
+                    slots[_dragIdx]  = StorageItem{};
+                }
+                break;
+            }
+        }
         _dragging = false;
         _dragIdx  = -1;
     }
@@ -286,30 +303,28 @@ bool StorageMenu::Update() {
 
 void StorageMenu::Draw() const {
     if (!isOpen) return;
+    using namespace hudtheme;
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    DrawRectangle(0, 0, sw, sh, Color{ 1, 4, 1, 255 });
+    DrawRectangle(0, 0, sw, sh, Color{ 2, 4, 9, 255 });
 
     const char* title = "STORAGE";
-    DrawText(title, (sw - MeasureText(title, 26)) / 2, 18, 26, Color{ 68,162,68,255 });
-    DrawRectangle((sw - 400) / 2, 54, 400, 1, Color{ 34,98,34,170 });
+    DrawText(title, (sw - MeasureText(title, 26)) / 2, 18, 26, HudValue);
+    DrawRectangle((sw - 400) / 2, 54, 400, 1, HudDiv);
 
-    // ── ADDED: CREDITS OVERLAY LABEL ──────────────────────────────────────────
+    // Credits readout, right side of the header section.
     char credsBuf[32];
     std::snprintf(credsBuf, sizeof(credsBuf), "CREDITS: %d", InventoryManager::Get().Credits);
     int credsWidth = MeasureText(credsBuf, 18);
-    // Position it comfortably on the right side of the header section
-    DrawText(credsBuf, sw - credsWidth - 36, 22, 18, Color{ 255, 210, 60, 255 }); // Gold colored text
-    // ──────────────────────────────────────────────────────────────────────────
+    DrawText(credsBuf, sw - credsWidth - 36, 22, 18, HudGood);
 
     // BACK button
     Vector2 mouse = GetMousePosition();
     Rectangle back = { 18.0f, 16.0f, 110.0f, 36.0f };
     bool hb = CheckCollisionPointRec(mouse, back);
-    DrawRectangleRec(back, hb ? Color{ 50,95,50,230 } : Color{ 12,28,12,220 });
-    DrawRectangleLinesEx(back, 1.0f, Color{ 40,160,40,200 });
+    DrawHudChamferRect(back, 6.0f, hb ? Color{ 30, 55, 70, 230 } : Color{ 14, 20, 28, 200 }, HudBorder, hb ? 2.0f : 1.0f);
     const char* bl = "< BACK";
     DrawText(bl, (int)(back.x + (back.width - MeasureText(bl, 15)) / 2),
-        (int)(back.y + (back.height - 15) / 2), 15, WHITE);
+        (int)(back.y + (back.height - 15) / 2), 15, hb ? WHITE : HudLabel);
 
     int gx = 100, gy = 90, gw = sw - 200, n = (int)slots.size();
     std::vector<Rectangle> rects(n);
@@ -342,13 +357,13 @@ void StorageMenu::Draw() const {
         if (hovNonEmpty) {
             // Draw hand cursor (open hand)
             float mx = mouse.x, my = mouse.y;
-            DrawRectangle((int)mx - 5, (int)my - 2, 10, 7, Color{ 20,100,20,200 });
-            DrawRectangleLines((int)mx - 5, (int)my - 2, 10, 7, Color{ 100,220,100,255 });
+            DrawRectangle((int)mx - 5, (int)my - 2, 10, 7, Color{ 20, 55, 70, 200 });
+            DrawRectangleLines((int)mx - 5, (int)my - 2, 10, 7, hudtheme::HudBorder);
             for (int f = 0; f < 4; ++f) {
                 int fx = (int)mx - 4 + f * 2;
-                DrawLine(fx, (int)my - 2, fx, (int)my - 8, Color{ 150,255,150,255 });
+                DrawLine(fx, (int)my - 2, fx, (int)my - 8, hudtheme::HudValue);
             }
-            DrawLine((int)mx - 5, (int)my + 2, (int)mx - 9, (int)my - 1, Color{ 150,255,150,255 });
+            DrawLine((int)mx - 5, (int)my + 2, (int)mx - 9, (int)my - 1, hudtheme::HudValue);
         }
         // While dragging, the ghost already serves as the visual — no extra cursor needed
     } else {

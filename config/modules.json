@@ -133,6 +133,24 @@
       "projRange": 2000.0
     }
   },
+  {
+    "id": "ion_cannon_i",
+    "displayName": "Ion Cannon I",
+    "description": "Disabling ionic pulse weapon. Weak on its own, but a shot from this against a fighter already running on fumes will subdue it instead of finishing it off, letting you capture it before it recovers.",
+    "type": "Weapon",
+    "grade": "Unique",
+    "weapon": {
+      "damageType": "Energy",
+      "fireMode": "Standard",
+      "projType": "Standard",
+      "effect": "Ion",
+      "effectDuration": 8.0,
+      "damage": 12.0,
+      "fireRate": 1.2,
+      "projSpeed": 700.0,
+      "projRange": 900.0
+    }
+  },
 
   {
     "id": "armor_hull_patch",

@@ -4,7 +4,11 @@
 #include <vector>
 
 // Right-click menu for editing modules installed on a player-built station.
-// Shows hardpoints on the left, selected hardpoint's module slots on the right.
+// Two-screen flow: a hardpoint list (click a hardpoint to select it), then
+// that hardpoint's module page (slots + storage, and the shipyard column
+// when the selected hardpoint is a Docking Bay). Renders as a floating panel
+// over the (still-running, dimmed) game world rather than a full-screen takeover,
+// since ship placement drags a ship icon out of the panel into world space.
 class StationModuleMenu {
 public:
     bool isOpen = false;
@@ -18,16 +22,20 @@ public:
     void Draw() const;
 
 private:
-    static constexpr int PanelW    = 820;
+    static constexpr int PanelW    = 860;
+    static constexpr int PanelH    = 480;
     static constexpr int SlotPx    = 68;
     static constexpr int SlotGap   = 8;
-    static constexpr int HPListW   = 160;
     int _selShipIdx = -1;
+
+    enum class Screen { HardpointList, ModulePage };
+    Screen _screen = Screen::HardpointList;
 
     PlayerStation*            _station = nullptr;
     std::vector<StorageItem>* _storage = nullptr;
     int                       _selHp   = 0;   // selected hardpoint index
     int                       _storageScroll = 0;
+    int                       _shipListScroll = 0;
 
     // Drag state
     enum class DragSrc  { None, Storage, Slot };
@@ -55,4 +63,14 @@ private:
     bool IsCompatible(ModuleType slotType, const ModuleDef& mod) const;
     void DrawSlot(Rectangle r, const std::optional<ModuleDef>& mod,
                   bool hovered, bool highlighted) const;
+
+    // Per-screen geometry (kept in one place so Update()/Draw() agree).
+    Rectangle HardpointRowRect(int panelX, int panelY, int i) const;
+    Rectangle StorageAreaRect(int panelX, int panelY) const;
+    Rectangle ShipyardAreaRect(int panelX, int panelY) const;
+
+    bool UpdateHardpointList(int panelX, int panelY, Vector2 mouse);
+    bool UpdateModulePage(int panelX, int panelY, Vector2 mouse);
+    void DrawHardpointList(int panelX, int panelY, Vector2 mouse) const;
+    void DrawModulePage(int panelX, int panelY, Vector2 mouse) const;
 };

@@ -3,6 +3,7 @@
 #include "data/registry/StarSystemRegistry.h"
 #include "data/registry/UniverseRegistry.h"
 #include "systems/diplomacy/DiplomaticRegistry.h"
+#include "systems/diplomacy/ReputationRegistry.h"
 #include "shared/ui/HudTheme.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -457,7 +458,7 @@ float GalaxyMap::ComputeInfoBlockEnd(const StarSystem& sys, bool discovered, flo
     if (!discovered) return DrawSensorIntel(sys, centerX, startY, draw);
     if (!sys.isControlled) return startY;
 
-    Relation rel = DiplomaticRegistry::Get(sys.controllingFaction, _mapData.playerFaction);
+    Relation rel = ReputationRegistry::PlayerRelation(sys.controllingFaction);
     if (draw) {
         char line[64];
         std::snprintf(line, sizeof(line), "%s (%s)", FactionName(sys.controllingFaction), RelationName(rel));
@@ -931,12 +932,33 @@ void GalaxyMap::Draw() const {
         sensorText = "[ NO SENSORS EQUIPPED ]"; sensorColor = HudCaution;
     }
 
+    // Epic 4: fuel readout alongside range/sensors — a jump can be in range
+    // but still fuel-blocked (SpaceFlight::JumpFuelCost/BeginWarpSequence),
+    // so this needs its own visible status rather than being implied by
+    // hyperdrive range alone.
+    char fuelLabel[48];
+    Color fuelColor = HudGood;
+    if (hasHyperdrive && _mapData.maxFuel > 0.0f) {
+        float pct = _mapData.fuel / _mapData.maxFuel;
+        std::snprintf(fuelLabel, sizeof(fuelLabel), "[ FUEL: %.0f%% ]", pct * 100.0f);
+        fuelColor = pct > 0.5f ? HudGood : pct > 0.2f ? HudCaution : HudCritical;
+    } else {
+        fuelLabel[0] = '\0';
+    }
+
     {
         int rightEdge = L.mx + L.mw - 14;
         int hyperW    = MeasureText(hyperText, 14);
         int sensorW   = MeasureText(sensorText, 14);
-        DrawText(hyperText,  rightEdge - hyperW, (int)L.title.y + 13, 14, hyperColor);
-        DrawText(sensorText, rightEdge - hyperW - 16 - sensorW, (int)L.title.y + 13, 14, sensorColor);
+        int x         = rightEdge - hyperW;
+        DrawText(hyperText,  x, (int)L.title.y + 13, 14, hyperColor);
+        x -= 16 + sensorW;
+        DrawText(sensorText, x, (int)L.title.y + 13, 14, sensorColor);
+        if (fuelLabel[0] != '\0') {
+            int fuelW = MeasureText(fuelLabel, 14);
+            x -= 16 + fuelW;
+            DrawText(fuelLabel, x, (int)L.title.y + 13, 14, fuelColor);
+        }
     }
 
     // ── Map panel ────────────────────────────────────────────────────────────
@@ -1154,7 +1176,7 @@ void GalaxyMap::Draw() const {
                 // undiscovered dots already use. Same RED/GREEN/SKYBLUE
                 // convention as in-system NPC ship tinting (see RelationColor).
                 if (auto full = StarSystemRegistry::ById(b.id); full && full->isControlled) {
-                    Relation rel = DiplomaticRegistry::Get(full->controllingFaction, _mapData.playerFaction);
+                    Relation rel = ReputationRegistry::PlayerRelation(full->controllingFaction);
                     float ringR = (b.isCurrent ? 5.0f : 3.5f) + 3.0f;
                     DrawCircleLines((int)sp.x, (int)sp.y, ringR, RelationColor(rel));
                 }

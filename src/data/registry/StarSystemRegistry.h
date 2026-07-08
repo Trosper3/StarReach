@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Galactic distances from Sol (0, 0) — hyperdrive tier requirements (see
@@ -136,6 +137,19 @@ inline unsigned int&       MasterSeedRef() { static unsigned int       s = 1u; r
 inline unsigned int&       CountRef()      { static unsigned int       s = kDefaultCount; return s; }
 inline GalaxyShape&        ShapeRef()      { static GalaxyShape        s = GalaxyShape::Spiral; return s; }
 inline GalaxyShapeParams&  ShapeParamsRef(){ static GalaxyShapeParams  s{}; return s; }
+
+// Epic 5.2 (tasks_spaceflight_dynamics.md #5): the only mutable per-system
+// state this otherwise-pure-procedural registry carries. Industrialist NPCs
+// "founding" a station in a previously-uncontrolled system (SpaceFlight::
+// TickNpcEconomy) needs to durably flip that one system's isControlled/
+// controllingFaction away from its seed-rolled value for the rest of the
+// session — everything else about the system (position, name, existence)
+// stays exactly as Generate() would compute it. Not serialized in a save
+// yet (follow-up, same class of gap as Epic 3's un-persisted station stock).
+inline std::unordered_map<unsigned int, Faction>& ControlOverrideRef() {
+    static std::unordered_map<unsigned int, Faction> s;
+    return s;
+}
 
 inline float HashToUnit(uint32_t h) { return (h & 0xFFFFFFu) / 16777216.0f; } // 24 bits -> [0,1)
 inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
@@ -276,6 +290,18 @@ inline void Init(unsigned int masterSeed, unsigned int count = kDefaultCount,
     }
     detail::ShapeRef() = resolved;
     detail::ComputeShapeParams(detail::MasterSeedRef(), resolved, detail::ShapeParamsRef());
+    // A fresh session/galaxy has a fresh id-space — overrides from whatever
+    // galaxy was previously active don't mean anything here (mirrors how
+    // SpaceFlight clears _discoveredSystemIds on a galaxy switch).
+    detail::ControlOverrideRef().clear();
+}
+
+// Epic 5.2: durably marks system `id` as controlled by `faction` for the
+// rest of this session (or until Init() resets the galaxy) — see
+// ControlOverrideRef's comment. Overwrites any prior override for this id,
+// including a previous SetControlled call, so a system can change hands.
+inline void SetControlled(unsigned int id, Faction faction) {
+    detail::ControlOverrideRef()[id] = faction;
 }
 
 inline unsigned int Count() { return detail::CountRef(); }
@@ -300,12 +326,24 @@ inline StarSystem Generate(unsigned int id) {
     if (id == 1) {
         s.galacticPos = { 0.0f, 0.0f }; // home system always exists
         s.cellCenter  = { 0.0f, 0.0f };
-        // Forced controlled by the player's own starting faction (see
-        // kPlayerFaction in SpaceFlight.cpp) rather than rolled like every
-        // other system — guarantees a friendly station to dock at from the
-        // very start, regardless of how the control roll below would land.
-        s.isControlled      = true;
-        s.controllingFaction = Faction::Republic;
+        // Forced controlled rather than rolled like every other system —
+        // guarantees a friendly station to dock at from the very start,
+        // regardless of how the control roll below would land. Which faction
+        // comes from the override map (SpaceFlight::OnEnter calls
+        // SetControlled(1, kPlayerFaction) right after Init(), host/offline
+        // only — see that call site for the multiplayer-consistency reason
+        // clients don't set their own override here). Falls back to Republic
+        // if nothing has set an override yet (e.g. a standalone caller before
+        // OnEnter runs), matching the previous hardcoded default.
+        //
+        // Bug fixed 2026-07-08: this branch used to return before the
+        // override-map check further down ever ran, so a prior SetControlled
+        // call for id==1 was silently ignored — folded that same lookup in
+        // here instead of duplicating the early-return structure.
+        s.isControlled = true;
+        auto ovIt = detail::ControlOverrideRef().find(1);
+        s.controllingFaction = (ovIt != detail::ControlOverrideRef().end())
+            ? ovIt->second : Faction::Republic;
         return s;
     }
 
@@ -350,6 +388,16 @@ inline StarSystem Generate(unsigned int id) {
     if (s.isControlled) {
         uint32_t fh = detail::Hash32(detail::MasterSeedRef(), id, 0xFAC7104u);
         s.controllingFaction = static_cast<Faction>(fh % static_cast<uint32_t>(Faction::COUNT));
+    }
+
+    // Epic 5.2 override: an Industrialist NPC founding a station here since
+    // session start takes precedence over the seed-rolled result above,
+    // whichever way it goes (an uncontrolled system becoming controlled, the
+    // common case — but this also lets a controlling faction change).
+    auto ovIt = detail::ControlOverrideRef().find(id);
+    if (ovIt != detail::ControlOverrideRef().end()) {
+        s.isControlled       = true;
+        s.controllingFaction = ovIt->second;
     }
 
     return s;
