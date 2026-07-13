@@ -2,36 +2,18 @@
 #include "StorageMenu.h"
 #include "core/Module.h"
 #include "shared/entities/HealthComponent.h"
+#include "shared/entities/Hardpoint.h"
 #include <optional>
 #include <vector>
-
-struct ShipLoadout {
-    std::vector<std::optional<ModuleDef>> weapons;
-    std::vector<std::optional<ModuleDef>> shields;
-    std::optional<ModuleDef>              armor;
-    std::optional<ModuleDef>              engine;
-    std::optional<ModuleDef>              hyperdrive;
-    std::vector<std::optional<ModuleDef>> aux;
-
-    void Resize(int wSlots, int shSlots, int auxSlots)
-    {
-        weapons.assign(wSlots, std::nullopt);
-        shields.assign(shSlots, std::nullopt);
-        aux.assign(auxSlots, std::nullopt);
-        armor      = std::nullopt;
-        engine     = std::nullopt;
-        hyperdrive = std::nullopt;
-    }
-};
 
 class ModulesMenu {
 public:
     bool isOpen = false;
 
-    void Open(ShipLoadout* loadout, std::vector<StorageItem>* storage,
+    void Open(HardpointRig* loadout, std::vector<StorageItem>* storage,
               int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots,
               HealthComponent* healTarget = nullptr);
-    void Open(ShipLoadout* loadout, std::vector<StorageItem>* storage,
+    void Open(HardpointRig* loadout, std::vector<StorageItem>* storage,
               int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots,
               HealthComponent* healTarget = nullptr);
     void Close();
@@ -49,7 +31,7 @@ private:
 
     enum class DragSrc { None, Storage, ModSlot };
 
-    ShipLoadout*              _loadout    = nullptr;
+    HardpointRig*             _loadout    = nullptr;
     std::vector<StorageItem>* _storage    = nullptr;
     HealthComponent*          _healTarget = nullptr; // consumable repair-kit drops heal this
 

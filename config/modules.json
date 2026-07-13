@@ -561,5 +561,85 @@
     "type": "Consumable",
     "grade": "Mythic",
     "consumable": { "healAmount": 4000.0 }
+  },
+  {
+    "id": "facility_reactor",
+    "displayName": "Reactor Core",
+    "description": "Primary power plant. Raises the station's power capacity.",
+    "type": "Facility",
+    "grade": "Uncommon",
+    "facility": { "kind": "Reactor", "powerOutput": 20.0, "priority": 4 }
+  },
+  {
+    "id": "facility_trading_hub",
+    "displayName": "Trading Hub",
+    "description": "Commodities exchange. Lets visiting ships buy and sell cargo.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "Trading", "powerDraw": 1.0, "priority": 0 }
+  },
+  {
+    "id": "facility_manufacturing_bay",
+    "displayName": "Manufacturing Bay",
+    "description": "Converts raw materials into refined goods.",
+    "type": "Facility",
+    "grade": "Uncommon",
+    "facility": { "kind": "Manufacturing", "powerDraw": 1.5, "priority": 1 }
+  },
+  {
+    "id": "facility_shipyard",
+    "displayName": "Shipyard",
+    "description": "Docking and construction bay. Lets the station build and launch ships.",
+    "type": "Facility",
+    "grade": "Uncommon",
+    "facility": { "kind": "Shipyard", "powerDraw": 1.5, "priority": 2 }
+  },
+  {
+    "id": "facility_contract_board",
+    "displayName": "Contract Board",
+    "description": "Posts courier and bounty contracts for passing pilots.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "Contracting", "powerDraw": 0.5, "priority": 0 }
+  },
+  {
+    "id": "facility_refuel_station",
+    "displayName": "Refuel Station",
+    "description": "Hyperdrive fuel depot. Tops off docked ships.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "Refuel", "powerDraw": 1.0, "priority": 1 }
+  },
+  {
+    "id": "facility_repair_bay",
+    "displayName": "Repair Bay",
+    "description": "Nanite hull-repair gantry for docked ships.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "Repair", "powerDraw": 1.5, "priority": 2 }
+  },
+  {
+    "id": "facility_shield_generator",
+    "displayName": "Shield Generator",
+    "description": "Projects a defensive shield envelope over nearby hardpoints.",
+    "type": "Facility",
+    "grade": "Uncommon",
+    "facility": { "kind": "ShieldGenerator", "powerDraw": 2.0, "priority": 3 }
+  },
+  {
+    "id": "facility_weapon_battery",
+    "displayName": "Weapon Battery Control",
+    "description": "Fire-control system coordinating this hardpoint's mounted weapons.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "WeaponBattery", "powerDraw": 2.0, "priority": 3 }
+  },
+  {
+    "id": "facility_mining_rig",
+    "displayName": "Mining Rig",
+    "description": "Drill and ore-processing rig for automated asteroid extraction.",
+    "type": "Facility",
+    "grade": "Common",
+    "facility": { "kind": "Mining", "powerDraw": 1.0, "priority": 1 }
   }
 ]

@@ -69,7 +69,7 @@ struct SpaceStation {
     bool         retaliateAtPlayer = false;
     unsigned int retaliateAtNpcId  = 0;
     std::string  stationTypeId;
-    std::vector<HardpointState> hardpoints;
+    std::vector<Hardpoint> hardpoints;
     // Epic 3: per-station supply/demand (tasks_spaceflight_dynamics.md #3).
     StationEconomy economy;
     // Epic 5.3: destroyed stations rebuild after a cooldown instead of
@@ -167,8 +167,8 @@ struct NpcMeta {
     // Ship identification
     std::string  shipTypeId  = "ar3_saber";
     std::string  shipTypeName= "AR-3 Saber";
-    ShipLoadout  loadout;
-    std::vector<HardpointState> hardpoints; // capital ships only; empty for fighters
+    HardpointRig  loadout;
+    std::vector<Hardpoint> hardpoints; // capital ships only; empty for fighters
     // Epic 9.1 (capture): true once every non-core hardpoint is dead but the
     // command_bridge hardpoint survives — capital is unarmed and awaiting an
     // instant-capture approach. See combat::IsDisabled / UpdateCaptureProximity.
@@ -388,7 +388,7 @@ private:
     GalaxyMap               _galaxyMap;
     StorageMenu             _storageMenu;
     ModulesMenu             _modulesMenu;
-    ShipLoadout             _loadout;
+    HardpointRig             _loadout;
     Camera2D                _camera      = {};
     float                   _cameraZoom  = 1.0f;
     Texture2D*              _playerShipTex = nullptr;
@@ -452,7 +452,7 @@ private:
     // combat::AllHardpointsDestroyed for ship/station death — that part,
     // and any per-owner side effects (retaliation, loot, net broadcast),
     // stay in each caller since they genuinely differ per owner type.
-    bool ResolveHardpointHit(std::vector<HardpointState>& hardpoints, Vector2 projPos, float damage,
+    bool ResolveHardpointHit(std::vector<Hardpoint>& hardpoints, Vector2 projPos, float damage,
                               const std::function<Vector2(int)>& hardpointWorldPos,
                               const std::string& msgPrefix, const std::string& msgSuffix,
                               bool urgent = false);
@@ -560,7 +560,22 @@ private:
     // while the station's storage is full.
     void TickStationMining(PlayerStation& ps, float dt);
 
-    int          _selectedWeapon    = 0;
+    // Per weapon slot firing state. Number keys 1-9 (and 0 for slot 10) toggle
+    // a slot on/off; every enabled+equipped weapon fires together, each on its
+    // own cooldown/charge timer. A starfighter can thus fire all, some or none
+    // of its weapons at once. Sized to the ship's weaponSlots by ApplyLoadout;
+    // slots default to enabled.
+    std::vector<bool>  _weaponEnabled;
+    std::vector<float> _weaponCooldown;
+    std::vector<float> _weaponCharge;
+    // A slot fires when it has no explicit flag yet (freshly loaded) or its
+    // flag is on. Out-of-range indices read as enabled.
+    bool IsWeaponEnabled(int i) const {
+        return i < 0 || i >= (int)_weaponEnabled.size() || _weaponEnabled[i];
+    }
+    // First enabled+equipped weapon slot (-1 if none). Only the HUD WEAPON
+    // readiness/charge panel uses it as a representative; firing is per-slot.
+    int          _primaryWeapon     = -1;
     unsigned int _lockTargetId      = 0;
     Vector2      _lockTargetPos     = {};
     bool         _enterPopupOpen    = false;
@@ -733,11 +748,24 @@ private:
     // (== the capital's NpcMeta::id). Built once via BuildCapitalHardpoints when the
     // remote entity is first seen; hull/alive is then patched per capital snapshot.
     struct RemoteCapitalInfo {
-        std::vector<HardpointState> hardpoints;
+        std::vector<Hardpoint> hardpoints;
         float      radius  = 140.0f;
         NpcFaction faction = NpcFaction::Neutral;
     };
     std::unordered_map<uint32_t, RemoteCapitalInfo> _remoteCapitalHardpoints;
+    // P8-T1: client-side view of a remote PLAYER's fighter loadout, keyed by
+    // networkId (< 1000; NPCs use the id-1000 boundary elsewhere in this
+    // file too). Shaped like the LOCAL player's own current HardpointRig
+    // (Resize(weaponSlots,shieldSlots,auxSlots)) rather than the remote
+    // player's actual ship type, matching the pre-existing convention that
+    // remote players already render with the local player's own hull texture
+    // (see DrawRemotePlayers' "networkId < 1000" branch) — the mount layout
+    // and hull skin come from the same source, so they stay visually
+    // consistent with each other. Overlaid per FighterHardpointSnapshot row;
+    // NPCs need no equivalent map since their loadout is deterministic from
+    // the shared world seed and never changes post-spawn (no per-hardpoint
+    // combat damage exists for fighters, unlike capitals/stations).
+    std::unordered_map<uint32_t, std::vector<Hardpoint>> _remoteFighterMounts;
     // Client-side view of stations built by OTHER peers, keyed by
     // PlayerStation::id. Rebuilt/patched each Snapshot from
     // PlayerStationSnapshot + PlayerStationHardpointSnapshot (Epic C MP sync,
@@ -797,12 +825,22 @@ private:
     bool         _commsMenuIsStation  = false;
     unsigned int _commsMenuStationId = 0;
     bool         _commsMenuIsDistress = false;
+    // Capital-class craft (hardpoint-bearing) can't join the escort wing —
+    // the wing/escort AI treats members as fighters, so a capital would take
+    // on skewed fighter attributes. Hide the "REQUEST JOIN" action for them.
+    bool         _commsMenuIsCapital  = false;
 
     void ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta);
     // Places a Friendly NPC ship into `world` at `pos` — shared by the local
     // build-menu confirm handler (host/offline) and the host's drain of
     // client PlaceShipRequests (Epic C MP sync), so both paths stay in sync.
-    void PlaceFriendlyShip(SystemWorld& world, const std::string& shipDefId, Vector2 pos);
+    // placerFaction is whichever peer actually built/placed the ship (their
+    // diplomatic Faction, not the ship hull's palette) — the placed ship's
+    // real hostility checks key off this, not the cosmetic green "Friendly"
+    // tint. Caller passes kPlayerFaction for the local player's own build,
+    // or the requesting client's own faction (via _peerFaction) when the
+    // host is draining a PlaceShipRequest on someone else's behalf.
+    void PlaceFriendlyShip(SystemWorld& world, const std::string& shipDefId, Vector2 pos, Faction placerFaction);
     void ApplyWorldState(const SaveManager::GameState& gs);
     SaveManager::GameState BuildWorldState() const;
     void BakeSunCorona();

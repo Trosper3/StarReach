@@ -15,6 +15,7 @@ static StationHardpointDef ParseHardpoint(const nlohmann::json& h) {
     d.shSlots     = JL::Int  (h, "shSlots",  0, 0, 20);
     d.enSlots     = JL::Int  (h, "enSlots",  0, 0, 20);
     d.auxSlots    = JL::Int  (h, "auxSlots", 0, 0, 20);
+    d.fSlots      = JL::Int  (h, "fSlots",   0, 0, 20);
     if (h.contains("modules") && h["modules"].is_array())
         for (const auto& m : h["modules"])
             if (m.is_string()) d.preloadedModules.push_back(m.get<std::string>());

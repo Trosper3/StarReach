@@ -447,6 +447,13 @@
         "offset": { "x": 0, "y": -30 },
         "slotCount": 1,
         "modules": []
+      },
+      {
+        "name": "Reactor Core",
+        "slotType": "facility",
+        "offset": { "x": 0, "y": 60 },
+        "slotCount": 1,
+        "modules": ["facility_reactor"]
       }
     ]
   }

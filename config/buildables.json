@@ -381,5 +381,135 @@
       "id": "sensor_array", "displayName": "Sensor Array", "isCore": false, "maxHull": 90.0,
       "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 2
     }
+  },
+  {
+    "id": "craft_facility_bay",
+    "displayName": "Facility Bay",
+    "description": "Prefabricated facility mount. Attach to any station with open capacity, then fit it with a facility chip.",
+    "type": "Hardpoint",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 4 },
+      { "itemId": "circuit_board", "amount": 2 },
+      { "itemId": "power_cell",    "amount": 1 }
+    ],
+    "hardpoint": {
+      "id": "facility_bay", "displayName": "Facility Bay", "isCore": false, "maxHull": 100.0,
+      "wSlots": 0, "arSlots": 1, "shSlots": 0, "enSlots": 0, "auxSlots": 0, "fSlots": 1
+    }
+  },
+  {
+    "id": "craft_facility_reactor",
+    "displayName": "Reactor Core",
+    "description": "Primary power plant. Raises the station's power capacity.",
+    "type": "Module",
+    "moduleDefId": "facility_reactor",
+    "itemCost": [
+      { "itemId": "power_cell",     "amount": 3 },
+      { "itemId": "circuit_board",  "amount": 2 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_trading_hub",
+    "displayName": "Trading Hub",
+    "description": "Commodities exchange. Lets visiting ships buy and sell cargo.",
+    "type": "Module",
+    "moduleDefId": "facility_trading_hub",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 2 },
+      { "itemId": "circuit_board", "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_facility_manufacturing_bay",
+    "displayName": "Manufacturing Bay",
+    "description": "Converts raw materials into refined goods.",
+    "type": "Module",
+    "moduleDefId": "facility_manufacturing_bay",
+    "itemCost": [
+      { "itemId": "hull_frame",     "amount": 3 },
+      { "itemId": "circuit_board",  "amount": 2 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_shipyard",
+    "displayName": "Shipyard",
+    "description": "Docking and construction bay. Lets the station build and launch ships.",
+    "type": "Module",
+    "moduleDefId": "facility_shipyard",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 4 },
+      { "itemId": "circuit_board", "amount": 3 },
+      { "itemId": "power_cell",    "amount": 2 }
+    ]
+  },
+  {
+    "id": "craft_facility_contract_board",
+    "displayName": "Contract Board",
+    "description": "Posts courier and bounty contracts for passing pilots.",
+    "type": "Module",
+    "moduleDefId": "facility_contract_board",
+    "itemCost": [
+      { "itemId": "circuit_board", "amount": 2 },
+      { "itemId": "hull_frame",    "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_refuel_station",
+    "displayName": "Refuel Station",
+    "description": "Hyperdrive fuel depot. Tops off docked ships.",
+    "type": "Module",
+    "moduleDefId": "facility_refuel_station",
+    "itemCost": [
+      { "itemId": "power_cell", "amount": 2 },
+      { "itemId": "hull_frame", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_repair_bay",
+    "displayName": "Repair Bay",
+    "description": "Nanite hull-repair gantry for docked ships.",
+    "type": "Module",
+    "moduleDefId": "facility_repair_bay",
+    "itemCost": [
+      { "itemId": "steel_plate",   "amount": 2 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_shield_generator",
+    "displayName": "Shield Generator",
+    "description": "Projects a defensive shield envelope over nearby hardpoints.",
+    "type": "Module",
+    "moduleDefId": "facility_shield_generator",
+    "itemCost": [
+      { "itemId": "power_cell",     "amount": 2 },
+      { "itemId": "crystal_lens",   "amount": 1 },
+      { "itemId": "titanium_alloy", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_weapon_battery",
+    "displayName": "Weapon Battery Control",
+    "description": "Fire-control system coordinating this hardpoint's mounted weapons.",
+    "type": "Module",
+    "moduleDefId": "facility_weapon_battery",
+    "itemCost": [
+      { "itemId": "weapons_rack",  "amount": 1 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
+  },
+  {
+    "id": "craft_facility_mining_rig",
+    "displayName": "Mining Rig",
+    "description": "Drill and ore-processing rig for automated asteroid extraction.",
+    "type": "Module",
+    "moduleDefId": "facility_mining_rig",
+    "itemCost": [
+      { "itemId": "hull_frame",    "amount": 1 },
+      { "itemId": "sensor_array",  "amount": 1 },
+      { "itemId": "circuit_board", "amount": 1 }
+    ]
   }
 ]

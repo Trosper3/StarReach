@@ -6,7 +6,8 @@
 // Right-click menu for editing modules installed on a player-built station.
 // Two-screen flow: a hardpoint list (click a hardpoint to select it), then
 // that hardpoint's module page (slots + storage, and the shipyard column
-// when the selected hardpoint is a Docking Bay). Renders as a floating panel
+// when the selected hardpoint has a Shipyard facility chip installed — see
+// HasShipyardFacility in the .cpp). Renders as a floating panel
 // over the (still-running, dimmed) game world rather than a full-screen takeover,
 // since ship placement drags a ship icon out of the panel into world space.
 class StationModuleMenu {
@@ -23,9 +24,13 @@ public:
 
 private:
     static constexpr int PanelW    = 860;
-    static constexpr int PanelH    = 480;
+    static constexpr int PanelH    = 700; // 6 module rows (P4) + power budget bar (P7-T1); bumped for breathing room, user request 2026-07-09
     static constexpr int SlotPx    = 68;
     static constexpr int SlotGap   = 8;
+    // Y offset (from panelY) where hardpoint-list rows / module-page slot rows
+    // begin. Was a bare "40" literal until P7-T1 carved out a power-budget
+    // bar in the newly-widened gap between the title and the content rows.
+    static constexpr int ContentY  = 60;
     int _selShipIdx = -1;
 
     enum class Screen { HardpointList, ModulePage };
@@ -73,4 +78,10 @@ private:
     bool UpdateModulePage(int panelX, int panelY, Vector2 mouse);
     void DrawHardpointList(int panelX, int panelY, Vector2 mouse) const;
     void DrawModulePage(int panelX, int panelY, Vector2 mouse) const;
+
+    // P7-T1: station-wide load/capacity/throttle/shed-count readout, drawn on
+    // both screens right under the title. Reads PlayerStation::powerBudget
+    // (last tick's RecalculatePowerBudget result, SpaceFlight.cpp) plus a
+    // live per-hardpoint scan for shed count / worst throttle.
+    void DrawPowerBar(int panelX, int panelY) const;
 };

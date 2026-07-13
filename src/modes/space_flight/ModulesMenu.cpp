@@ -24,7 +24,7 @@ void ModulesMenu::StorageSlotRects(int stoX, int stoW, int count, Rectangle* out
 
 // ── ModulesMenu ───────────────────────────────────────────────────────────────
 
-void ModulesMenu::Open(ShipLoadout* loadout,
+void ModulesMenu::Open(HardpointRig* loadout,
     std::vector<StorageItem>* storage,
     int wSlots, int arSlots, int shSlots, int enSlots, int hdSlots, int auxSlots,
     HealthComponent* healTarget) {
@@ -54,7 +54,7 @@ void ModulesMenu::Close() {
     _dragIdx = -1;
 }
 
-void ModulesMenu::Open(ShipLoadout* loadout,
+void ModulesMenu::Open(HardpointRig* loadout,
     std::vector<StorageItem>* storage,
     int wSlots, int arSlots, int shSlots, int enSlots, int auxSlots,
     HealthComponent* healTarget) {
@@ -115,37 +115,36 @@ std::optional<ModuleDef>* ModulesMenu::GetModOpt(const ModSlotRef& ms)
     if (!_loadout)
         return nullptr;
 
-    if (ms.type == ModuleType::Weapon &&
-        ms.idx >= 0 &&
-        ms.idx < (int)_loadout->weapons.size())
-    {
-        return &_loadout->weapons[ms.idx];
+    switch (ms.type) {
+    case ModuleType::Weapon: {
+        auto v = _loadout->WeaponSlots();
+        return (ms.idx >= 0 && ms.idx < (int)v.size()) ? &v[ms.idx]->equipped : nullptr;
     }
-
-    if (ms.type == ModuleType::Armor && ms.idx == 0)
-        return &_loadout->armor;
-
-    if (ms.type == ModuleType::Shield &&
-        ms.idx >= 0 &&
-        ms.idx < (int)_loadout->shields.size())
-    {
-        return &_loadout->shields[ms.idx];
+    case ModuleType::Armor: {
+        if (ms.idx != 0) return nullptr;
+        ModuleSlot* a = _loadout->Armor();
+        return a ? &a->equipped : nullptr;
     }
-
-    if (ms.type == ModuleType::Engine && ms.idx == 0)
-        return &_loadout->engine;
-
-    if (ms.type == ModuleType::Hyperdrive && ms.idx == 0)
-        return &_loadout->hyperdrive;
-
-    if (ms.type == ModuleType::Auxiliary &&
-        ms.idx >= 0 &&
-        ms.idx < (int)_loadout->aux.size())
-    {
-        return &_loadout->aux[ms.idx];
+    case ModuleType::Shield: {
+        auto v = _loadout->ShieldSlots();
+        return (ms.idx >= 0 && ms.idx < (int)v.size()) ? &v[ms.idx]->equipped : nullptr;
     }
-
-    return nullptr;
+    case ModuleType::Engine: {
+        if (ms.idx != 0) return nullptr;
+        ModuleSlot* e = _loadout->Engine();
+        return e ? &e->equipped : nullptr;
+    }
+    case ModuleType::Hyperdrive: {
+        if (ms.idx != 0) return nullptr;
+        ModuleSlot* h = _loadout->Hyperdrive();
+        return h ? &h->equipped : nullptr;
+    }
+    case ModuleType::Auxiliary: {
+        auto v = _loadout->AuxSlots();
+        return (ms.idx >= 0 && ms.idx < (int)v.size()) ? &v[ms.idx]->equipped : nullptr;
+    }
+    default: return nullptr;
+    }
 }
 
 const std::optional<ModuleDef>* ModulesMenu::GetModOpt(const ModSlotRef& ms) const {
@@ -161,6 +160,7 @@ static const char* ModTypeLetter(ModuleType t) {
     case ModuleType::Hyperdrive: return "H";
     case ModuleType::Auxiliary:  return "U";
     case ModuleType::Consumable: return "R";
+    case ModuleType::Facility:   return "F"; // stations/capitals only; fighters never fit these
     }
     return "?";
 }
@@ -293,6 +293,9 @@ void ModulesMenu::DrawModuleTooltip(const ModuleDef& mod, Vector2 mousePos, floa
     }
     case ModuleType::Consumable:
         addStat("Heal", "+%.0f hull", mod.consumable.healAmount);
+        break;
+    case ModuleType::Facility: // stations/capitals only; fighters never fit these
+        addStr("Status", "Facility chip");
         break;
     }
 

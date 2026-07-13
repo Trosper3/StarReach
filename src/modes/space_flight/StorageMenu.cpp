@@ -45,6 +45,7 @@ const char* StorageMenu::TypeName(ModuleType t) {
     case ModuleType::Hyperdrive: return "HYPERDRIVE";
     case ModuleType::Auxiliary:  return "AUXILIARY";
     case ModuleType::Consumable: return "REPAIR";
+    case ModuleType::Facility:   return "FACILITY";
     default:                     return "UNKNOWN";
     }
 }
@@ -58,6 +59,7 @@ Color StorageMenu::TypeColor(ModuleType t) {
     case ModuleType::Hyperdrive: return { 180, 80,255,255 };
     case ModuleType::Auxiliary:  return {  60,200,100,255 };
     case ModuleType::Consumable: return {  90,230,140,255 };
+    case ModuleType::Facility:   return {  60,220,220,255 };
     default:                     return { 120,120,120,255 };
     }
 }

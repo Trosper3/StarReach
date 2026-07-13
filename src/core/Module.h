@@ -4,8 +4,33 @@
 #include <unordered_map>
 #include "raylib.h"
 
-enum class ModuleType  { Weapon, Armor, Shield, Engine, Hyperdrive, Auxiliary, Consumable };
+enum class ModuleType  { Weapon, Armor, Shield, Engine, Hyperdrive, Auxiliary, Consumable, Facility };
 enum class ModuleGrade { Common, Uncommon, Unique, Remarkable, Epic, Legendary, Mythic };
+
+// P4 — facilities as hybrid chips (docs/plans/unified_hardpoint_tasks.md).
+// A Facility occupies a Facility-typed slot inside a Hardpoint, same shape as
+// the pre-existing mining_drill aux-slot + Material Probe combo — the
+// hardpoint is the destructible mount, the facility module is what makes it
+// function as a specific kind of station service.
+enum class FacilityKind {
+    Reactor, Trading, Manufacturing, Shipyard, Contracting,
+    Refuel, Repair, ShieldGenerator, WeaponBattery, Mining
+};
+
+// Consumed by P5 adjacency rules (Mining<->Manufacturing throughput,
+// Reactor<->consumer efficiency, ShieldGenerator coverage). None today since
+// no adjacency system exists yet — present now so P4 facility defs have a
+// stable field to set without a later struct-shape change.
+enum class AdjacencyTag { None, Reactor, Consumer, Mining, Manufacturing, ShieldGenerator };
+
+struct FacilityStats {
+    FacilityKind kind        = FacilityKind::Trading;
+    float        powerDraw   = 0.0f;  // P4-T6: load this facility adds to the P3 power budget
+    float        powerOutput = 0.0f;  // P4-T6: capacity this facility adds (Reactor only, today)
+    float        baseRate    = 0.0f;  // per-kind meaning: mining yield, trade throughput, etc.
+    int          priority    = 2;     // shed priority tier if overloaded (lower sheds first)
+    AdjacencyTag adjTag      = AdjacencyTag::None;
+};
 
 enum class WeaponFireMode { Standard, Charge, LockOn };
 enum class WeaponProjType { Standard, Burst, Spread, Seeking };
@@ -85,5 +110,6 @@ struct ModuleDef {
     EngineStats     engine;
     AuxStats        auxiliary;
     ConsumableStats consumable;
+    FacilityStats   facility;
 };
 

@@ -18,6 +18,7 @@ static StationHardpointDef ParseHardpointBlueprint(const nlohmann::json& h) {
     d.shSlots     = JL::Int  (h, "shSlots",  0, 0, 20);
     d.enSlots     = JL::Int  (h, "enSlots",  0, 0, 20);
     d.auxSlots    = JL::Int  (h, "auxSlots", 0, 0, 20);
+    d.fSlots      = JL::Int  (h, "fSlots",   0, 0, 20);
     return d;
 }
 

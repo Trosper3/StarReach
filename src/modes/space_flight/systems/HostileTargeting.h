@@ -1,7 +1,7 @@
 #pragma once
 #include "raylib.h"
 #include "core/FactionEnum.h"
-#include "core/PlayerStation.h" // HardpointState
+#include "core/PlayerStation.h" // Hardpoint
 #include <vector>
 
 struct SystemWorld;
@@ -41,7 +41,7 @@ HostileTarget FindNearestHostileTarget(const SystemWorld&  world,
 
 // True once every hardpoint is destroyed (or the list is empty) — the
 // object dies. No hardpoint, including the isCore one, is ever invulnerable.
-bool AllHardpointsDestroyed(const std::vector<HardpointState>& hardpoints);
+bool AllHardpointsDestroyed(const std::vector<Hardpoint>& hardpoints);
 
 // Epic 9.1 (capture): true when every weapon-capable hardpoint (wSlots > 0)
 // is dead — the object can no longer fight back, regardless of whether its
@@ -50,6 +50,6 @@ bool AllHardpointsDestroyed(const std::vector<HardpointState>& hardpoints);
 // hardpoint dead" — that would require destroying a station's own docking
 // bay to make it capturable, defeating the point of capturing it. Only
 // meaningful when combat::AllHardpointsDestroyed is false (object still alive).
-bool IsDisabled(const std::vector<HardpointState>& hardpoints);
+bool IsDisabled(const std::vector<Hardpoint>& hardpoints);
 
 } // namespace combat

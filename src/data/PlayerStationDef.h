@@ -17,6 +17,7 @@ struct StationHardpointDef {
     int         shSlots  = 0;
     int         enSlots  = 0;
     int         auxSlots = 0;
+    int         fSlots   = 0; // P4: facility-typed slots (see Hardpoint::Facility())
     std::vector<std::string> preloadedModules;
 };
 

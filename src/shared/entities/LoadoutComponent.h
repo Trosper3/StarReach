@@ -12,6 +12,7 @@ struct ModuleSlot {
     std::optional<ModuleDef> equipped;
     Vector2                  hardpointOffset    = { 0.0f, 0.0f };
     float                    cooldownRemaining  = 0.0f;
+    Vector2                  subOffset          = { 0.0f, 0.0f }; // offset within a shared Hardpoint's cluster; see Hardpoint.h
 };
 
 class LoadoutComponent {
