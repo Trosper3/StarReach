@@ -191,6 +191,58 @@ bool SaveManager::SaveGameToPath(const GameState& gs, const std::string& path,
         data["stations"] = arr;
     }
 
+    // Player-built stations
+    {
+        json arr = json::array();
+        for (const auto& ps : gs.playerStations) {
+            json o;
+            o["id"]           = ps.id;
+            o["stationDefId"] = ps.stationDefId;
+            o["displayName"]  = ps.displayName;
+            o["x"]            = ps.posX;
+            o["y"]            = ps.posY;
+            o["alive"]        = ps.alive;
+            o["miningTimer"]  = ps.miningTimer;
+
+            json hps = json::array();
+            for (const auto& hp : ps.hardpoints) {
+                json ho;
+                ho["id"]      = hp.id;
+                ho["hull"]    = hp.hull;
+                ho["maxHull"] = hp.maxHull;
+                ho["alive"]   = hp.alive;
+                ho["shedPriority"] = hp.shedPriority;
+                json slots = json::array();
+                for (const auto& sl : hp.slots) {
+                    json so; so["moduleId"] = sl.moduleId;
+                    slots.push_back(so);
+                }
+                ho["slots"] = slots;
+                hps.push_back(ho);
+            }
+            o["hardpoints"] = hps;
+
+            json stg = json::array();
+            for (const auto& s : ps.storage) {
+                json so;
+                so["type"]        = s.type;
+                so["displayName"] = s.displayName;
+                so["materialId"]  = s.materialId;
+                so["moduleId"]    = s.moduleId;
+                so["count"]       = s.count;
+                stg.push_back(so);
+            }
+            o["storage"] = stg;
+
+            json econ = json::object();
+            for (const auto& [id, amount] : ps.economyStock) econ[id] = amount;
+            o["economyStock"] = econ;
+
+            arr.push_back(o);
+        }
+        data["playerStations"] = arr;
+    }
+
     // Loot drops
     {
         json arr = json::array();
@@ -382,6 +434,58 @@ bool SaveManager::LoadGame(const std::string& filename, GameState& out) {
             ss.posX   = s.value("x",  0.f); ss.posY   = s.value("y",  0.f);
             ss.radius = s.value("r",  90.f); ss.id    = s.value("id", 0u);
             out.stations.push_back(ss);
+        }
+    }
+
+    out.playerStations.clear();
+    if (data.contains("playerStations") && data["playerStations"].is_array()) {
+        for (const auto& p : data["playerStations"]) {
+            PlayerStationSave ps;
+            ps.id           = p.value("id",           0u);
+            ps.stationDefId = p.value("stationDefId", std::string{});
+            ps.displayName  = p.value("displayName",  std::string{});
+            ps.posX         = p.value("x",             0.f);
+            ps.posY         = p.value("y",             0.f);
+            ps.alive        = p.value("alive",         true);
+            ps.miningTimer  = p.value("miningTimer",   0.f);
+
+            if (p.contains("hardpoints") && p["hardpoints"].is_array()) {
+                for (const auto& h : p["hardpoints"]) {
+                    HardpointSave hp;
+                    hp.id      = h.value("id",      std::string{});
+                    hp.hull    = h.value("hull",    100.f);
+                    hp.maxHull = h.value("maxHull", 100.f);
+                    hp.alive   = h.value("alive",   true);
+                    hp.shedPriority = h.value("shedPriority", -1);
+                    if (h.contains("slots") && h["slots"].is_array()) {
+                        for (const auto& sl : h["slots"]) {
+                            HardpointSlotSave hs;
+                            hs.moduleId = sl.value("moduleId", std::string{});
+                            hp.slots.push_back(std::move(hs));
+                        }
+                    }
+                    ps.hardpoints.push_back(std::move(hp));
+                }
+            }
+
+            if (p.contains("storage") && p["storage"].is_array()) {
+                for (const auto& s : p["storage"]) {
+                    StorageSave ss;
+                    ss.type        = s.value("type",        0);
+                    ss.displayName = s.value("displayName", std::string{});
+                    ss.materialId  = s.value("materialId",  std::string{});
+                    ss.moduleId    = s.value("moduleId",    std::string{});
+                    ss.count       = s.value("count",       0);
+                    ps.storage.push_back(std::move(ss));
+                }
+            }
+
+            if (p.contains("economyStock") && p["economyStock"].is_object()) {
+                for (auto it = p["economyStock"].begin(); it != p["economyStock"].end(); ++it)
+                    ps.economyStock[it.key()] = it.value().get<int>();
+            }
+
+            out.playerStations.push_back(std::move(ps));
         }
     }
 

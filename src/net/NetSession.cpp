@@ -139,6 +139,8 @@ void NetSession::Shutdown() {
     pendingPlaceShipRequests.clear();
     latestPlayerStationSnapshots.clear();
     latestPlayerStationHardpointSnapshots.clear();
+    latestFighterHardpointSnapshots.clear();
+    peerFighterLoadouts.clear();
 }
 
 void NetSession::Poll(float /*dt*/) {
@@ -178,7 +180,10 @@ void NetSession::Poll(float /*dt*/) {
             if (_role == NetRole::Host) {
                 uint32_t leftId = GetPeerId(event.peer);
                 std::printf("[net] client %u disconnected\n", leftId);
-                if (leftId != 0) disconnectedPeerIds.push_back(leftId);
+                if (leftId != 0) {
+                    disconnectedPeerIds.push_back(leftId);
+                    peerFighterLoadouts.erase(leftId);
+                }
                 SetPeerId(event.peer, 0);
             } else {
                 std::printf("[net] disconnected from host\n");
@@ -256,7 +261,8 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
         std::vector<CapitalHardpointSnapshot> cSnaps;
         std::vector<PlayerStationSnapshot> stSnaps;
         std::vector<PlayerStationHardpointSnapshot> stHpSnaps;
-        if (DecodeSnapshot(r, sysId, snaps, aSnaps, pSnaps, cSnaps, stSnaps, stHpSnaps)) {
+        std::vector<FighterHardpointSnapshot> fhSnaps;
+        if (DecodeSnapshot(r, sysId, snaps, aSnaps, pSnaps, cSnaps, stSnaps, stHpSnaps, fhSnaps)) {
             latestSnapshotSystemId      = sysId;
             latestSnapshots             = std::move(snaps);
             latestAsteroidSnapshots     = std::move(aSnaps);
@@ -264,6 +270,7 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
             latestCapitalSnapshots      = std::move(cSnaps);
             latestPlayerStationSnapshots          = std::move(stSnaps);
             latestPlayerStationHardpointSnapshots = std::move(stHpSnaps);
+            latestFighterHardpointSnapshots       = std::move(fhSnaps);
             snapshotDirty = true;
         }
         break;
@@ -328,6 +335,13 @@ void NetSession::handlePacket(ENetPeer* from, const uint8_t* data, size_t len) {
         break;
     }
 
+    case MsgType::FighterLoadoutReport: {
+        std::vector<uint8_t> mounts;
+        if (DecodeFighterLoadoutReport(r, mounts))
+            peerFighterLoadouts[GetPeerId(from)] = std::move(mounts);
+        break;
+    }
+
     default:
         break;
     }
@@ -340,7 +354,8 @@ void NetSession::HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
                                   const std::vector<ProjectileSnapshot>&  projectiles,
                                   const std::vector<CapitalHardpointSnapshot>& capitals,
                                   const std::vector<PlayerStationSnapshot>& stations,
-                                  const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints) {
+                                  const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints,
+                                  const std::vector<FighterHardpointSnapshot>& fighterHardpoints) {
     if (_role != NetRole::Host || !_host || peerIds.empty()) return;
 
     std::vector<ecs::NetworkSnapshot> snaps;
@@ -356,7 +371,7 @@ void NetSession::HostSendSnapshot(const std::vector<uint32_t>&          peerIds,
         snaps.push_back(s);
     }
 
-    auto pkt = EncodeSnapshot(systemId, snaps, asteroids, projectiles, capitals, stations, stationHardpoints);
+    auto pkt = EncodeSnapshot(systemId, snaps, asteroids, projectiles, capitals, stations, stationHardpoints, fighterHardpoints);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), 0 /*unreliable*/);
     bool sent = false;
     for (size_t i = 0; i < _host->peerCount; ++i) {
@@ -488,6 +503,14 @@ void NetSession::ClientSendPlaceShipRequest(const std::string& shipDefId, float 
     if (_role != NetRole::Client || !_serverPeer || !_connected) return;
 
     auto pkt = EncodePlaceShipRequest(shipDefId, posX, posY);
+    ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
+    enet_peer_send(_serverPeer, kChannelReliable, p);
+}
+
+void NetSession::ClientSendFighterLoadoutReport(const std::vector<uint8_t>& mounts) {
+    if (_role != NetRole::Client || !_serverPeer || !_connected) return;
+
+    auto pkt = EncodeFighterLoadoutReport(mounts);
     ENetPacket* p = enet_packet_create(pkt.data(), pkt.size(), ENET_PACKET_FLAG_RELIABLE);
     enet_peer_send(_serverPeer, kChannelReliable, p);
 }

@@ -13,7 +13,7 @@ namespace repair {
 // large file.
 static Vector2 ComputeHardpointPos(const SpaceStation& st, int hpIndex) {
     if (hpIndex < 0 || hpIndex >= (int)st.hardpoints.size()) return st.position;
-    const HardpointState& hp = st.hardpoints[hpIndex];
+    const Hardpoint& hp = st.hardpoints[hpIndex];
     if (hp.isCore) return st.position;
     int nonCoreCount = 0, nonCoreIndex = 0;
     for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
@@ -40,7 +40,7 @@ FriendlyDock FindNearestFriendlyDock(const SystemWorld& world,
         if (DiplomaticRegistry::Get(selfFaction, st.faction) == Relation::Hostile) continue;
 
         for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
-            const HardpointState& hp = st.hardpoints[i];
+            const Hardpoint& hp = st.hardpoints[i];
             if (!hp.isDockingBay || !hp.alive) continue;
 
             Vector2 pos = ComputeHardpointPos(st, i);

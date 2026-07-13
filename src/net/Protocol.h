@@ -44,6 +44,12 @@ enum class MsgType : uint8_t {
     // requesting client before sending — co-op trust model, not anti-cheat.
     BuildStationRequest = 13, // C->S: build a player station at (posX,posY)
     PlaceShipRequest    = 14, // C->S: place a friendly NPC ship at (posX,posY)
+    // P8-T1 (unified-hardpoint plan): fighter loadouts weren't replicated at
+    // all before this — a client's equipped modules are only known to that
+    // client, so (unlike capitals/stations, which the host already fully
+    // simulates and can serialize directly) they need an explicit relay, same
+    // shape as BuildStationRequest/PlaceShipRequest above.
+    FighterLoadoutReport = 15, // C->S: this client's own fighter mount-type array
 };
 
 // Station state that differs from what seed-regeneration produces. Sent inside
@@ -263,6 +269,24 @@ struct PlayerStationHardpointSnapshot {
     uint8_t  alive     = 1;
 };
 
+// P8-T1: per-mount fighter loadout state (appended after the player-station
+// hardpoint section). One flat row per mount; client groups rows by
+// networkId (matches ecs::NetworkSnapshot::networkId — the same id space
+// used for capital hits doesn't apply here, fighters use networkId directly
+// like the base entity snapshot does). moduleType: 0 = empty mount, else
+// uint8_t(ModuleType)+1 — just enough for RenderSystem::DrawHardpointRig's
+// placeholder-color fallback (no real module art exists yet, see P2-T5), so
+// module id/grade stay private and never need to cross the wire. Host
+// derives these directly for NPCs and its own local player (it already
+// fully simulates both); for a connected client's own fighter, the host
+// relays whatever that client last reported via FighterLoadoutReport, since
+// only that client actually knows its own equipped modules.
+struct FighterHardpointSnapshot {
+    uint32_t networkId  = 0;
+    uint8_t  hpIndex    = 0;
+    uint8_t  moduleType = 0;
+};
+
 inline std::vector<uint8_t> EncodeSnapshot(
     uint32_t                                     systemId,
     const std::vector<ecs::NetworkSnapshot>&     snaps,
@@ -270,7 +294,8 @@ inline std::vector<uint8_t> EncodeSnapshot(
     const std::vector<ProjectileSnapshot>&       projectiles = {},
     const std::vector<CapitalHardpointSnapshot>& capitals    = {},
     const std::vector<PlayerStationSnapshot>&    stations    = {},
-    const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {})
+    const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {},
+    const std::vector<FighterHardpointSnapshot>& fighterHardpoints = {})
 {
     ByteWriter w;
     w.put(uint8_t(MsgType::Snapshot));
@@ -336,6 +361,14 @@ inline std::vector<uint8_t> EncodeSnapshot(
         w.put(stationHardpoints[i].hull);
         w.put(stationHardpoints[i].alive);
     }
+    // P8-T1: fighter-loadout section.
+    uint16_t fCount = static_cast<uint16_t>(std::min(fighterHardpoints.size(), size_t(65535)));
+    w.put(fCount);
+    for (uint16_t i = 0; i < fCount; ++i) {
+        w.put(fighterHardpoints[i].networkId);
+        w.put(fighterHardpoints[i].hpIndex);
+        w.put(fighterHardpoints[i].moduleType);
+    }
     return std::move(w.data);
 }
 
@@ -369,6 +402,29 @@ inline bool DecodePlaceShipRequest(ByteReader& r, std::string& outShipDefId, flo
     outX = r.get<float>();
     outY = r.get<float>();
     return r.ok;
+}
+
+// P8-T1: C->S, a client's own fighter mount-type array (see
+// FighterHardpointSnapshot for why the host can't derive this itself).
+inline std::vector<uint8_t> EncodeFighterLoadoutReport(const std::vector<uint8_t>& mounts) {
+    ByteWriter w;
+    w.put(uint8_t(MsgType::FighterLoadoutReport));
+    uint8_t count = static_cast<uint8_t>(std::min(mounts.size(), size_t(255)));
+    w.put(count);
+    for (uint8_t i = 0; i < count; ++i) w.put(mounts[i]);
+    return std::move(w.data);
+}
+
+inline bool DecodeFighterLoadoutReport(ByteReader& r, std::vector<uint8_t>& outMounts) {
+    outMounts.clear();
+    uint8_t count = r.get<uint8_t>();
+    if (!r.ok) return false;
+    outMounts.reserve(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        outMounts.push_back(r.get<uint8_t>());
+        if (!r.ok) return false;
+    }
+    return true;
 }
 
 inline std::vector<uint8_t> EncodePlayerDead() {
@@ -524,7 +580,8 @@ inline bool DecodeSnapshot(ByteReader& r,
                            std::vector<ProjectileSnapshot>&   projOut,
                            std::vector<CapitalHardpointSnapshot>& capsOut,
                            std::vector<PlayerStationSnapshot>&    stationsOut,
-                           std::vector<PlayerStationHardpointSnapshot>& stationHpsOut)
+                           std::vector<PlayerStationHardpointSnapshot>& stationHpsOut,
+                           std::vector<FighterHardpointSnapshot>& fighterHpsOut)
 {
     out.clear();
     asteroidOut.clear();
@@ -532,6 +589,7 @@ inline bool DecodeSnapshot(ByteReader& r,
     capsOut.clear();
     stationsOut.clear();
     stationHpsOut.clear();
+    fighterHpsOut.clear();
     outSystemId = r.get<uint32_t>();
     uint16_t count = r.get<uint16_t>();
     if (!r.ok) return false;
@@ -622,6 +680,19 @@ inline bool DecodeSnapshot(ByteReader& r,
         shs.alive     = r.get<uint8_t>();
         if (!r.ok) break;
         stationHpsOut.push_back(shs);
+    }
+    // P8-T1: fighter-loadout section.
+    if (r.remaining == 0) return true;
+    uint16_t fCount = r.get<uint16_t>();
+    if (!r.ok) return true;
+    fighterHpsOut.reserve(fCount);
+    for (uint16_t i = 0; i < fCount; ++i) {
+        FighterHardpointSnapshot fs;
+        fs.networkId  = r.get<uint32_t>();
+        fs.hpIndex    = r.get<uint8_t>();
+        fs.moduleType = r.get<uint8_t>();
+        if (!r.ok) break;
+        fighterHpsOut.push_back(fs);
     }
     return true;
 }

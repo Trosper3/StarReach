@@ -48,21 +48,21 @@ HostileTarget FindNearestHostileTarget(const SystemWorld&  world,
     return best;
 }
 
-bool AllHardpointsDestroyed(const std::vector<HardpointState>& hardpoints) {
-    for (const HardpointState& hp : hardpoints)
+bool AllHardpointsDestroyed(const std::vector<Hardpoint>& hardpoints) {
+    for (const Hardpoint& hp : hardpoints)
         if (hp.alive) return false;
     return true;
 }
 
-bool IsDisabled(const std::vector<HardpointState>& hardpoints) {
+bool IsDisabled(const std::vector<Hardpoint>& hardpoints) {
     // Keyed off weapon-capable hardpoints only (wSlots > 0), not "every
     // non-core hardpoint" — a docking bay, trade hub, mining drill, engine,
     // or shield array can't shoot back, and destroying them to reach this
     // state would gut the very thing capture is supposed to hand over.
     // Caller only reaches this once combat::AllHardpointsDestroyed is false,
     // so the object is already known to still have something alive.
-    for (const HardpointState& hp : hardpoints)
-        if (hp.alive && hp.wSlots > 0) return false; // still has a live weapon hardpoint — armed
+    for (const Hardpoint& hp : hardpoints)
+        if (hp.alive && !hp.WeaponSlots().empty()) return false; // still has a live weapon hardpoint — armed
     return true;
 }
 

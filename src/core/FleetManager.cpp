@@ -2,6 +2,7 @@
 #include "EventBus.h"
 #include "data/registry/PlayerStationRegistry.h"
 #include "data/modules/ArmorDefs.h"
+#include "data/modules/FacilityDefs.h"
 #include "data/modules/ModuleLookup.h"
 #include "core/ShipRegistry.h"
 #include "engine/SpriteCache.h"
@@ -34,21 +35,30 @@ PlayerStation& FleetManager::SpawnStation(const std::string& stationDefId, Vecto
 
     if (def) {
         for (const StationHardpointDef& hpd : def->hardpoints) {
-            HardpointState hp;
+            Hardpoint hp;
             hp.id = hpd.id;
             hp.displayName = hpd.displayName;
             hp.isCore = hpd.isCore;
+            hp.isDockingBay = (hpd.id == "docking_bay");
             hp.maxHull = hpd.maxHull;
             hp.hull = hpd.maxHull;
             hp.alive = true;
-            hp.wSlots = hpd.wSlots;
-            hp.arSlots = hpd.arSlots;
-            hp.shSlots = hpd.shSlots;
-            hp.enSlots = hpd.enSlots;
-            hp.auxSlots = hpd.auxSlots;
-            hp.weapons.assign(hpd.wSlots, std::nullopt);
-            hp.shields.assign(hpd.shSlots, std::nullopt);
-            hp.aux.assign(hpd.auxSlots, std::nullopt);
+            for (int i = 0; i < hpd.wSlots;   ++i) hp.slots.push_back({ ModuleType::Weapon });
+            for (int i = 0; i < hpd.arSlots;  ++i) hp.slots.push_back({ ModuleType::Armor });
+            for (int i = 0; i < hpd.shSlots;  ++i) hp.slots.push_back({ ModuleType::Shield });
+            for (int i = 0; i < hpd.enSlots;  ++i) hp.slots.push_back({ ModuleType::Engine });
+            for (int i = 0; i < hpd.auxSlots; ++i) hp.slots.push_back({ ModuleType::Auxiliary });
+            for (int i = 0; i < hpd.fSlots;   ++i) hp.slots.push_back({ ModuleType::Facility });
+            // P4-T4 backward-compat backfill: a def with no explicit facility
+            // slot but a recognized legacy hardpoint id gets one auto-installed,
+            // so existing config/station_defs.json entries keep functioning
+            // (e.g. "docking_bay" still shows the Shipyard column) without edits.
+            if (hpd.fSlots == 0) {
+                if (auto kind = LegacyHardpointFacilityKind(hpd.id)) {
+                    ModuleSlot fs; fs.type = ModuleType::Facility; fs.equipped = Facility_ForKind(*kind);
+                    hp.slots.push_back(fs);
+                }
+            }
             ps.hardpoints.push_back(std::move(hp));
         }
     }
@@ -57,25 +67,28 @@ PlayerStation& FleetManager::SpawnStation(const std::string& stationDefId, Vecto
     // the first compatible empty slot of matching type.
     if (def) {
         for (size_t hi = 0; hi < ps.hardpoints.size() && hi < def->hardpoints.size(); ++hi) {
-            HardpointState& hp = ps.hardpoints[hi];
+            Hardpoint& hp = ps.hardpoints[hi];
             for (const std::string& modId : def->hardpoints[hi].preloadedModules) {
                 std::optional<ModuleDef> mod = ModuleById(modId);
                 if (!mod) continue;
                 switch (mod->type) {
                 case ModuleType::Weapon:
-                    for (auto& w : hp.weapons) if (!w.has_value()) { w = *mod; break; }
+                    for (auto* w : hp.WeaponSlots()) if (!w->equipped.has_value()) { w->equipped = *mod; break; }
                     break;
                 case ModuleType::Armor:
-                    if (!hp.armor.has_value()) hp.armor = *mod;
+                    if (auto* a = hp.Armor(); a && !a->equipped.has_value()) a->equipped = *mod;
                     break;
                 case ModuleType::Shield:
-                    for (auto& s : hp.shields) if (!s.has_value()) { s = *mod; break; }
+                    for (auto* s : hp.ShieldSlots()) if (!s->equipped.has_value()) { s->equipped = *mod; break; }
                     break;
                 case ModuleType::Engine:
-                    if (!hp.engine.has_value()) hp.engine = *mod;
+                    if (auto* e = hp.Engine(); e && !e->equipped.has_value()) e->equipped = *mod;
                     break;
                 case ModuleType::Auxiliary:
-                    for (auto& a : hp.aux) if (!a.has_value()) { a = *mod; break; }
+                    for (auto* a : hp.AuxSlots()) if (!a->equipped.has_value()) { a->equipped = *mod; break; }
+                    break;
+                case ModuleType::Facility:
+                    if (auto* f = hp.Facility(); f && !f->equipped.has_value()) f->equipped = *mod;
                     break;
                 default: break;
                 }
@@ -86,11 +99,12 @@ PlayerStation& FleetManager::SpawnStation(const std::string& stationDefId, Vecto
     // Any armor-capable hardpoint still bare (no preloaded armor in the def)
     // gets a basic starter patch, then hull totals are derived from whatever
     // armor ended up equipped.
-    for (HardpointState& hp : ps.hardpoints) {
-        if (hp.arSlots > 0 && !hp.armor.has_value())
-            hp.armor = Armor_HullPatch();
-        if (hp.armor.has_value()) {
-            hp.maxHull = 100.0f + hp.armor->armor.hullBonus;
+    for (Hardpoint& hp : ps.hardpoints) {
+        ModuleSlot* armorSlot = hp.Armor();
+        if (armorSlot && !armorSlot->equipped.has_value())
+            armorSlot->equipped = Armor_HullPatch();
+        if (armorSlot && armorSlot->equipped.has_value()) {
+            hp.maxHull = 100.0f + armorSlot->equipped->armor.hullBonus;
             hp.hull = hp.maxHull;         // Heal to full on spawn
         }
     }

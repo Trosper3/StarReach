@@ -6,6 +6,7 @@
 #include "core/InventoryManager.h"
 #include "core/Module.h"
 #include "core/SaveManager.h"
+#include "engine/RenderSystem.h"
 #include "engine/ResourceManager.h"
 #include "data/modules/ModuleLookup.h"
 #include "data/modules/WeaponDefs.h"
@@ -193,7 +194,7 @@ static NpcRole RollNpcRole(Faction f) {
 
 static Vector2 GetNpcStationHardpointPos(const SpaceStation& st, int hpIndex) {
     if (hpIndex < 0 || hpIndex >= (int)st.hardpoints.size()) return st.position;
-    const HardpointState& hp = st.hardpoints[hpIndex];
+    const Hardpoint& hp = st.hardpoints[hpIndex];
     if (hp.isCore) return st.position;
     int nonCoreCount = 0, nonCoreIndex = 0;
     for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
@@ -218,18 +219,17 @@ static void BuildNpcStationHardpoints(SpaceStation& st) {
     st.hardpoints.clear();
     float totalHull = 0.0f;
 
-    HardpointState core;
+    Hardpoint core;
     core.id          = "core";
     core.displayName = "Core";
     core.isCore      = true;
     core.maxHull     = 250.0f;
     core.hull        = core.maxHull;
-    core.arSlots     = 1;
-    core.armor       = ModuleRegistry::Random(ModuleType::Armor, ModuleRegistry::RollGrade());
+    core.slots.push_back({ ModuleType::Armor, ModuleRegistry::Random(ModuleType::Armor, ModuleRegistry::RollGrade()) });
     totalHull += core.maxHull;
     st.hardpoints.push_back(core);
 
-    HardpointState dock;
+    Hardpoint dock;
     dock.id          = "docking_bay";
     dock.displayName = "Docking Bay";
     dock.isDockingBay = true;
@@ -241,13 +241,12 @@ static void BuildNpcStationHardpoints(SpaceStation& st) {
     int roll = GetRandomValue(1, 100);
     int weaponCount = (roll <= 75) ? 1 : (roll <= 90) ? 2 : 3;
     for (int i = 0; i < weaponCount; ++i) {
-        HardpointState wb;
+        Hardpoint wb;
         wb.id          = "weapon_battery_" + std::to_string(i + 1);
         wb.displayName = "Weapon Battery " + std::to_string(i + 1);
         wb.maxHull     = 120.0f;
         wb.hull        = wb.maxHull;
-        wb.wSlots      = 1;
-        wb.weapons.push_back(ModuleRegistry::Random(ModuleType::Weapon, ModuleRegistry::RollGrade()));
+        wb.slots.push_back({ ModuleType::Weapon, ModuleRegistry::Random(ModuleType::Weapon, ModuleRegistry::RollGrade()) });
         totalHull += wb.maxHull;
         st.hardpoints.push_back(wb);
     }
@@ -266,13 +265,13 @@ static Vector2 GetCapitalHardpointWorldPos(Vector2 shipPos, float shipRotationDe
 
 // Capital ships get a fixed hardpoint layout from ships.json instead of the
 // procedural station roll above — each StationHardpointDef becomes one
-// HardpointState, keyed off slotType. "command_bridge" is the future
+// Hardpoint, keyed off slotType. "command_bridge" is the future
 // bridge-piloting seat (isCore, no combat slots, no special death rule now —
 // see project_capital_ships.md).
-static std::vector<HardpointState> BuildCapitalHardpoints(const ecs::ShipDef& def) {
-    std::vector<HardpointState> out;
+static std::vector<Hardpoint> BuildCapitalHardpoints(const ecs::ShipDef& def) {
+    std::vector<Hardpoint> out;
     for (const ecs::StationHardpointDef& hpd : def.hardpoints) {
-        HardpointState hp;
+        Hardpoint hp;
         hp.id          = hpd.name;
         hp.displayName = hpd.name;
         hp.localOffset = hpd.offset;
@@ -281,32 +280,43 @@ static std::vector<HardpointState> BuildCapitalHardpoints(const ecs::ShipDef& de
         hp.alive       = true;
 
         if (hpd.slotType == "weapon") {
-            hp.wSlots = hpd.slotCount;
-            hp.weapons.assign(hpd.slotCount, std::nullopt);
+            for (int i = 0; i < hpd.slotCount; ++i) hp.slots.push_back({ ModuleType::Weapon });
             for (const std::string& modId : hpd.preloadedModules) {
                 auto mod = ModuleById(modId);
                 if (!mod || mod->type != ModuleType::Weapon) continue;
-                for (auto& w : hp.weapons) if (!w.has_value()) { w = *mod; break; }
+                for (auto* w : hp.WeaponSlots()) if (!w->equipped.has_value()) { w->equipped = *mod; break; }
             }
         } else if (hpd.slotType == "engine") {
-            hp.enSlots = hpd.slotCount;
+            for (int i = 0; i < hpd.slotCount; ++i) hp.slots.push_back({ ModuleType::Engine });
             for (const std::string& modId : hpd.preloadedModules) {
                 auto mod = ModuleById(modId);
-                if (mod && mod->type == ModuleType::Engine) { hp.engine = *mod; break; }
+                if (mod && mod->type == ModuleType::Engine) { if (auto* e = hp.Engine()) e->equipped = *mod; break; }
             }
         } else if (hpd.slotType == "shield") {
-            hp.shSlots = hpd.slotCount;
-            hp.shields.assign(hpd.slotCount, std::nullopt);
+            for (int i = 0; i < hpd.slotCount; ++i) hp.slots.push_back({ ModuleType::Shield });
             for (const std::string& modId : hpd.preloadedModules) {
                 auto mod = ModuleById(modId);
                 if (!mod || mod->type != ModuleType::Shield) continue;
-                for (auto& s : hp.shields) if (!s.has_value()) { s = *mod; break; }
+                for (auto& s : hp.slots) if (s.type == ModuleType::Shield && !s.equipped.has_value()) { s.equipped = *mod; break; }
             }
         } else if (hpd.slotType == "command_bridge") {
             hp.isCore = true;
+        } else if (hpd.slotType == "facility") {
+            // Capitals never got P4's facility support wired into their own
+            // parse branch (only the station registries did) — added here so
+            // a capital hardpoint can carry a facility chip the same way a
+            // station one can. No player-facing editor exists for capital
+            // hardpoints (they're placed pre-built, not attached at
+            // runtime), so facility modules on a capital are always
+            // preloaded from config, same as its weapons/shields/engines.
+            for (int i = 0; i < hpd.slotCount; ++i) hp.slots.push_back({ ModuleType::Facility });
+            for (const std::string& modId : hpd.preloadedModules) {
+                auto mod = ModuleById(modId);
+                if (!mod || mod->type != ModuleType::Facility) continue;
+                if (auto* f = hp.Facility()) f->equipped = *mod;
+            }
         } else {
-            hp.auxSlots = hpd.slotCount;
-            hp.aux.assign(hpd.slotCount, std::nullopt);
+            for (int i = 0; i < hpd.slotCount; ++i) hp.slots.push_back({ ModuleType::Auxiliary });
             for (const std::string& modId : hpd.preloadedModules) {
                 auto mod = ModuleById(modId);
                 if (!mod || mod->type != ModuleType::Auxiliary) {
@@ -314,7 +324,7 @@ static std::vector<HardpointState> BuildCapitalHardpoints(const ecs::ShipDef& de
                              hpd.name.c_str(), hpd.slotType.c_str(), modId.c_str());
                     continue;
                 }
-                for (auto& a : hp.aux) if (!a.has_value()) { a = *mod; break; }
+                for (auto* a : hp.AuxSlots()) if (!a->equipped.has_value()) { a->equipped = *mod; break; }
             }
         }
 
@@ -325,7 +335,7 @@ static std::vector<HardpointState> BuildCapitalHardpoints(const ecs::ShipDef& de
 
 static Vector2 GetHardpointPos(const PlayerStation& ps, int hpIndex, float stationRadius) {
     if (hpIndex < 0 || hpIndex >= (int)ps.hardpoints.size()) return ps.position;
-    const HardpointState& hp = ps.hardpoints[hpIndex];
+    const Hardpoint& hp = ps.hardpoints[hpIndex];
 
     // Core sits exactly at the center of the station
     if (hp.isCore) return ps.position;
@@ -351,7 +361,7 @@ static Vector2 GetHardpointPos(const PlayerStation& ps, int hpIndex, float stati
 
 static Vector2 GetBestHardpointAimPos(const PlayerStation& ps, float rad) {
     for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
-        const HardpointState& hp = ps.hardpoints[i];
+        const Hardpoint& hp = ps.hardpoints[i];
         if (!hp.alive || hp.isCore) continue;
         return GetHardpointPos(ps, i, rad);
     }
@@ -368,7 +378,7 @@ static Vector2 GetBestHardpointAimPos(const PlayerStation& ps, float rad) {
 // nothing instead of redirecting to whatever hardpoint is still alive.
 static Vector2 GetStationAimPos(const SpaceStation& st) {
     for (int i = 0; i < (int)st.hardpoints.size(); ++i) {
-        const HardpointState& hp = st.hardpoints[i];
+        const Hardpoint& hp = st.hardpoints[i];
         if (!hp.alive || hp.isCore) continue;
         return GetNpcStationHardpointPos(st, i);
     }
@@ -379,11 +389,11 @@ static Vector2 GetStationAimPos(const SpaceStation& st) {
 
 // Same idea for a capital ship's own hardpoint list.
 static Vector2 GetCapitalAimPos(const NpcMeta& m, Vector2 shipPos, float shipRotationDeg) {
-    for (const HardpointState& hp : m.hardpoints) {
+    for (const Hardpoint& hp : m.hardpoints) {
         if (!hp.alive || hp.isCore) continue;
         return GetCapitalHardpointWorldPos(shipPos, shipRotationDeg, hp.localOffset);
     }
-    for (const HardpointState& hp : m.hardpoints)
+    for (const Hardpoint& hp : m.hardpoints)
         if (hp.alive) return GetCapitalHardpointWorldPos(shipPos, shipRotationDeg, hp.localOffset);
     return shipPos;
 }
@@ -407,18 +417,25 @@ static Vector2 GetNpcAimPos(const SystemWorld& w, size_t j) {
 // caller still owns the AllHardpointsDestroyed death check and any per-owner
 // side effects (retaliation, loot, net broadcast, AI-state transition), since
 // those genuinely differ between stations and capital ships.
-bool SpaceFlight::ResolveHardpointHit(std::vector<HardpointState>& hardpoints, Vector2 projPos, float damage,
+bool SpaceFlight::ResolveHardpointHit(std::vector<Hardpoint>& hardpoints, Vector2 projPos, float damage,
                                        const std::function<Vector2(int)>& hardpointWorldPos,
                                        const std::string& msgPrefix, const std::string& msgSuffix,
                                        bool urgent) {
     for (int i = 0; i < (int)hardpoints.size(); ++i) {
-        HardpointState& hp = hardpoints[i];
+        Hardpoint& hp = hardpoints[i];
         if (!hp.alive) continue;
         Vector2 hpPos  = hardpointWorldPos(i);
         float   hitRad = hp.isCore ? 18.0f : 14.0f;
         if (Vector2Distance(projPos, hpPos) >= hitRad + 3.5f) continue;
 
-        hp.hull = std::max(0.0f, hp.hull - damage);
+        // P6: a live ShieldGenerator's coverage (Hardpoint::shieldCovered,
+        // RecalculateAdjacency in Hardpoint.h) reduces incoming damage; the
+        // reduction disappears on its own the tick the covering generator
+        // dies or gets power-shed, since shieldCovered flips false then.
+        float applied = hp.shieldCovered
+            ? damage * (1.0f - hardpoint_adjacency_detail::kShieldGeneratorMitigation)
+            : damage;
+        hp.hull = std::max(0.0f, hp.hull - applied);
         if (hp.hull <= 0.0f) {
             hp.alive = false;
             AddCommsMessage(msgPrefix + hp.displayName + msgSuffix, urgent);
@@ -513,7 +530,7 @@ void SpaceFlight::DrawStations() const {
         _lighting.EndLit();
 
         for (int i = 0; i < (int)s.hardpoints.size(); ++i) {
-            const HardpointState& hp = s.hardpoints[i];
+            const Hardpoint& hp = s.hardpoints[i];
             if (!hp.alive) continue;
             Vector2 hpPos = GetNpcStationHardpointPos(s, i);
             float hpDrawRad = hp.isCore ? 18.0f : 14.0f;
@@ -524,13 +541,15 @@ void SpaceFlight::DrawStations() const {
             DrawCircleV(hpPos, hpDrawRad, Color{ 15, 25, 40, 240 });
             DrawCircleLinesV(hpPos, hpDrawRad, ringCol);
 
-            bool hasWeapon = !hp.weapons.empty() && hp.weapons[0].has_value();
-            Color iconCol = hp.isCore       ? Color{ 200, 160,  30, 255 }
+            Color markCol = hp.isCore       ? Color{ 200, 160,  30, 255 }
                 : hp.isDockingBay ? Color{ 140, 220, 255, 255 }
-                : hasWeapon       ? Color{ 220,  90,  60, 255 }
-                                  : Color{ 100, 180, 255, 200 };
-            DrawCircleV(hpPos, hpDrawRad * 0.4f, iconCol);
+                                  : Color{};
+            if (markCol.a != 0) DrawCircleV(hpPos, hpDrawRad * 0.4f, markCol);
         }
+        // P2: composited module render replaces the old per-hardpoint
+        // weapon-presence dot — the hull-integrity ring/backdrop above stays.
+        ecs::RenderSystem::DrawHardpointRig(s.position, 0.0f, 1.0f, s.hardpoints,
+                                             Color{ 100, 180, 255, 255 }, WHITE);
     }
 }
 
@@ -549,7 +568,7 @@ void SpaceFlight::DrawOneStation(const PlayerStation& ps, bool isLocal) const {
         // Count alive / total hardpoints for damage tinting
         int totalHp = (int)ps.hardpoints.size();
         int aliveHp = 0;
-        for (const HardpointState& hp : ps.hardpoints)
+        for (const Hardpoint& hp : ps.hardpoints)
             if (hp.alive) aliveHp++;
         float integrity = totalHp > 0 ? (float)aliveHp / (float)totalHp : 1.0f;
 
@@ -605,7 +624,7 @@ void SpaceFlight::DrawOneStation(const PlayerStation& ps, bool isLocal) const {
 
         // ── Draw Physical Hardpoints ──────────────────────────────────────────────
         for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
-            const HardpointState& hp = ps.hardpoints[i];
+            const Hardpoint& hp = ps.hardpoints[i];
             if (!hp.alive) continue;
 
             Vector2 hpPos = GetHardpointPos(ps, i, rad);
@@ -620,12 +639,14 @@ void SpaceFlight::DrawOneStation(const PlayerStation& ps, bool isLocal) const {
             DrawCircleV(hpPos, hpDrawRad, Color{ 15, 25, 40, 240 });
             DrawCircleLinesV(hpPos, hpDrawRad, hpCol);
 
-            // Draw Core / Standard Indicator inside the hardpoint
-            Color iconCol = hp.isCore ? Color{ 200, 160, 30, 255 } : Color{ 100, 180, 255, 200 };
-            DrawCircleV(hpPos, hpDrawRad * 0.4f, iconCol);
+            // Core indicator inside the hardpoint (P2: the old content-type
+            // dot is gone — DrawHardpointRig below draws the actual modules).
+            if (hp.isCore) DrawCircleV(hpPos, hpDrawRad * 0.4f, Color{ 200, 160, 30, 255 });
 
             // Render small text label near hovered hardpoints if needed here
         }
+        ecs::RenderSystem::DrawHardpointRig(ps.position, 0.0f, 1.0f, ps.hardpoints,
+                                             Color{ 100, 180, 255, 255 }, WHITE);
 }
 
 void SpaceFlight::BakeSunCorona() {
@@ -1172,7 +1193,7 @@ bool SpaceFlight::FindNearestFriendlySeat(unsigned int& npcIdOut, int& hpIdxOut,
         if (!m.alive || m.faction != NpcFaction::Friendly || m.hardpoints.empty()) continue;
         const ecs::Entity& e = _w->entities[i];
         for (int h = 0; h < (int)m.hardpoints.size(); ++h) {
-            const HardpointState& hp = m.hardpoints[h];
+            const Hardpoint& hp = m.hardpoints[h];
             if (!hp.alive) continue;
             Vector2 hpPos = GetCapitalHardpointWorldPos(e.transform.position, e.transform.rotation, hp.localOffset);
             float d = Vector2Distance(_playerEntity.transform.position, hpPos);
@@ -1552,19 +1573,21 @@ static std::pair<ecs::Entity, NpcMeta> MakeNpcEntity(unsigned int npcId, Vector2
     // (Keep your existing random module loadout logic here)
     m.loadout.Resize(NpcMeta::WSlots, NpcMeta::ShSlots, NpcMeta::AuxSlots);
 
-    for (auto& slot : m.loadout.weapons)
-        slot = ModuleRegistry::Random(ModuleType::Weapon, ModuleRegistry::RollGrade());
+    for (auto* slot : m.loadout.WeaponSlots())
+        slot->equipped = ModuleRegistry::Random(ModuleType::Weapon, ModuleRegistry::RollGrade());
 
-    m.loadout.armor  = ModuleRegistry::Random(ModuleType::Armor,  ModuleRegistry::RollGrade());
-    m.loadout.engine = ModuleRegistry::Random(ModuleType::Engine, ModuleRegistry::RollGrade());
+    if (auto* armorSlot = m.loadout.Armor())
+        armorSlot->equipped = ModuleRegistry::Random(ModuleType::Armor, ModuleRegistry::RollGrade());
+    if (auto* engineSlot = m.loadout.Engine())
+        engineSlot->equipped = ModuleRegistry::Random(ModuleType::Engine, ModuleRegistry::RollGrade());
 
-    for (auto& slot : m.loadout.shields)
-        slot = ModuleRegistry::Random(ModuleType::Shield, ModuleRegistry::RollGrade());
+    for (auto* slot : m.loadout.ShieldSlots())
+        slot->equipped = ModuleRegistry::Random(ModuleType::Shield, ModuleRegistry::RollGrade());
 
     return { e, m };
 }
 
-void SpaceFlight::PlaceFriendlyShip(SystemWorld& world, const std::string& shipDefId, Vector2 pos) {
+void SpaceFlight::PlaceFriendlyShip(SystemWorld& world, const std::string& shipDefId, Vector2 pos, Faction placerFaction) {
     auto [alliedE, alliedM] = MakeNpcEntity(world.nextNpcId++, pos);
     alliedM.faction    = NpcFaction::Friendly;
     alliedM.shipTypeId = shipDefId;
@@ -1577,12 +1600,24 @@ void SpaceFlight::PlaceFriendlyShip(SystemWorld& world, const std::string& shipD
         mHull = placedDef->baseStats.hull;
     }
 
-    // MakeNpcEntity() rolled m.npcFaction (the DiplomaticRegistry faction that
-    // ALL real hostility checks use) from a RANDOM ship pick before
-    // shipTypeId was overwritten above. Left uncorrected, a "friendly" green
-    // placed ship could diplomatically be Hostile toward the player's own
-    // faction purely by chance. Re-derive it from the actual placed def.
-    alliedM.npcFaction = placedDef ? FactionFromPaletteId(placedDef->paletteId) : Faction::Republic;
+    // MakeNpcEntity() rolled m.npcFaction (the DiplomaticRegistry/ReputationRegistry
+    // faction that ALL real hostility checks — combat::FindNearestHostileTarget,
+    // UpdateCapitalFire's retaliation logic — actually use, as opposed to the
+    // purely cosmetic m.faction (NpcFaction::Friendly, just the green tint)
+    // set above) from a RANDOM ship pick before shipTypeId was overwritten.
+    // A prior fix re-derived it from the PLACED ship's own paletteId instead
+    // (e.g. republic_battlecruiser -> Faction::Republic) — still wrong: a
+    // ship the player builds and places belongs to the PLAYER's faction, not
+    // whatever faction the hull asset happens to be palette-skinned as. If
+    // the player isn't playing as that ship's palette faction (e.g. Zenith
+    // player placing the Republic-skinned battlecruiser, and Republic is
+    // Hostile to Zenith on the base matrix), the "friendly" green ship was
+    // diplomatically hostile to its own builder and opened fire on them —
+    // reported by user 2026-07-09. Fixed to match UpdateCaptureProximity's
+    // already-correct pattern for a captured ship joining the player's fleet
+    // (`m.npcFaction = kPlayerFaction`) — ownership determines allegiance,
+    // not hull skin.
+    alliedM.npcFaction = placerFaction;
     alliedM.role = RollNpcRole(alliedM.npcFaction); // re-roll: same stale-random-pick issue as npcFaction above
 
     alliedM.shipTypeName = dName;
@@ -1770,6 +1805,16 @@ void SpaceFlight::UpdateNpcShips(float dt) {
         }
 
         TickNpcEconomy(m, dt);
+
+        // P3/P5: capitals aren't a HardpointRig (meta.hardpoints is a bare
+        // vector<Hardpoint>), so recompute their power budget directly here,
+        // once per tick — same shared logic fighters get via ApplyNpcLoadout.
+        // Adjacency must run first — it feeds adjacencyPowerDrawMult into the
+        // power budget below.
+        if (!m.hardpoints.empty()) {
+            RecalculateAdjacency(m.hardpoints);
+            RecalculatePowerBudget(m.hardpoints, HardpointRig::kStationBaseCapacity);
+        }
 
         float distToPlayer = Vector2Distance(e.transform.position, _playerEntity.transform.position);
 
@@ -3096,11 +3141,25 @@ const ecs::ShipDef* SpaceFlight::ResolveShipDefByHash(uint32_t shipNameHash) con
     return nullptr;
 }
 
+// P8-T1: one ModuleType-or-0 byte per HardpointRig mount, in the same order
+// HardpointRig::Resize() built them — see net::FighterHardpointSnapshot for
+// why this is what a client reports (rather than full module ids/grades) and
+// EncodeFighterLoadoutReport for the wire encoding.
+static std::vector<uint8_t> EncodeLoadoutMounts(const HardpointRig& rig) {
+    std::vector<uint8_t> out;
+    out.reserve(rig.hardpoints.size());
+    for (const Hardpoint& hp : rig.hardpoints) {
+        bool equipped = hp.alive && !hp.slots.empty() && hp.slots[0].equipped.has_value();
+        out.push_back(equipped ? static_cast<uint8_t>(hp.slots[0].equipped->type) + 1 : 0);
+    }
+    return out;
+}
+
 // Faction-tinted oval + per-hardpoint markers, shared by local NPC capitals
 // (DrawNpcShips) and remote capitals (DrawRemotePlayers) so both draw paths
 // stay in lockstep with GetCapitalHardpointWorldPos.
 static void DrawCapitalBody(Vector2 pos, float rotation, float radius, NpcFaction faction,
-                             const std::vector<HardpointState>& hardpoints) {
+                             const std::vector<Hardpoint>& hardpoints) {
     Color bodyTint = faction == NpcFaction::Hostile  ? Color{ 200,  60,  60, 255 }
                     : faction == NpcFaction::Friendly ? Color{  60, 200,  90, 255 }
                                                         : Color{  90, 150, 220, 255 };
@@ -3119,7 +3178,7 @@ static void DrawCapitalBody(Vector2 pos, float rotation, float radius, NpcFactio
         Color{ (unsigned char)(bodyTint.r / 4), (unsigned char)(bodyTint.g / 4), (unsigned char)(bodyTint.b / 4), 235 });
     DrawLineStrip(&pts[1], kOvalSegments + 1, bodyTint);
 
-    for (const HardpointState& hp : hardpoints) {
+    for (const Hardpoint& hp : hardpoints) {
         Vector2 hpPos = GetCapitalHardpointWorldPos(pos, rotation, hp.localOffset);
         float   hpDrawRad = hp.isCore ? 16.0f : 12.0f;
         if (!hp.alive) {
@@ -3135,11 +3194,11 @@ static void DrawCapitalBody(Vector2 pos, float rotation, float radius, NpcFactio
             : hpHullPct > 0.25f ? Color{ 212,168,28,255 } : Color{ 208,42,32,255 };
         DrawCircleV(hpPos, hpDrawRad, Color{ 15, 25, 40, 240 });
         DrawCircleLinesV(hpPos, hpDrawRad, ringCol);
-        bool hasWeapon = !hp.weapons.empty() && hp.weapons[0].has_value();
-        Color iconCol = hp.isCore ? Color{ 200, 160, 30, 255 }
-            : hasWeapon ? Color{ 220, 90, 60, 255 } : Color{ 100, 180, 255, 200 };
-        DrawCircleV(hpPos, hpDrawRad * 0.4f, iconCol);
+        if (hp.isCore) DrawCircleV(hpPos, hpDrawRad * 0.4f, Color{ 200, 160, 30, 255 });
     }
+    // P2: composited module render replaces the old per-hardpoint content-type
+    // dot — the hull-integrity ring/backdrop above stays as its own overlay pass.
+    ecs::RenderSystem::DrawHardpointRig(pos, rotation, 1.0f, hardpoints, bodyTint, WHITE);
 }
 
 void SpaceFlight::DrawRemotePlayers() const {
@@ -3166,6 +3225,13 @@ void SpaceFlight::DrawRemotePlayers() const {
         } else {
             DrawCircleV(pos, 18.0f, re.sprite.tint);
         }
+        // P8-T1: remote player equipped-module icons (placeholder squares —
+        // see RenderSystem::DrawHardpointRig's P2-T5 note, no module art
+        // exists yet). NPCs get no equivalent call — their loadout renders
+        // correctly with zero sync, see _remoteFighterMounts' declaration.
+        auto fmIt = _remoteFighterMounts.find(id);
+        if (fmIt != _remoteFighterMounts.end())
+            ecs::RenderSystem::DrawHardpointRig(pos, rot, re.sprite.scale, fmIt->second, WHITE, WHITE);
         // Name tag above ship (NPC IDs start at 1000; player IDs are < 1000)
         const char* tag = (re.id >= 1000) ? "NPC" : "PLAYER";
         Color tagCol    = (re.id >= 1000) ? Color{ 200, 120, 80, 200 } : Color{ 100, 200, 255, 200 };
@@ -3244,6 +3310,9 @@ void SpaceFlight::DrawNpcShips() const {
             Color     lit = _lighting.BeginLit(e.transform.position, { 0.0f, 0.0f }, lightRange);
             DrawTexturePro(*texPtr, src, dst, origin, e.transform.rotation, lit);
             _lighting.EndLit();
+            // P2: composited module render (placeholder icons — see RenderSystem.h).
+            ecs::RenderSystem::DrawHardpointRig(e.transform.position, e.transform.rotation, ps,
+                                                 m.loadout.hardpoints, WHITE, WHITE);
         }
         else {
             float sz = m.radius;
@@ -3593,14 +3662,14 @@ void SpaceFlight::UpdateCollisions() {
                         loadoutDirty = true;
                     }
                     };
-                for (auto& w : _loadout.weapons) rollDestroy(w);
-                for (auto& s : _loadout.shields) rollDestroy(s);
-                for (auto& x : _loadout.aux)     rollDestroy(x);
-                rollDestroy(_loadout.engine);
-                rollDestroy(_loadout.hyperdrive);
+                for (auto* w : _loadout.WeaponSlots()) rollDestroy(w->equipped);
+                for (auto* s : _loadout.ShieldSlots()) rollDestroy(s->equipped);
+                for (auto* x : _loadout.AuxSlots())    rollDestroy(x->equipped);
+                if (auto* engineSlot = _loadout.Engine())     rollDestroy(engineSlot->equipped);
+                if (auto* hyperSlot  = _loadout.Hyperdrive()) rollDestroy(hyperSlot->equipped);
                 if (_playerEntity.health.currentHull <= 0.0f) {
-                    if (_loadout.armor) {
-                        _loadout.armor = std::nullopt;
+                    if (auto* armorSlot = _loadout.Armor(); armorSlot && armorSlot->equipped) {
+                        armorSlot->equipped = std::nullopt;
                         loadoutDirty = true;
                     }
                 }
@@ -4238,29 +4307,35 @@ void SpaceFlight::DrawHUD() const {
     }
 
     DrawTextEx(_hudFontUi, "SLOTS", { (float)weapX, (float)wy }, 10.0f, 1.0f, HudLabel); wy += 12;
-    for (int i = 0; i < _playerMeta.weaponSlots; ++i) {
-        bool isSelected = (i == _selectedWeapon);
-        Rectangle slot = { (float)(weapX + i * 38), (float)wy, 32.0f, 26.0f };
-        DrawHudChamferRect(slot, 5.0f,
-            isSelected ? Color{ 20,38,20,230 } : Color{ 14,22,14,200 },
-            isSelected ? HudGood : HudDiv,
-            isSelected ? 2.0f : 1.0f);
-        char kh[2] = { (char)('1' + i), 0 };
-        if (i == 9) kh[0] = '0';
-        DrawText(kh, (int)slot.x + 3, (int)slot.y + 3, 7, Color{ 60,100,60,175 });
-        if (i < (int)_loadout.weapons.size() && _loadout.weapons[i]) {
-            const ModuleDef& wm = *_loadout.weapons[i];
-            const char* abbr = (wm.weapon.fireMode == WeaponFireMode::LockOn) ? "MIS"
-                : (wm.weapon.fireMode == WeaponFireMode::Charge) ? "CHG"
-                : (wm.weapon.damageType == DamageType::Energy) ? "ENR"
-                : (wm.weapon.effect == WeaponEffect::EMP) ? "EMP"
-                : (wm.weapon.effect == WeaponEffect::Ion) ? "ION"
-                : "KIN";
-            DrawText(abbr, (int)(slot.x + 5), (int)(slot.y + 13), 9,
-                Color{ 100,210,100,220 });
-        }
-        else {
-            DrawText("--", (int)(slot.x + 9), (int)(slot.y + 7), 10, Color{ 50,80,50,175 });
+    {
+        auto weaponSlots = _loadout.WeaponSlots();
+        for (int i = 0; i < _playerMeta.weaponSlots; ++i) {
+            bool hasWeapon = (i < (int)weaponSlots.size() && weaponSlots[i]->equipped);
+            // An armed slot (equipped + toggled on via its number key) fires
+            // with the group; a disabled or empty slot is dimmed.
+            bool isOn = hasWeapon && IsWeaponEnabled(i);
+            Rectangle slot = { (float)(weapX + i * 38), (float)wy, 32.0f, 26.0f };
+            DrawHudChamferRect(slot, 5.0f,
+                isOn ? Color{ 20,38,20,230 } : Color{ 14,22,14,200 },
+                isOn ? HudGood : HudDiv,
+                isOn ? 2.0f : 1.0f);
+            char kh[2] = { (char)('1' + i), 0 };
+            if (i == 9) kh[0] = '0';
+            DrawText(kh, (int)slot.x + 3, (int)slot.y + 3, 7, Color{ 60,100,60,175 });
+            if (hasWeapon) {
+                const ModuleDef& wm = *weaponSlots[i]->equipped;
+                const char* abbr = (wm.weapon.fireMode == WeaponFireMode::LockOn) ? "MIS"
+                    : (wm.weapon.fireMode == WeaponFireMode::Charge) ? "CHG"
+                    : (wm.weapon.damageType == DamageType::Energy) ? "ENR"
+                    : (wm.weapon.effect == WeaponEffect::EMP) ? "EMP"
+                    : (wm.weapon.effect == WeaponEffect::Ion) ? "ION"
+                    : "KIN";
+                DrawText(abbr, (int)(slot.x + 5), (int)(slot.y + 13), 9,
+                    isOn ? Color{ 100,210,100,220 } : Color{ 70,90,70,180 });
+            }
+            else {
+                DrawText("--", (int)(slot.x + 9), (int)(slot.y + 7), 10, Color{ 50,80,50,175 });
+            }
         }
     }
 
@@ -4555,12 +4630,13 @@ void SpaceFlight::ApplyLoadout() {
     _playerMeta.weaponEffect         = WeaponEffect::None;
     _playerMeta.weaponEffectDuration = 0.0f;
 
-    if (_loadout.armor)
-        _playerEntity.health.maxStats.hull += _loadout.armor->armor.hullBonus;
+    if (auto* armorSlot = _loadout.Armor(); armorSlot && armorSlot->equipped)
+        _playerEntity.health.maxStats.hull += armorSlot->equipped->armor.hullBonus;
     _playerEntity.health.currentHull = std::min(_playerEntity.health.currentHull,
                                                  _playerEntity.health.maxStats.hull);
 
-    for (const auto& sh : _loadout.shields) {
+    for (const auto* shSlot : _loadout.ShieldSlots()) {
+        const auto& sh = shSlot->equipped;
         if (!sh) continue;
         if (sh->shield.shieldType == ShieldType::Kinetic) {
             _playerEntity.health.maxStats.shield += sh->shield.capacity;
@@ -4574,16 +4650,31 @@ void SpaceFlight::ApplyLoadout() {
     _playerEntity.health.currentShield = std::min(prevKinetic, _playerEntity.health.maxStats.shield);
     _playerMeta.energyShield           = std::min(prevEnergy,  _playerMeta.maxEnergyShield);
 
-    if (_loadout.engine && !_loadout.engine->engine.isHyperdrive) {
-        _playerMeta.thrust    += _loadout.engine->engine.thrustBonus;
-        _playerMeta.turnSpeed += _loadout.engine->engine.turnSpeedBonus;
+    if (auto* engineSlot = _loadout.Engine(); engineSlot && engineSlot->equipped && !engineSlot->equipped->engine.isHyperdrive) {
+        _playerMeta.thrust    += engineSlot->equipped->engine.thrustBonus;
+        _playerMeta.turnSpeed += engineSlot->equipped->engine.turnSpeedBonus;
         _playerMeta.canMove    = true;
     }
 
-    if (_selectedWeapon >= _playerMeta.weaponSlots) _selectedWeapon = 0;
+    auto weaponSlots = _loadout.WeaponSlots();
+    // Keep the per-slot firing arrays sized to the current weapon slots,
+    // preserving any existing enable flags; slots default to enabled.
+    _weaponEnabled.resize(weaponSlots.size(), true);
+    _weaponCooldown.resize(weaponSlots.size(), 0.0f);
+    _weaponCharge.resize(weaponSlots.size(), 0.0f);
 
-    if (_selectedWeapon < (int)_loadout.weapons.size() && _loadout.weapons[_selectedWeapon]) {
-        const WeaponStats& ws = _loadout.weapons[_selectedWeapon]->weapon;
+    // Pick a representative weapon for the HUD's WEAPON readiness/charge panel:
+    // the first enabled+equipped slot, or any equipped slot if none are enabled.
+    // Actual firing iterates every enabled+equipped slot independently (Update).
+    _primaryWeapon = -1;
+    for (int i = 0; i < (int)weaponSlots.size(); ++i)
+        if (weaponSlots[i]->equipped && IsWeaponEnabled(i)) { _primaryWeapon = i; break; }
+    if (_primaryWeapon < 0)
+        for (int i = 0; i < (int)weaponSlots.size(); ++i)
+            if (weaponSlots[i]->equipped) { _primaryWeapon = i; break; }
+
+    if (_primaryWeapon >= 0 && weaponSlots[_primaryWeapon]->equipped) {
+        const WeaponStats& ws = weaponSlots[_primaryWeapon]->equipped->weapon;
         _playerMeta.fireRate       = ws.fireRate;
         _playerMeta.projSpeed      = ws.projSpeed;
         _playerMeta.projRange      = ws.projRange;
@@ -4600,8 +4691,10 @@ void SpaceFlight::ApplyLoadout() {
     }
 
     _hasSensors = false;
-    for (const auto& ax : _loadout.aux)
+    for (const auto* axSlot : _loadout.AuxSlots()) {
+        const auto& ax = axSlot->equipped;
         if (ax && ax->auxiliary.hasSensors) { _hasSensors = true; break; }
+    }
 
     // Galaxy-map fog reveal radius — deliberately independent of _hasSensors/
     // combat sensorRange above (see AuxStats::mapSensorRange's comment). No
@@ -4609,15 +4702,33 @@ void SpaceFlight::ApplyLoadout() {
     // home system, by design — see GalaxyMap's undiscovered-system gating.
     _mapSensorRange = 0.0f;
     _mapSensorTier  = 0;
-    for (const auto& ax : _loadout.aux)
+    for (const auto* axSlot : _loadout.AuxSlots()) {
+        const auto& ax = axSlot->equipped;
         if (ax && ax->auxiliary.mapSensorRange > _mapSensorRange) {
             _mapSensorRange = ax->auxiliary.mapSensorRange;
             _mapSensorTier  = (int)ax->grade + 1;
         }
+    }
 
     _hyperdriveRange = 0.0f;
-    if (_loadout.hyperdrive && _loadout.hyperdrive->engine.isHyperdrive)
-        _hyperdriveRange = _loadout.hyperdrive->engine.hyperdriveRange;
+    if (auto* hyperSlot = _loadout.Hyperdrive(); hyperSlot && hyperSlot->equipped && hyperSlot->equipped->engine.isHyperdrive)
+        _hyperdriveRange = hyperSlot->equipped->engine.hyperdriveRange;
+
+    // P3: recompute power budget on every loadout edit, then apply the
+    // overload penalty (unchanged from the pre-P3 constants — just finally
+    // wired to something).
+    _loadout.RecalculateLoad();
+    if (_loadout.IsOverloaded()) {
+        _playerMeta.thrust   *= HardpointRig::kOverloadThrustFactor;
+        _playerMeta.fireRate *= HardpointRig::kOverloadCooldownMult;
+    }
+
+    // P8-T1: tell the host what's equipped now — only a client's own process
+    // knows this; the host already knows its own player + every NPC's
+    // loadout directly and needs no report. No-op host/offline (see
+    // ClientSendFighterLoadoutReport).
+    if (net::Game().IsClient())
+        net::Game().ClientSendFighterLoadoutReport(EncodeLoadoutMounts(_loadout));
 }
 
 void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
@@ -4634,11 +4745,12 @@ void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
     meta.kineticRechargeRate = 0.0f;
     meta.energyRechargeRate  = 0.0f;
 
-    if (meta.loadout.armor)
-        entity.health.maxStats.hull += meta.loadout.armor->armor.hullBonus;
+    if (auto* armorSlot = meta.loadout.Armor(); armorSlot && armorSlot->equipped)
+        entity.health.maxStats.hull += armorSlot->equipped->armor.hullBonus;
     entity.health.currentHull = std::min(entity.health.currentHull, entity.health.maxStats.hull);
 
-    for (const auto& sh : meta.loadout.shields) {
+    for (const auto* shSlot : meta.loadout.ShieldSlots()) {
+        const auto& sh = shSlot->equipped;
         if (!sh) continue;
         if (sh->shield.shieldType == ShieldType::Kinetic) {
             entity.health.maxStats.shield += sh->shield.capacity;
@@ -4652,8 +4764,9 @@ void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
     entity.health.currentShield = std::min(entity.health.currentShield, entity.health.maxStats.shield);
     meta.energyShield           = std::min(meta.energyShield, meta.maxEnergyShield);
 
-    if (!meta.loadout.weapons.empty() && meta.loadout.weapons[0]) {
-        const WeaponStats& ws = meta.loadout.weapons[0]->weapon;
+    auto npcWeaponSlots = meta.loadout.WeaponSlots();
+    if (!npcWeaponSlots.empty() && npcWeaponSlots[0]->equipped) {
+        const WeaponStats& ws = npcWeaponSlots[0]->equipped->weapon;
         meta.npcHasWeapon   = true;
         meta.npcDamage      = ws.damage;
         meta.npcFireRate    = ws.fireRate;
@@ -4666,8 +4779,8 @@ void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
         meta.npcProjRange   = ws.projRange;
     }
 
-    if (meta.loadout.engine && !meta.loadout.engine->engine.isHyperdrive)
-        meta.npcThrust = meta.loadout.engine->engine.thrustBonus;
+    if (auto* engineSlot = meta.loadout.Engine(); engineSlot && engineSlot->equipped && !engineSlot->equipped->engine.isHyperdrive)
+        meta.npcThrust = engineSlot->equipped->engine.thrustBonus;
 
     // Capital ships get a flat, slow, ship-defined speed/turn rate instead of
     // the fighter engine-module roll above — mass/momentum (thrust vs. total
@@ -4696,6 +4809,17 @@ void SpaceFlight::ApplyNpcLoadout(ecs::Entity& entity, NpcMeta& meta) {
         meta.aggroRange  *= 1.15f;
         meta.attackRange *= 1.1f; // presses the attack rather than holding at range
     }
+
+    // P3: recompute power budget on every loadout edit. meta.loadout is only
+    // ever populated for fighters (capitals use meta.hardpoints instead, kept
+    // in sync per-tick by UpdateNpcShips) — for a capital this rig is always
+    // empty, so IsOverloaded() is trivially false and the capital thrust/turn
+    // override just above already wins regardless.
+    meta.loadout.RecalculateLoad();
+    if (meta.loadout.IsOverloaded()) {
+        meta.npcThrust   *= HardpointRig::kOverloadThrustFactor;
+        meta.npcFireRate *= HardpointRig::kOverloadCooldownMult;
+    }
 }
 
 // ── World state save/load helpers ─────────────────────────────────────────────
@@ -4715,15 +4839,15 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
     gs.rotation   = _playerEntity.transform.rotation;
 
     // Player loadout
-    for (const auto& w : _loadout.weapons)
-        gs.weaponIds.push_back(w ? w->id : std::string{});
-    gs.armorId       = _loadout.armor      ? _loadout.armor->id      : std::string{};
-    gs.engineId      = _loadout.engine     ? _loadout.engine->id     : std::string{};
-    gs.hyperdriveId  = _loadout.hyperdrive ? _loadout.hyperdrive->id : std::string{};
-    for (const auto& s : _loadout.shields)
-        gs.shieldIds.push_back(s ? s->id : std::string{});
-    for (const auto& a : _loadout.aux)
-        gs.auxIds.push_back(a ? a->id : std::string{});
+    for (const auto* w : _loadout.WeaponSlots())
+        gs.weaponIds.push_back(w->equipped ? w->equipped->id : std::string{});
+    { auto* a = _loadout.Armor();      gs.armorId      = (a && a->equipped) ? a->equipped->id : std::string{}; }
+    { auto* e = _loadout.Engine();     gs.engineId     = (e && e->equipped) ? e->equipped->id : std::string{}; }
+    { auto* h = _loadout.Hyperdrive(); gs.hyperdriveId = (h && h->equipped) ? h->equipped->id : std::string{}; }
+    for (const auto* s : _loadout.ShieldSlots())
+        gs.shieldIds.push_back(s->equipped ? s->equipped->id : std::string{});
+    for (const auto* a : _loadout.AuxSlots())
+        gs.auxIds.push_back(a->equipped ? a->equipped->id : std::string{});
 
     // Storage
     for (const auto& slot : _storageMenu.slots) {
@@ -4779,10 +4903,10 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
         ns.wingman        = nm.wingman;     ns.wingmanSlot  = nm.wingmanSlot;
         ns.escortTargetId = nm.escortTargetId;
         ns.shipTypeId     = nm.shipTypeId;
-        ns.weaponId  = (nm.loadout.weapons.size() > 0 && nm.loadout.weapons[0]) ? nm.loadout.weapons[0]->id : std::string{};
-        ns.armorId   = nm.loadout.armor  ? nm.loadout.armor->id  : std::string{};
-        ns.shieldId  = (nm.loadout.shields.size() > 0 && nm.loadout.shields[0]) ? nm.loadout.shields[0]->id : std::string{};
-        ns.engineId  = nm.loadout.engine ? nm.loadout.engine->id : std::string{};
+        { auto v = nm.loadout.WeaponSlots(); ns.weaponId = (!v.empty() && v[0]->equipped) ? v[0]->equipped->id : std::string{}; }
+        { auto* a = nm.loadout.Armor();      ns.armorId  = (a && a->equipped) ? a->equipped->id : std::string{}; }
+        { auto v = nm.loadout.ShieldSlots(); ns.shieldId = (!v.empty() && v[0]->equipped) ? v[0]->equipped->id : std::string{}; }
+        { auto* e = nm.loadout.Engine();     ns.engineId = (e && e->equipped) ? e->equipped->id : std::string{}; }
         gs.npcs.push_back(std::move(ns));
     }
 
@@ -4806,6 +4930,42 @@ SaveManager::GameState SpaceFlight::BuildWorldState() const {
         ss.posX = s.position.x; ss.posY = s.position.y;
         ss.radius = s.radius;   ss.id   = s.id;
         gs.stations.push_back(ss);
+    }
+
+    // Player-built stations
+    for (const auto& ps : FleetManager::Get().PlayerStations) {
+        SM::PlayerStationSave pss;
+        pss.id           = ps.id;
+        pss.stationDefId = ps.stationDefId;
+        pss.displayName  = ps.displayName;
+        pss.posX         = ps.position.x; pss.posY = ps.position.y;
+        pss.alive        = ps.alive;
+        pss.miningTimer  = ps.miningTimer;
+        for (const auto& hp : ps.hardpoints) {
+            SM::HardpointSave hps;
+            hps.id      = hp.id;
+            hps.hull    = hp.hull;
+            hps.maxHull = hp.maxHull;
+            hps.alive   = hp.alive;
+            hps.shedPriority = hp.shedPriority;
+            for (const auto& slot : hp.slots) {
+                SM::HardpointSlotSave sls;
+                sls.moduleId = slot.equipped ? slot.equipped->id : std::string{};
+                hps.slots.push_back(std::move(sls));
+            }
+            pss.hardpoints.push_back(std::move(hps));
+        }
+        for (const auto& item : ps.storage) {
+            SM::StorageSave stg;
+            stg.type        = static_cast<int>(item.type);
+            stg.displayName = item.displayName;
+            stg.materialId  = item.materialId;
+            stg.moduleId    = item.module.id;
+            stg.count       = item.count;
+            pss.storage.push_back(std::move(stg));
+        }
+        pss.economyStock = ps.economy.stock;
+        gs.playerStations.push_back(std::move(pss));
     }
 
     // Loot drops
@@ -4908,10 +5068,10 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         }
         nm.preferredRange             = nm.attackRange * 0.75f;
         nm.loadout.Resize(NpcMeta::WSlots, NpcMeta::ShSlots, 0);
-        nm.loadout.weapons[0] = ModuleById(ns.weaponId);
-        nm.loadout.armor      = ModuleById(ns.armorId);
-        nm.loadout.shields[0] = ModuleById(ns.shieldId);
-        nm.loadout.engine     = ModuleById(ns.engineId);
+        { auto v = nm.loadout.WeaponSlots(); if (!v.empty()) v[0]->equipped = ModuleById(ns.weaponId); }
+        if (auto* a = nm.loadout.Armor()) a->equipped = ModuleById(ns.armorId);
+        { auto v = nm.loadout.ShieldSlots(); if (!v.empty()) v[0]->equipped = ModuleById(ns.shieldId); }
+        if (auto* e = nm.loadout.Engine()) e->equipped = ModuleById(ns.engineId);
         float savedHull = ns.hull, savedMaxHull = ns.maxHull;
         ApplyNpcLoadout(ne, nm);
         ne.health.currentHull     = savedHull;
@@ -4963,6 +5123,53 @@ void SpaceFlight::ApplyWorldState(const SaveManager::GameState& gs) {
         SeedStationEconomy(st.economy);
         _w->stations.push_back(std::move(st));
     }
+
+    // Player-built stations
+    FleetManager::Get().PlayerStations.clear();
+    unsigned int maxPlayerStationId = 0;
+    for (const auto& pss : gs.playerStations) {
+        if (pss.stationDefId.empty()) continue;
+        PlayerStation& ps = FleetManager::Get().SpawnStation(pss.stationDefId, { pss.posX, pss.posY });
+        ps.id          = pss.id;
+        ps.displayName = pss.displayName;
+        ps.alive       = pss.alive;
+        ps.miningTimer = pss.miningTimer;
+        maxPlayerStationId = std::max(maxPlayerStationId, pss.id);
+
+        // Overlay saved per-hardpoint hull/alive/equipped-module state onto
+        // the freshly rebuilt hardpoint layout (index-aligned; same
+        // stationDefId ⇒ same slot layout as when this was saved).
+        for (size_t hi = 0; hi < ps.hardpoints.size() && hi < pss.hardpoints.size(); ++hi) {
+            Hardpoint& hp = ps.hardpoints[hi];
+            const SaveManager::HardpointSave& hps = pss.hardpoints[hi];
+            hp.hull    = hps.hull;
+            hp.maxHull = hps.maxHull;
+            hp.alive   = hps.alive;
+            hp.shedPriority = hps.shedPriority;
+            for (size_t si = 0; si < hp.slots.size() && si < hps.slots.size(); ++si) {
+                const std::string& modId = hps.slots[si].moduleId;
+                hp.slots[si].equipped = modId.empty() ? std::nullopt : ModuleById(modId);
+            }
+        }
+
+        // Overlay cargo hold (mining stations) — index-aligned onto the
+        // fixed-size hold SpawnStation already allocated.
+        for (size_t si = 0; si < ps.storage.size() && si < pss.storage.size(); ++si) {
+            const SaveManager::StorageSave& s = pss.storage[si];
+            StorageItem&           item = ps.storage[si];
+            item.type        = static_cast<StorageItemType>(s.type);
+            item.displayName = s.displayName;
+            item.materialId  = s.materialId;
+            item.count       = s.count;
+            if (item.type == StorageItemType::Module) {
+                if (auto mod = ModuleById(s.moduleId)) item.module = *mod;
+            }
+        }
+
+        if (!pss.economyStock.empty()) ps.economy.stock = pss.economyStock;
+    }
+    if (maxPlayerStationId >= FleetManager::Get().NextStationId)
+        FleetManager::Get().NextStationId = maxPlayerStationId + 1;
 
     // Loot drops
     _w->lootDrops.clear();
@@ -5078,7 +5285,11 @@ void SpaceFlight::OnEnter() {
     _targetId = 0;
     _localMapOpen = false;
 
-    _selectedWeapon = 0;
+    // All weapon slots start enabled; ApplyLoadout sizes these to the ship.
+    _weaponEnabled.assign(_weaponEnabled.size(), true);
+    std::fill(_weaponCooldown.begin(), _weaponCooldown.end(), 0.0f);
+    std::fill(_weaponCharge.begin(), _weaponCharge.end(), 0.0f);
+    _primaryWeapon = -1;
     _enterPopupOpen      = false;
     _stationServicesMenu.isOpen = false;
     _dockedStationId       = 0;
@@ -5147,25 +5358,22 @@ void SpaceFlight::OnEnter() {
 
     // ── Loadout: restore from save, or fall back to default starter kit ───────
     if (didLoad && gs.hasWorldState && !gs.engineId.empty()) {
-        for (int i = 0; i < _playerMeta.weaponSlots && i < (int)gs.weaponIds.size(); ++i)
-            _loadout.weapons[i] = ModuleById(gs.weaponIds[i]);
-        _loadout.armor      = ModuleById(gs.armorId);
-        _loadout.engine     = ModuleById(gs.engineId);
-        _loadout.hyperdrive = ModuleById(gs.hyperdriveId);
-        for (int i = 0; i < _playerMeta.shieldSlots && i < (int)gs.shieldIds.size(); ++i)
-            _loadout.shields[i] = ModuleById(gs.shieldIds[i]);
-        for (int i = 0; i < _playerMeta.auxSlots && i < (int)gs.auxIds.size(); ++i)
-            _loadout.aux[i] = ModuleById(gs.auxIds[i]);
+        { auto v = _loadout.WeaponSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.weaponIds.size(); ++i) v[i]->equipped = ModuleById(gs.weaponIds[i]); }
+        if (auto* a = _loadout.Armor())      a->equipped = ModuleById(gs.armorId);
+        if (auto* e = _loadout.Engine())     e->equipped = ModuleById(gs.engineId);
+        if (auto* h = _loadout.Hyperdrive()) h->equipped = ModuleById(gs.hyperdriveId);
+        { auto v = _loadout.ShieldSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.shieldIds.size(); ++i) v[i]->equipped = ModuleById(gs.shieldIds[i]); }
+        { auto v = _loadout.AuxSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.auxIds.size(); ++i) v[i]->equipped = ModuleById(gs.auxIds[i]); }
         _discoveredIds        = gs.discoveredIds;
         _currentSystemId      = gs.currentSystemId;
         _discoveredSystemIds  = gs.discoveredSystemIds;
         if (!gs.visitedGalaxyIds.empty()) _visitedGalaxyIds = gs.visitedGalaxyIds;
     }
     else {
-        _loadout.engine = Engine_Thruster_I();
-        _loadout.armor  = Armor_HullPatch();
-		_loadout.weapons[0] = Weapon_PulseCannon_I();
-		_loadout.shields[0] = Shield_KineticBarrier_I();
+        if (auto* e = _loadout.Engine()) e->equipped = Engine_Thruster_I();
+        if (auto* a = _loadout.Armor())  a->equipped = Armor_HullPatch();
+        { auto v = _loadout.WeaponSlots(); if (!v.empty()) v[0]->equipped = Weapon_PulseCannon_I(); }
+        { auto v = _loadout.ShieldSlots(); if (!v.empty()) v[0]->equipped = Shield_KineticBarrier_I(); }
         // No hyperdrive or aux module equipped by default — the player must
         // craft or buy a hyperdrive/sensors at a station before warping.
     }
@@ -5299,6 +5507,7 @@ void SpaceFlight::OnEnter() {
         _worldSynced = false;
         _remoteEntities.clear();
         _remoteCapitalHardpoints.clear();
+        _remoteFighterMounts.clear();
         _remotePlayerStations.clear();
         uint32_t localId = net::Game().LocalNetworkId();
         _playerEntity.id                 = localId;  // non-zero so it can be identified
@@ -5592,6 +5801,7 @@ void SpaceFlight::ApplyWorldSyncClient(const net::WorldSyncData& ws) {
     // Cross-system leftovers: remote ships/projectiles and target locks.
     _remoteEntities.clear();
     _remoteCapitalHardpoints.clear();
+    _remoteFighterMounts.clear();
     _remotePlayerStations.clear();
     _remoteProjectiles.clear();
     _target       = TargetInfo{};
@@ -5654,6 +5864,7 @@ void SpaceFlight::UpdateWarpSequence(float dt) {
                 net::Game().ClientSendWarpNotify(_warpTargetSystemId);
                 _remoteEntities.clear();
                 _remoteCapitalHardpoints.clear();
+                _remoteFighterMounts.clear();
                 _remotePlayerStations.clear();
                 _remoteProjectiles.clear();
                 _worldSynced    = false;   // also stops Input sends while in limbo
@@ -5907,7 +6118,15 @@ void SpaceFlight::Update(float dt) {
             unsigned int sysId = _currentSystemId;
             auto sysIt = _peerSystem.find(req.requesterId);
             if (sysIt != _peerSystem.end()) sysId = sysIt->second;
-            PlaceFriendlyShip(GetOrCreateWorld(sysId), req.shipDefId, { req.posX, req.posY });
+            // The requesting CLIENT's own faction, not the host's kPlayerFaction —
+            // see PlaceFriendlyShip's header comment. Falls back to the host's
+            // own faction if the requester's Hello hasn't been processed yet
+            // (shouldn't happen in practice — a peer must be connected and
+            // past Hello to have sent a PlaceShipRequest at all).
+            Faction placerFaction = kPlayerFaction;
+            auto factionIt = _peerFaction.find(req.requesterId);
+            if (factionIt != _peerFaction.end()) placerFaction = factionIt->second;
+            PlaceFriendlyShip(GetOrCreateWorld(sysId), req.shipDefId, { req.posX, req.posY }, placerFaction);
         }
         net::Game().pendingPlaceShipRequests.clear();
 
@@ -5948,7 +6167,7 @@ void SpaceFlight::Update(float dt) {
                 ss.alive        = 1;
                 stationSnaps.push_back(ss);
                 for (size_t h = 0; h < ps.hardpoints.size(); ++h) {
-                    const HardpointState& hp = ps.hardpoints[h];
+                    const Hardpoint& hp = ps.hardpoints[h];
                     net::PlayerStationHardpointSnapshot shs;
                     shs.stationId = ps.id;
                     shs.hpIndex   = static_cast<uint8_t>(h);
@@ -5976,6 +6195,18 @@ void SpaceFlight::Update(float dt) {
                     npcCopy.network.shipNameHash = Fnv1a32(world.npcMeta[i].shipTypeId);
                     broadcastList.push_back(npcCopy);
                 }
+                // P8-T1: per-mount fighter loadout rows — only PLAYER ships
+                // need these. NPC fighter loadouts are deterministic from the
+                // shared world seed (both peers roll identically at spawn)
+                // and never change afterward (no per-hardpoint combat damage
+                // exists for fighters), so clients already render them
+                // correctly with zero sync, same reasoning Epic C already
+                // established for random NPC capitals' initial fit.
+                std::vector<net::FighterHardpointSnapshot> fighterHpSnaps;
+                auto addFighterRows = [&](uint32_t netId, const std::vector<uint8_t>& mounts) {
+                    for (size_t i = 0; i < mounts.size() && i < 255; ++i)
+                        fighterHpSnaps.push_back({ netId, static_cast<uint8_t>(i), mounts[i] });
+                };
                 // Docked (in a station menu) players are omitted from the
                 // broadcast entirely — clients evict anything absent from a
                 // snapshot, so this is how a docked ship disappears for peers.
@@ -5983,13 +6214,24 @@ void SpaceFlight::Update(float dt) {
                     ecs::Entity pCopy = _playerEntity;
                     pCopy.network.isLocalPlayer = false;
                     broadcastList.push_back(pCopy);
+                    addFighterRows(pCopy.network.networkId, EncodeLoadoutMounts(_loadout));
                 }
                 // Remote entities in this system, so its occupants see each other.
                 for (const auto& [netId, re] : _remoteEntities) {
                     if (re.id == 0 || _remoteDocked[netId]) continue;
                     auto it = _peerSystem.find(netId);
-                    if (it != _peerSystem.end() && it->second == sysId)
+                    if (it != _peerSystem.end() && it->second == sysId) {
                         broadcastList.push_back(re);
+                        // netId < 1000 is a player (NPCs start at 1000, see
+                        // the id-space convention used elsewhere in this
+                        // file, e.g. the client's own snap.networkId < 1000
+                        // branch) — only players relay a loadout report.
+                        if (netId < 1000) {
+                            auto lit = net::Game().peerFighterLoadouts.find(netId);
+                            if (lit != net::Game().peerFighterLoadouts.end())
+                                addFighterRows(netId, lit->second);
+                        }
+                    }
                 }
 
                 std::vector<net::AsteroidSnapshot> asteroidSnaps;
@@ -6025,7 +6267,7 @@ void SpaceFlight::Update(float dt) {
                     const NpcMeta& m = world.npcMeta[i];
                     if (!m.alive || m.hardpoints.empty()) continue;
                     for (size_t h = 0; h < m.hardpoints.size(); ++h) {
-                        const HardpointState& hp = m.hardpoints[h];
+                        const Hardpoint& hp = m.hardpoints[h];
                         net::CapitalHardpointSnapshot cs;
                         cs.capitalId = m.id;
                         cs.hpIndex   = static_cast<uint8_t>(h);
@@ -6037,7 +6279,7 @@ void SpaceFlight::Update(float dt) {
 
                 net::Game().HostSendSnapshot(occupants, sysId,
                                              broadcastList, asteroidSnaps, projSnaps, capSnaps,
-                                             stationSnaps, stationHpSnaps);
+                                             stationSnaps, stationHpSnaps, fighterHpSnaps);
             }
         }
     }
@@ -6120,6 +6362,14 @@ void SpaceFlight::Update(float dt) {
                         re.sprite.texture = _playerShipTex;
                         re.sprite.tint    = { 100, 200, 255, 255 };
                         re.sprite.scale   = def ? def->pixelScale : 1.0f;
+                        // P8-T1: mount layout mirrors the LOCAL player's own
+                        // current HardpointRig shape, matching the hull-skin
+                        // convention right above (remote players already
+                        // render with our own ship texture, not their real
+                        // one) — see _remoteFighterMounts' declaration.
+                        HardpointRig rig;
+                        rig.Resize(_playerMeta.weaponSlots, _playerMeta.shieldSlots, _playerMeta.auxSlots);
+                        _remoteFighterMounts[snap.networkId] = std::move(rig.hardpoints);
                     } else if (snap.shipNameHash == kGargosShipHash) {
                         re.sprite.texture = const_cast<Texture2D*>(&_gargosTex);
                         re.sprite.tint    = WHITE;
@@ -6194,6 +6444,9 @@ void SpaceFlight::Update(float dt) {
             for (auto it = _remoteCapitalHardpoints.begin(); it != _remoteCapitalHardpoints.end(); ) {
                 it = _remoteEntities.count(it->first) ? std::next(it) : _remoteCapitalHardpoints.erase(it);
             }
+            for (auto it = _remoteFighterMounts.begin(); it != _remoteFighterMounts.end(); ) {
+                it = _remoteEntities.count(it->first) ? std::next(it) : _remoteFighterMounts.erase(it);
+            }
 
             // ── Capital hardpoint sync: patch hull/alive on remote capitals ──────
             for (const auto& cs : net::Game().latestCapitalSnapshots) {
@@ -6203,6 +6456,24 @@ void SpaceFlight::Update(float dt) {
                 if (cs.hpIndex < hardpoints.size()) {
                     hardpoints[cs.hpIndex].hull  = cs.hull;
                     hardpoints[cs.hpIndex].alive = (cs.alive != 0);
+                }
+            }
+
+            // ── P8-T1: fighter loadout sync — patch equipped-module type on
+            // remote players' mount rig. moduleType 0 = empty mount.
+            for (const auto& fs : net::Game().latestFighterHardpointSnapshots) {
+                auto it = _remoteFighterMounts.find(fs.networkId);
+                if (it == _remoteFighterMounts.end()) continue;
+                auto& hardpoints = it->second;
+                if (fs.hpIndex >= hardpoints.size()) continue;
+                Hardpoint& hp = hardpoints[fs.hpIndex];
+                if (hp.slots.empty()) continue;
+                if (fs.moduleType == 0) {
+                    hp.slots[0].equipped = std::nullopt;
+                } else {
+                    ModuleDef md;
+                    md.type = static_cast<ModuleType>(fs.moduleType - 1);
+                    hp.slots[0].equipped = md;
                 }
             }
 
@@ -6224,7 +6495,7 @@ void SpaceFlight::Update(float dt) {
                 if (rs.hardpoints.empty()) {
                     if (const PlayerStationDef* def = PlayerStationRegistry::ById(ss.stationDefId)) {
                         for (const StationHardpointDef& hd : def->hardpoints) {
-                            HardpointState hp;
+                            Hardpoint hp;
                             hp.id          = hd.id;
                             hp.displayName = hd.displayName;
                             hp.isCore      = hd.isCore;
@@ -6315,14 +6586,13 @@ void SpaceFlight::Update(float dt) {
             if (CheckCollisionPointRec(GetMousePosition(), respawnBtn)) {
                 _playerDead = false;
                 _deathTimer = 0.0f;
-                for (auto& w : _loadout.weapons) w = std::nullopt;
-                for (auto& s : _loadout.shields) s = std::nullopt;
-                for (auto& a : _loadout.aux)     a = std::nullopt;
-                _loadout.armor      = Armor_HullPatch();
-                _loadout.engine     = Engine_Thruster_I();
-                _loadout.hyperdrive = std::nullopt;
-                if (_playerMeta.weaponSlots > 0)
-                    _loadout.weapons[0] = Weapon_PulseCannon_I();
+                for (auto* w : _loadout.WeaponSlots()) w->equipped = std::nullopt;
+                for (auto* s : _loadout.ShieldSlots()) s->equipped = std::nullopt;
+                for (auto* a : _loadout.AuxSlots())    a->equipped = std::nullopt;
+                if (auto* a = _loadout.Armor())      a->equipped = Armor_HullPatch();
+                if (auto* e = _loadout.Engine())     e->equipped = Engine_Thruster_I();
+                if (auto* h = _loadout.Hyperdrive()) h->equipped = std::nullopt;
+                { auto v = _loadout.WeaponSlots(); if (!v.empty()) v[0]->equipped = Weapon_PulseCannon_I(); }
                 ApplyLoadout();
                 // When the player dies and needs to respawn:
                 float spawnDist = _w->sun.gravRange + 800.0f;
@@ -6601,15 +6871,12 @@ void SpaceFlight::Update(float dt) {
                 if (gs.hasWorldState) _currentGalaxyId = gs.currentGalaxyId != 0 ? gs.currentGalaxyId : 1u;
                 StarSystemRegistry::Init(UniverseRegistry::Generate(_currentGalaxyId).seed);
                 if (gs.hasWorldState && !gs.engineId.empty()) {
-                    for (int i = 0; i < _playerMeta.weaponSlots && i < (int)gs.weaponIds.size(); ++i)
-                        _loadout.weapons[i] = ModuleById(gs.weaponIds[i]);
-                    _loadout.armor      = ModuleById(gs.armorId);
-                    _loadout.engine     = ModuleById(gs.engineId);
-                    _loadout.hyperdrive = ModuleById(gs.hyperdriveId);
-                    for (int i = 0; i < _playerMeta.shieldSlots && i < (int)gs.shieldIds.size(); ++i)
-                        _loadout.shields[i] = ModuleById(gs.shieldIds[i]);
-                    for (int i = 0; i < _playerMeta.auxSlots && i < (int)gs.auxIds.size(); ++i)
-                        _loadout.aux[i] = ModuleById(gs.auxIds[i]);
+                    { auto v = _loadout.WeaponSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.weaponIds.size(); ++i) v[i]->equipped = ModuleById(gs.weaponIds[i]); }
+                    if (auto* a = _loadout.Armor())      a->equipped = ModuleById(gs.armorId);
+                    if (auto* e = _loadout.Engine())     e->equipped = ModuleById(gs.engineId);
+                    if (auto* h = _loadout.Hyperdrive()) h->equipped = ModuleById(gs.hyperdriveId);
+                    { auto v = _loadout.ShieldSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.shieldIds.size(); ++i) v[i]->equipped = ModuleById(gs.shieldIds[i]); }
+                    { auto v = _loadout.AuxSlots(); for (int i = 0; i < (int)v.size() && i < (int)gs.auxIds.size(); ++i) v[i]->equipped = ModuleById(gs.auxIds[i]); }
                     _discoveredIds       = gs.discoveredIds;
                     _currentSystemId     = gs.currentSystemId;
                     _discoveredSystemIds = gs.discoveredSystemIds;
@@ -6826,7 +7093,7 @@ void SpaceFlight::Update(float dt) {
                 if (net::Game().IsClient()) {
                     net::Game().ClientSendPlaceShipRequest(_placingShipDefId, _shipPlacementPos.x, _shipPlacementPos.y);
                 } else {
-                    PlaceFriendlyShip(*_w, _placingShipDefId, _shipPlacementPos);
+                    PlaceFriendlyShip(*_w, _placingShipDefId, _shipPlacementPos, kPlayerFaction);
                 }
 
                 _shipPlacementConfirmOpen = false;
@@ -7058,7 +7325,7 @@ void SpaceFlight::Update(float dt) {
             if (CheckCollisionPointRec(m2, backBtn)) {
                 _commsMenuOpen = false;
             }
-            else if (_commsMenuPhase == 0 && CheckCollisionPointRec(m2, joinBtn)) {
+            else if (_commsMenuPhase == 0 && !_commsMenuIsCapital && CheckCollisionPointRec(m2, joinBtn)) {
                 if (_commsMenuIsDistress) {
                     // Epic 13: acknowledging the distress call doesn't change
                     // the survive-the-window payout in TickDistressCalls at
@@ -7080,6 +7347,13 @@ void SpaceFlight::Update(float dt) {
                     for (size_t ci = 0; ci < _w->npcMeta.size(); ++ci) {
                         NpcMeta& npc = _w->npcMeta[ci];
                         if (npc.id != _commsMenuNpcId || !npc.alive) continue;
+                        // Capital-class craft can't join the escort wing — the
+                        // wing AI would apply skewed fighter attributes to them.
+                        if (!npc.hardpoints.empty()) {
+                            _commsMenuNpcText = "Capital-class vessels don't fly escort. Request denied.";
+                            _commsMenuPhase = 1;
+                            break;
+                        }
                         bool isFriendly = (npc.faction == NpcFaction::Friendly);
                         bool isNeutral  = (npc.faction == NpcFaction::Neutral);
                         int acceptChance = isFriendly ? 75 : isNeutral ? 50 : 25;
@@ -7248,18 +7522,19 @@ void SpaceFlight::Update(float dt) {
             _playerMeta.energyShield + _playerMeta.energyRechargeRate * dt,
             _playerMeta.maxEnergyShield);
 
-    for (int k = 0; k < 9 && k < _playerMeta.weaponSlots; ++k) {
-        if (IsKeyPressed(KEY_ONE + k)) {
-            _selectedWeapon = k;
-            _lockTargetId = 0;
-            ApplyLoadout();
-        }
-    }
-    if (IsKeyPressed(KEY_ZERO) && _playerMeta.weaponSlots > 9) {
-        _selectedWeapon = 9;
+    // Number keys toggle each weapon slot on/off (1-9 → slots 1-9, 0 → slot 10).
+    // Every enabled+equipped weapon fires together, so the player can arm all,
+    // some, or none of their weapons at once.
+    auto toggleWeapon = [&](int slot) {
+        if (slot < 0 || slot >= _playerMeta.weaponSlots) return;
+        if (slot >= (int)_weaponEnabled.size()) _weaponEnabled.resize(slot + 1, true);
+        _weaponEnabled[slot] = !_weaponEnabled[slot];
         _lockTargetId = 0;
-        ApplyLoadout();
-    }
+        ApplyLoadout(); // refresh the HUD's representative (primary) weapon
+    };
+    for (int k = 0; k < 9 && k < _playerMeta.weaponSlots; ++k)
+        if (IsKeyPressed(KEY_ONE + k)) toggleWeapon(k);
+    if (IsKeyPressed(KEY_ZERO) && _playerMeta.weaponSlots > 9) toggleWeapon(9);
 
     // ── HUD button clicks ─────────────────────────────────────────────────────
     Vector2 mousePos = GetMousePosition();
@@ -7360,8 +7635,10 @@ void SpaceFlight::Update(float dt) {
                     _w->activeDistress.type == DistressType::ShipUnderAttack &&
                     _w->activeDistress.npcId == _npcTargetId &&
                     !_w->activeDistress.acknowledged;
+                _commsMenuIsCapital = false;
                 for (const NpcMeta& npc : _w->npcMeta) {
                     if (npc.id != _npcTargetId || !npc.alive) continue;
+                    _commsMenuIsCapital = !npc.hardpoints.empty();
                     if (npc.faction == NpcFaction::Friendly) {
                         _commsMenuNpcName = "FRIENDLY " + npc.shipTypeName;
                         _commsMenuNpcText = FriendlyLines[GetRandomValue(0, 4)];
@@ -7385,6 +7662,7 @@ void SpaceFlight::Update(float dt) {
                 // hailing is just a second entry point into it.
                 _commsMenuIsStation  = true;
                 _commsMenuIsDistress = false;
+                _commsMenuIsCapital  = false;
                 _commsMenuStationId  = _targetId;
                 Faction stFaction = FindStationFaction(_targetId, false);
                 _commsMenuNpcName = std::string(FactionName(stFaction)) + " " + _target.name;
@@ -7403,8 +7681,14 @@ void SpaceFlight::Update(float dt) {
 
     unsigned int passLockId = 0;
     Vector2      passLockPos = {};
-    if (_selectedWeapon < (int)_loadout.weapons.size() && _loadout.weapons[_selectedWeapon] &&
-        _loadout.weapons[_selectedWeapon]->weapon.fireMode == WeaponFireMode::LockOn) {
+    auto lockCheckWeaponSlots = _loadout.WeaponSlots();
+    bool anyLockOnArmed = false;
+    for (int i = 0; i < (int)lockCheckWeaponSlots.size(); ++i)
+        if (lockCheckWeaponSlots[i]->equipped && IsWeaponEnabled(i) &&
+            lockCheckWeaponSlots[i]->equipped->weapon.fireMode == WeaponFireMode::LockOn) {
+            anyLockOnArmed = true; break;
+        }
+    if (anyLockOnArmed) {
         if (!clickedHudBtn && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             _lockTargetId = 0;
             // NPC ships (non-escort) take priority
@@ -7472,28 +7756,54 @@ void SpaceFlight::Update(float dt) {
         pos.x += vel.x * dt;
         pos.y += vel.y * dt;
 
-        if (_playerMeta.weaponFireMode != WeaponFireMode::Charge) _playerMeta._chargeTimer = 0.0f;
-        if (_playerMeta._fireCooldown > 0.0f) _playerMeta._fireCooldown -= dt;
+        // Per-slot weapon firing: every enabled+equipped weapon fires on its
+        // own cooldown/charge timer, so the player can arm all, some, or none
+        // of their weapons via the number keys (see _weaponEnabled). Cooldowns
+        // keep ticking even while firing is blocked (menu open), matching the
+        // old single-weapon behavior.
+        auto  fireSlots = _loadout.WeaponSlots();
+        if ((int)_weaponCooldown.size() < (int)fireSlots.size()) {
+            _weaponCooldown.resize(fireSlots.size(), 0.0f);
+            _weaponCharge.resize(fireSlots.size(), 0.0f);
+            _weaponEnabled.resize(fireSlots.size(), true);
+        }
+        float cdMult = _loadout.IsOverloaded() ? HardpointRig::kOverloadCooldownMult : 1.0f;
 
-        if (fireEnabled && _playerMeta.canFire && !net::Game().IsClient()) {
-            Vector2 toAim  = Vector2Subtract(mouseWorld, pos);
-            float   aimLen = Vector2Length(toAim);
-            float   fwdRad = (rot - 90.0f) * DEG2RAD;
-            Vector2 fwd    = { cosf(fwdRad), sinf(fwdRad) };
-            Vector2 aimDir = (aimLen > 1.0f) ? Vector2Scale(toAim, 1.0f / aimLen) : fwd;
+        Vector2 toAim  = Vector2Subtract(mouseWorld, pos);
+        float   aimLen = Vector2Length(toAim);
+        float   fwdRad = (rot - 90.0f) * DEG2RAD;
+        Vector2 fwd    = { cosf(fwdRad), sinf(fwdRad) };
+        Vector2 aimDir = (aimLen > 1.0f) ? Vector2Scale(toAim, 1.0f / aimLen) : fwd;
 
-            switch (_playerMeta.weaponFireMode) {
+        const bool canFire = fireEnabled && !net::Game().IsClient();
+
+        for (int wi = 0; wi < (int)fireSlots.size(); ++wi) {
+            float& cd     = _weaponCooldown[wi];
+            float& charge = _weaponCharge[wi];
+            if (cd > 0.0f) cd -= dt;
+
+            const bool armed = fireSlots[wi]->equipped && IsWeaponEnabled(wi);
+            if (!armed) { charge = 0.0f; continue; }
+
+            const WeaponStats& ws = fireSlots[wi]->equipped->weapon;
+            if (ws.fireMode != WeaponFireMode::Charge) charge = 0.0f;
+            if (!canFire) continue;
+
+            float fireRate  = ws.fireRate * cdMult;
+            float projSpeed = ws.projSpeed;
+            float ttl       = projSpeed > 0.0f ? ws.projRange / projSpeed : 0.0f;
+
+            switch (ws.fireMode) {
             case WeaponFireMode::Standard: {
-                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && _playerMeta._fireCooldown <= 0.0f) {
-                    bool inArc = _playerMeta.hasTurret || (Vector2DotProduct(fwd, aimDir) > 0.0f);
+                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && cd <= 0.0f) {
+                    bool inArc = ws.isTurret || (Vector2DotProduct(fwd, aimDir) > 0.0f);
                     if (inArc) {
-                        _playerMeta._fireCooldown = _playerMeta.fireRate;
-                        float ttl = _playerMeta.projRange / _playerMeta.projSpeed;
+                        cd = fireRate;
                         Projectile p;
                         p.position = pos;
-                        p.velocity = { aimDir.x * _playerMeta.projSpeed, aimDir.y * _playerMeta.projSpeed };
-                        p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
-                        p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
+                        p.velocity = { aimDir.x * projSpeed, aimDir.y * projSpeed };
+                        p.lifetime = 0.0f; p.maxLife = ttl; p.damage = ws.damage; p.alive = true;
+                        p.effect = ws.effect; p.effectDuration = ws.effectDuration;
                         _w->projectiles.push_back(p);
                     }
                 }
@@ -7501,55 +7811,63 @@ void SpaceFlight::Update(float dt) {
             }
             case WeaponFireMode::Charge: {
                 if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
-                    _playerMeta._chargeTimer = std::min(_playerMeta._chargeTimer + dt, _playerMeta.chargeTime);
-                if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && _playerMeta._chargeTimer > 0.005f && _playerMeta._fireCooldown <= 0.0f) {
-                    bool inArc = _playerMeta.hasTurret || (Vector2DotProduct(fwd, aimDir) > 0.0f);
+                    charge = std::min(charge + dt, ws.chargeTime);
+                if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && charge > 0.005f && cd <= 0.0f) {
+                    bool inArc = ws.isTurret || (Vector2DotProduct(fwd, aimDir) > 0.0f);
                     if (inArc) {
-                        float ratio    = _playerMeta._chargeTimer / _playerMeta.chargeTime;
-                        int   numProj  = std::max(1, (int)std::ceil(_playerMeta.burstCount * ratio));
-                        float halfSprd = (_playerMeta.spreadAngle * 0.5f) * DEG2RAD;
-                        float step     = (numProj > 1) ? (_playerMeta.spreadAngle * DEG2RAD) / (numProj - 1) : 0.0f;
-                        float ttl      = _playerMeta.projRange / _playerMeta.projSpeed;
+                        float ratio    = ws.chargeTime > 0.0f ? charge / ws.chargeTime : 1.0f;
+                        int   numProj  = std::max(1, (int)std::ceil(ws.burstCount * ratio));
+                        float halfSprd = (ws.spreadAngle * 0.5f) * DEG2RAD;
+                        float step     = (numProj > 1) ? (ws.spreadAngle * DEG2RAD) / (numProj - 1) : 0.0f;
                         for (int bi = 0; bi < numProj; ++bi) {
                             float a = (numProj > 1) ? -halfSprd + step * bi : 0.0f;
                             float c = cosf(a), s = sinf(a);
                             Vector2 d = { aimDir.x * c - aimDir.y * s, aimDir.x * s + aimDir.y * c };
                             Projectile p;
                             p.position = pos;
-                            p.velocity = { d.x * _playerMeta.projSpeed, d.y * _playerMeta.projSpeed };
-                            p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
-                            p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
+                            p.velocity = { d.x * projSpeed, d.y * projSpeed };
+                            p.lifetime = 0.0f; p.maxLife = ttl; p.damage = ws.damage; p.alive = true;
+                            p.effect = ws.effect; p.effectDuration = ws.effectDuration;
                             _w->projectiles.push_back(p);
                         }
-                        _playerMeta._fireCooldown = _playerMeta.fireRate;
+                        cd = fireRate;
                     }
-                    _playerMeta._chargeTimer = 0.0f;
+                    charge = 0.0f;
                 }
                 break;
             }
             case WeaponFireMode::LockOn: {
-                if (passLockId != 0 && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && _playerMeta._fireCooldown <= 0.0f) {
+                if (passLockId != 0 && IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && cd <= 0.0f) {
                     Vector2 toTarget = Vector2Subtract(passLockPos, pos);
                     float   tLen     = Vector2Length(toTarget);
                     if (tLen > 1.0f) {
                         Vector2 tDir = Vector2Scale(toTarget, 1.0f / tLen);
-                        float   ttl  = _playerMeta.projRange / _playerMeta.projSpeed;
                         Projectile p;
                         p.position = pos;
-                        p.velocity = { tDir.x * _playerMeta.projSpeed, tDir.y * _playerMeta.projSpeed };
-                        p.lifetime = 0.0f; p.maxLife = ttl; p.damage = _playerMeta.weaponDamage; p.alive = true;
+                        p.velocity = { tDir.x * projSpeed, tDir.y * projSpeed };
+                        p.lifetime = 0.0f; p.maxLife = ttl; p.damage = ws.damage; p.alive = true;
                         p.isHoming = true;
                         p.targetId = passLockId;
-                        p.turnRate = _playerMeta.weaponTurnRate;
-                        p.effect = _playerMeta.weaponEffect; p.effectDuration = _playerMeta.weaponEffectDuration;
+                        p.turnRate = (ws.projType == WeaponProjType::Seeking) ? 3.0f : 0.0f;
+                        p.effect = ws.effect; p.effectDuration = ws.effectDuration;
                         _w->projectiles.push_back(p);
-                        _playerMeta._fireCooldown = _playerMeta.fireRate;
+                        cd = fireRate;
                     }
                 }
                 break;
             }
             default: break;
             }
+        }
+
+        // Mirror the representative (primary) weapon's timers into _playerMeta
+        // so the HUD's WEAPON readiness/charge panel reflects a live weapon.
+        if (_primaryWeapon >= 0 && _primaryWeapon < (int)_weaponCooldown.size()) {
+            _playerMeta._fireCooldown = _weaponCooldown[_primaryWeapon];
+            _playerMeta._chargeTimer  = _weaponCharge[_primaryWeapon];
+        } else {
+            _playerMeta._fireCooldown = 0.0f;
+            _playerMeta._chargeTimer  = 0.0f;
         }
     }
 
@@ -7627,22 +7945,34 @@ void SpaceFlight::TickStationMining(PlayerStation& ps, float dt) {
 
     // Find the Material Probe installed in any aux slot (only the Mining
     // Drill hardpoint has one, per station_defs.json).
-    const ModuleDef* probe = nullptr;
-    for (const HardpointState& hp : ps.hardpoints) {
+    const ModuleDef* probe   = nullptr;
+    const Hardpoint* probeHp = nullptr;
+    for (const Hardpoint& hp : ps.hardpoints) {
         if (!hp.alive) continue;
-        for (const auto& a : hp.aux) {
-            if (a.has_value() && a->id == "aux_material_probe") { probe = &(*a); break; }
+        for (const auto* a : hp.AuxSlots()) {
+            if (a->equipped.has_value() && a->equipped->id == "aux_material_probe") { probe = &(*a->equipped); probeHp = &hp; break; }
         }
         if (probe) break;
     }
     if (!probe) return;   // no probe installed — station collects nothing
 
+    // P3: a shed drill hardpoint collects nothing this tick; a throttled one
+    // just collects slower (interval scaled below) rather than stopping outright.
+    if (probeHp->shed) return;
+
     ps.miningTimer -= dt;
     if (ps.miningTimer > 0.0f) return;
 
-    // Higher-grade probes collect faster.
+    // Higher-grade probes collect faster; power throttle slows it back down;
+    // P5: a Manufacturing facility adjacent to this hardpoint's Mining
+    // facility speeds collection further (Mining<->Manufacturing throughput
+    // bonus — see RecalculateAdjacency). No shipped station_defs.json type
+    // has both facilities on one station today, so this multiplier is
+    // presently always 1.0 in practice; wired and ready regardless.
     int   gradeIdx  = static_cast<int>(probe->grade);   // 0=Common .. 6=Mythic
     float interval  = std::max(2.0f, 9.0f - gradeIdx * 1.0f);
+    interval       /= std::max(probeHp->throttle, 0.05f);
+    interval       /= std::max(probeHp->adjacencyRateMult, 0.05f);
     ps.miningTimer  = interval;
 
     std::string matId = RollMiningMaterialId();
@@ -7674,14 +8004,20 @@ void SpaceFlight::TickStationMining(PlayerStation& ps, float dt) {
 void SpaceFlight::UpdatePlayerStations(float dt) {
     for (PlayerStation& ps : FleetManager::Get().PlayerStations) {
         if (!ps.alive) continue;
-        for (HardpointState& hp : ps.hardpoints) {
+        for (Hardpoint& hp : ps.hardpoints) {
             float baseHull = 100.0f; // Base health without modules
-            float bonus = hp.armor.has_value() ? hp.armor->armor.hullBonus : 0.0f;
+            const ModuleSlot* armorSlot = hp.Armor();
+            float bonus = (armorSlot && armorSlot->equipped.has_value()) ? armorSlot->equipped->armor.hullBonus : 0.0f;
             float newMax = baseHull + bonus;
 
             if (hp.hull > newMax) hp.hull = newMax; // Cap current health if armor is removed
             hp.maxHull = newMax;
         }
+
+        // P3/P5: recompute power budget once per tick (same as capitals
+        // above). Adjacency first — see the capital-tick comment above for why.
+        RecalculateAdjacency(ps.hardpoints);
+        ps.powerBudget = RecalculatePowerBudget(ps.hardpoints, HardpointRig::kStationBaseCapacity);
 
         TickStationMining(ps, dt);
 
@@ -7716,11 +8052,12 @@ void SpaceFlight::UpdatePlayerStations(float dt) {
             float rad = def ? def->radius : 120.0f;
 
             for (int i = 0; i < (int)ps.hardpoints.size(); ++i) {
-                HardpointState& hp = ps.hardpoints[i];
+                Hardpoint& hp = ps.hardpoints[i];
 
                 // Skip dead hardpoints, or hardpoints with no weapons installed
                 // FIXED: Added to check the first weapon slot specifically
-                if (!hp.alive || hp.weapons.empty() || !hp.weapons[0].has_value()) continue;
+                const ModuleSlot* wSlot = hp.FirstWeapon();
+                if (!hp.alive || !wSlot || !wSlot->equipped.has_value() || hp.shed) continue;
 
                 // Process weapon cooldown
                 if (hp.fireCooldown > 0.0f) {
@@ -7729,7 +8066,7 @@ void SpaceFlight::UpdatePlayerStations(float dt) {
                 }
 
                 // Check if the target is within the weapon's maximum range
-                const WeaponStats& ws = hp.weapons[0]->weapon;
+                const WeaponStats& ws = wSlot->equipped->weapon;
                 if (closestDist <= ws.projRange) {
                     Vector2 hpPos = GetHardpointPos(ps, i, rad);
                     Vector2 toT = Vector2Subtract(targetPos, hpPos);
@@ -7840,9 +8177,11 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
 
         // Compute max weapon range across all armed hardpoints
         float maxRange = 500.0f;
-        for (const HardpointState& hp : st.hardpoints)
-            if (!hp.weapons.empty() && hp.weapons[0].has_value())
-                maxRange = std::max(maxRange, hp.weapons[0]->weapon.projRange);
+        for (const Hardpoint& hp : st.hardpoints) {
+            const ModuleSlot* wSlot = hp.FirstWeapon();
+            if (wSlot && wSlot->equipped.has_value())
+                maxRange = std::max(maxRange, wSlot->equipped->weapon.projRange);
+        }
 
         // Find closest valid target within range — shared template so any
         // future hostile-capable unit (ships, turrets, ...) can reuse the
@@ -7896,11 +8235,12 @@ void SpaceFlight::UpdateWorldStationFire(float dt) {
 
         // Fire from each armed hardpoint independently
         for (int hi = 0; hi < (int)st.hardpoints.size(); ++hi) {
-            HardpointState& hp = st.hardpoints[hi];
-            if (!hp.alive || hp.weapons.empty() || !hp.weapons[0].has_value()) continue;
+            Hardpoint& hp = st.hardpoints[hi];
+            ModuleSlot* wSlot = hp.FirstWeapon();
+            if (!hp.alive || !wSlot || !wSlot->equipped.has_value()) continue;
             if (hp.fireCooldown > 0.0f) { hp.fireCooldown -= dt; continue; }
 
-            const WeaponStats& ws = hp.weapons[0]->weapon;
+            const WeaponStats& ws = wSlot->equipped->weapon;
             if (bestDist > ws.projRange) continue;
 
             Vector2 hpPos = GetNpcStationHardpointPos(st, hi);
@@ -7947,14 +8287,15 @@ void SpaceFlight::UpdateCapitalFire(float dt) {
         float   shipRot = _w->entities[i].transform.rotation;
 
         for (int hIdx = 0; hIdx < (int)m.hardpoints.size(); ++hIdx) {
-            HardpointState& hp = m.hardpoints[hIdx];
-            if (!hp.alive || hp.weapons.empty() || !hp.weapons[0].has_value()) continue;
+            Hardpoint& hp = m.hardpoints[hIdx];
+            ModuleSlot* wSlot = hp.FirstWeapon();
+            if (!hp.alive || !wSlot || !wSlot->equipped.has_value() || hp.shed) continue;
             // Epic 8: the player fires this hardpoint directly while seated
             // in it — UpdateSeatedTurret manages its cooldown/firing instead.
             if (_seated && m.id == _seatedNpcId && hIdx == _seatedHardpointIdx) continue;
             if (hp.fireCooldown > 0.0f) { hp.fireCooldown -= dt; continue; }
 
-            const WeaponStats& ws = hp.weapons[0]->weapon;
+            const WeaponStats& ws = wSlot->equipped->weapon;
             Vector2 hpPos = GetCapitalHardpointWorldPos(shipPos, shipRot, hp.localOffset);
 
             combat::HostileTarget pick = combat::FindNearestHostileTarget(
@@ -8052,7 +8393,7 @@ void SpaceFlight::UpdateSeatedTurret(float dt, Vector2 mouseWorld, bool clickedH
         }
 
         ecs::Entity&    e  = _w->entities[i];
-        HardpointState& hp = m.hardpoints[_seatedHardpointIdx];
+        Hardpoint& hp = m.hardpoints[_seatedHardpointIdx];
         Vector2 hpPos = GetCapitalHardpointWorldPos(e.transform.position, e.transform.rotation, hp.localOffset);
 
         _playerEntity.transform.position = hpPos;
@@ -8060,10 +8401,11 @@ void SpaceFlight::UpdateSeatedTurret(float dt, Vector2 mouseWorld, bool clickedH
         _playerEntity.transform.rotation = e.transform.rotation;
 
         if (hp.fireCooldown > 0.0f) hp.fireCooldown -= dt;
-        if (clickedHudBtn || hp.weapons.empty() || !hp.weapons[0].has_value()) return;
+        ModuleSlot* wSlot = hp.FirstWeapon();
+        if (clickedHudBtn || !wSlot || !wSlot->equipped.has_value()) return;
         if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) || hp.fireCooldown > 0.0f) return;
 
-        const WeaponStats& ws  = hp.weapons[0]->weapon;
+        const WeaponStats& ws  = wSlot->equipped->weapon;
         Vector2             toT = Vector2Subtract(mouseWorld, hpPos);
         float               len = Vector2Length(toT);
         if (len < 1.0f) return;
@@ -8420,6 +8762,8 @@ void SpaceFlight::Draw() {
             Color     lit = _lighting.BeginLit(pos, { 0.0f, 0.0f }, lightRange);
             DrawTexturePro(*pTexPtr, src, dst, origin, rot, lit);
             _lighting.EndLit();
+            // P2: composited module render (placeholder icons — see RenderSystem.h).
+            ecs::RenderSystem::DrawHardpointRig(pos, rot, ps, _loadout.hardpoints, WHITE, WHITE);
         } else {
             float r  = rot * DEG2RAD;
             float cr = cosf(r), sr = sinf(r);
@@ -8544,10 +8888,14 @@ void SpaceFlight::Draw() {
                                                ModuleType::Shield, ModuleType::Engine };
         static const char* modLabels[] = { "W", "A", "S", "E" };
         const std::optional<ModuleDef>* modPtrs[4] = {};
-        modPtrs[0] = (!sel->loadout.weapons.empty()) ? &sel->loadout.weapons[0] : nullptr;
-        modPtrs[1] = &sel->loadout.armor;
-        modPtrs[2] = (!sel->loadout.shields.empty()) ? &sel->loadout.shields[0] : nullptr;
-        modPtrs[3] = &sel->loadout.engine;
+        auto selWeaponSlots = sel->loadout.WeaponSlots();
+        auto selShieldSlots = sel->loadout.ShieldSlots();
+        const ModuleSlot* selArmor  = sel->loadout.Armor();
+        const ModuleSlot* selEngine = sel->loadout.Engine();
+        modPtrs[0] = !selWeaponSlots.empty() ? &selWeaponSlots[0]->equipped : nullptr;
+        modPtrs[1] = selArmor  ? &selArmor->equipped  : nullptr;
+        modPtrs[2] = !selShieldSlots.empty() ? &selShieldSlots[0]->equipped : nullptr;
+        modPtrs[3] = selEngine ? &selEngine->equipped : nullptr;
         int mx = 30;
         for (int i = 0; i < 4; ++i) {
             const char* mname = (modPtrs[i] && modPtrs[i]->has_value())
@@ -8677,7 +9025,7 @@ void SpaceFlight::Draw() {
             (int)(backBtn.y + 11), 12,
             hovBack ? WHITE : Color{ 120, 185, 240, 220 });
 
-        if (_commsMenuPhase == 0) {
+        if (_commsMenuPhase == 0 && !_commsMenuIsCapital) {
             Rectangle joinBtn = { (float)(mcx + CW - 180), (float)(mcy + CH - 52), 160.0f, 34.0f };
             bool hovJoin = CheckCollisionPointRec(m2, joinBtn);
             DrawRectangleRec(joinBtn, hovJoin ? Color{ 40, 90, 50, 230 } : Color{ 14, 28, 18, 200 });
@@ -8967,6 +9315,7 @@ void SpaceFlight::OnExit() {
     _commsLog.clear();
     _remoteEntities.clear();
     _remoteCapitalHardpoints.clear();
+    _remoteFighterMounts.clear();
     _remotePlayerStations.clear();
     _remoteFireCooldown.clear();
     _remoteJoinGrace.clear();

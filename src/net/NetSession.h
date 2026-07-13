@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include "NetCommon.h"
@@ -79,7 +80,8 @@ public:
                           const std::vector<ProjectileSnapshot>& projectiles = {},
                           const std::vector<CapitalHardpointSnapshot>& capitals = {},
                           const std::vector<PlayerStationSnapshot>& stations = {},
-                          const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {});
+                          const std::vector<PlayerStationHardpointSnapshot>& stationHardpoints = {},
+                          const std::vector<FighterHardpointSnapshot>& fighterHardpoints = {});
 
     // Send a system's seed + live-state diff to a specific peer so they can
     // generate the map and reconcile it (sent at join and on warp arrival).
@@ -121,6 +123,13 @@ public:
     void ClientSendBuildStationRequest(const std::string& stationDefId, float posX, float posY);
     void ClientSendPlaceShipRequest(const std::string& shipDefId, float posX, float posY);
 
+    // P8-T1: tell the host this client's current fighter loadout (one
+    // ModuleType-or-0 byte per HardpointRig mount). No-op for host/offline —
+    // the host already knows its own player + every NPC's loadout directly.
+    // Call once after spawn/ship-swap and again whenever the local loadout
+    // changes (SpaceFlight::ApplyLoadout), not every tick like Input.
+    void ClientSendFighterLoadoutReport(const std::vector<uint8_t>& mounts);
+
     // ── I/O buffers consumed by the game loop ────────────────────────────────
     std::vector<InputCommand>          pendingInputs;              // host side
     std::vector<ecs::NetworkSnapshot>  latestSnapshots;            // client side
@@ -129,6 +138,7 @@ public:
     std::vector<CapitalHardpointSnapshot> latestCapitalSnapshots;  // client side
     std::vector<PlayerStationSnapshot>    latestPlayerStationSnapshots;          // client side
     std::vector<PlayerStationHardpointSnapshot> latestPlayerStationHardpointSnapshots; // client side
+    std::vector<FighterHardpointSnapshot> latestFighterHardpointSnapshots;       // client side
     uint32_t                           latestSnapshotSystemId = 0; // client: system the snapshot describes
     bool                               snapshotDirty    = false;   // client: true when a new snapshot arrived
     bool                               pendingPlayerDead = false;  // client: server killed this player
@@ -154,6 +164,11 @@ public:
     // host's own world (see [[tasks-multiplayer]] Epic C).
     std::vector<BuildStationRequest>           pendingBuildStationRequests;
     std::vector<PlaceShipRequest>              pendingPlaceShipRequests;
+    // Host: latest per-peer fighter-loadout report (networkId -> mounts).
+    // Unlike the drain-once request vectors above, this is a persistent
+    // cache — a report only arrives on change, but every subsequent
+    // broadcast tick needs the last-known value until the next one arrives.
+    std::unordered_map<uint32_t, std::vector<uint8_t>> peerFighterLoadouts;
 
 private:
     void handlePacket(ENetPeer* from, const uint8_t* data, size_t len);

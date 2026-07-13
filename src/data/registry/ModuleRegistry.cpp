@@ -7,6 +7,7 @@
 #include "data/modules/HyperdriveDefs.h"
 #include "data/modules/AuxDefs.h"
 #include "data/modules/ConsumableDefs.h"
+#include "data/modules/FacilityDefs.h"
 #include "raylib.h"
 
 std::vector<ModuleDef>                  ModuleRegistry::s_all;
@@ -21,7 +22,21 @@ static ModuleType ParseModuleType(const std::string& s) {
     if (s == "Hyperdrive") return ModuleType::Hyperdrive;
     if (s == "Auxiliary")  return ModuleType::Auxiliary;
     if (s == "Consumable") return ModuleType::Consumable;
+    if (s == "Facility")   return ModuleType::Facility;
     return ModuleType::Weapon;
+}
+
+static FacilityKind ParseFacilityKind(const std::string& s) {
+    if (s == "Trading")         return FacilityKind::Trading;
+    if (s == "Manufacturing")   return FacilityKind::Manufacturing;
+    if (s == "Shipyard")        return FacilityKind::Shipyard;
+    if (s == "Contracting")     return FacilityKind::Contracting;
+    if (s == "Refuel")          return FacilityKind::Refuel;
+    if (s == "Repair")          return FacilityKind::Repair;
+    if (s == "ShieldGenerator") return FacilityKind::ShieldGenerator;
+    if (s == "WeaponBattery")   return FacilityKind::WeaponBattery;
+    if (s == "Mining")          return FacilityKind::Mining;
+    return FacilityKind::Reactor;
 }
 
 static ModuleGrade ParseGrade(const std::string& s) {
@@ -100,6 +115,14 @@ static void LoadConsumable(ModuleDef& m, const nlohmann::json& c) {
     m.consumable.healAmount = JL::Float(c, "healAmount", 50.f, 0.f, 100000.f);
 }
 
+static void LoadFacility(ModuleDef& m, const nlohmann::json& f) {
+    m.facility.kind        = ParseFacilityKind(JL::Str(f, "kind", "Reactor"));
+    m.facility.powerDraw   = JL::Float(f, "powerDraw",   0.f, 0.f, 1000.f);
+    m.facility.powerOutput = JL::Float(f, "powerOutput", 0.f, 0.f, 1000.f);
+    m.facility.baseRate    = JL::Float(f, "baseRate",    0.f, 0.f, 1000.f);
+    m.facility.priority    = JL::Int  (f, "priority",    2,   0,   10);
+}
+
 // ── Registry init ─────────────────────────────────────────────────────────────
 
 void ModuleRegistry::Init() {
@@ -121,6 +144,7 @@ void ModuleRegistry::Init() {
             if (m.type == ModuleType::Hyperdrive && item.contains("hyperdrive")) LoadHyperdrive(m, item["hyperdrive"]);
             if (m.type == ModuleType::Auxiliary  && item.contains("aux"))        LoadAux      (m, item["aux"]);
             if (m.type == ModuleType::Consumable && item.contains("consumable")) LoadConsumable(m, item["consumable"]);
+            if (m.type == ModuleType::Facility   && item.contains("facility"))   LoadFacility  (m, item["facility"]);
             if (m.type == ModuleType::Armor      && item.contains("armor"))
                 m.armor.hullBonus = JL::Float(item["armor"], "hullBonus", 50.f, 0.f, 10000.f);
 
@@ -151,6 +175,10 @@ void ModuleRegistry::Init() {
             Consumable_RepairKit_I(), Consumable_RepairKit_II(), Consumable_RepairKit_III(),
             Consumable_RepairKit_IV(), Consumable_RepairKit_V(), Consumable_RepairKit_VI(),
             Consumable_RepairKit_VII(),
+            Facility_Reactor(), Facility_TradingHub(), Facility_ManufacturingBay(),
+            Facility_Shipyard(), Facility_ContractBoard(), Facility_RefuelStation(),
+            Facility_RepairBay(), Facility_ShieldGeneratorChip(), Facility_WeaponBatteryChip(),
+            Facility_MiningRig(),
         };
     }
 

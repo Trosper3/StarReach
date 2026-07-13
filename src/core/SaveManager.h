@@ -80,6 +80,38 @@ public:
         int         count = 0;
     };
 
+    // Player-built stations (FleetManager::PlayerStations) — distinct from
+    // the NPC/world StationSave above. Hardpoint layout is rebuilt from
+    // stationDefId on load (mirroring FleetManager::SpawnStation), then
+    // overlaid with the per-hardpoint hull/alive/equipped-module state below.
+    struct HardpointSlotSave {
+        std::string moduleId;   // empty = unequipped; slot order/type comes from the def rebuild
+    };
+
+    struct HardpointSave {
+        std::string id;
+        float       hull = 100.f, maxHull = 100.f;
+        bool        alive = true;
+        std::vector<HardpointSlotSave> slots;
+        // P7-T4: player-tunable shed priority override, -1 = untouched
+        // (falls back to the type-based heuristic — see Hardpoint.h). Unlike
+        // throttle/shed/adjacency*, this is real player state, not derived,
+        // so it needs to round-trip through saves.
+        int shedPriority = -1;
+    };
+
+    struct PlayerStationSave {
+        unsigned int id = 0;
+        std::string  stationDefId;
+        std::string  displayName;
+        float        posX = 0.f, posY = 0.f;
+        bool         alive = true;
+        std::vector<HardpointSave> hardpoints;
+        std::vector<StorageSave>   storage;
+        float        miningTimer = 0.f;
+        std::unordered_map<std::string, int> economyStock;
+    };
+
     // ── Main game state ───────────────────────────────────────────────────────
 
     struct GameState {
@@ -131,6 +163,7 @@ public:
         std::vector<NpcSave>       npcs;
         std::vector<PlanetSave>    planets;
         std::vector<StationSave>   stations;
+        std::vector<PlayerStationSave> playerStations;
         std::vector<LootSave>      lootDrops;
         std::vector<MatDropSave>   matDrops;
         unsigned int               nextNpcId = 1000;

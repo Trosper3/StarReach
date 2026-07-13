@@ -7,29 +7,7 @@
 #include <string>
 #include <vector>
 #include "shared/entities/HealthComponent.h"
-
-struct HardpointState {
-    std::string id;
-    std::string displayName;
-    bool        isCore       = false;
-    bool        isDockingBay = false; // future capture/boarding target; no combat slots
-    float       hull     = 100.0f;
-    float       maxHull  = 100.0f;
-    bool        alive    = true;
-    Vector2     localOffset = { 0.0f, 0.0f }; // ship/station-local, unrotated; capital ships use this for turret placement
-    int         wSlots   = 0;
-    int         arSlots  = 0;
-    int         shSlots  = 0;
-    int         enSlots  = 0;
-    int         auxSlots = 0;
-    float       fireCooldown = 0.0f;
-
-    std::vector<std::optional<ModuleDef>> weapons;
-    std::optional<ModuleDef>              armor;
-    std::vector<std::optional<ModuleDef>> shields;
-    std::optional<ModuleDef>              engine;
-    std::vector<std::optional<ModuleDef>> aux;
-};
+#include "shared/entities/Hardpoint.h"
 
 struct PlayerStation {
     unsigned int id = 0;
@@ -37,7 +15,7 @@ struct PlayerStation {
     std::string  displayName;
     Vector2      position = {};
     bool         alive = true;
-    std::vector<HardpointState> hardpoints;
+    std::vector<Hardpoint> hardpoints;
 
     // Onboard cargo hold (currently only populated for mining stations).
     std::vector<StorageItem> storage;
@@ -49,6 +27,13 @@ struct PlayerStation {
     StationEconomy economy;
 
     HealthComponent health;
+
+    // P7-T1: last-tick power budget, recomputed every UpdatePlayerStations
+    // call (SpaceFlight.cpp) via RecalculatePowerBudget — stored here (rather
+    // than only living as that call's discarded return value) so
+    // StationModuleMenu can read load/capacity/throttle/shed-count for its
+    // power bar without recomputing.
+    PowerBudget powerBudget;
 
     // Add a wrapper if you have legacy code relying on these names
     float GetHull() const { return health.currentHull; }

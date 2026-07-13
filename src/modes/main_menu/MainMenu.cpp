@@ -642,34 +642,6 @@ void MainMenu::DrawSingleplayer() const {
                          rpx, labelY + 15.0f, 17.0f, Color{ 200, 220, 248, 255 });
         }
 
-        // Stats below the circle
-        if (shipDef) {
-            float sy   = rpCY + rpCircleR + 18.0f;
-            float col1 = rpx - 90.0f;
-
-            // Slots Title
-            char hullBuf[16];
-            snprintf(hullBuf, sizeof(hullBuf), "%.0f", shipDef->baseStats.hull);
-            DrawTextEx(_uiFont,   "Module Slots", {col1, sy + 13.0f}, 15.0f, UISpacing, Color{200, 220, 248, 255});
-            sy += 36.0f;
-
-            // One row per slot type
-            Color slotCol = { fi.color.r, fi.color.g, fi.color.b, 255 };
-            struct { const char* label; int count; } slots[] = {
-                { "WEAPON",    shipDef->weaponSlots },
-                { "ARMOR",     shipDef->armorSlots  },
-                { "SHIELD",    shipDef->shieldSlots },
-                { "ENGINE",    shipDef->engineSlots },
-                { "AUXILIARY", shipDef->auxSlots    },
-            };
-            for (const auto& s : slots) {
-                char buf[8];
-                snprintf(buf, sizeof(buf), "%d", s.count);
-                DrawTextEx(_bodyFont, s.label, { col1, sy },          16.0f, UISpacing, Color{ 100, 130, 165, 255 });
-                DrawTextEx(_uiFont,   buf,     { col1 + 80.0f, sy },  18.0f, UISpacing, Color{ 100, 130, 165, 255 });
-                sy += 18.0f;
-            }
-        }
     }
 
     _savePicker.Draw();

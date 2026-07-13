@@ -2,6 +2,7 @@
 #include "core/ShipRegistry.h"
 #include "data/registry/PlayerStationRegistry.h"
 #include "data/modules/ArmorDefs.h"
+#include "data/modules/FacilityDefs.h"
 #include "shared/ui/HudTheme.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -19,31 +20,48 @@ static constexpr int kModColWDock = 200; // docking bay: all rows read "NO SLOT"
 static constexpr int kColGap      = 20;
 static constexpr int kDockShipColW = 250; // storage col width when a ship column is also shown
 
-// Builds an empty (no preloaded modules) HardpointState from a crafted
+// Builds an empty (no preloaded modules) Hardpoint from a crafted
 // blueprint. Mirrors FleetManager::SpawnStation's per-hardpoint conversion,
 // minus the preloaded-modules step — attached hardpoints always start bare.
-static HardpointState MakeBlankHardpointState(const StationHardpointDef& hpd) {
-    HardpointState hp;
+static Hardpoint MakeBlankHardpointState(const StationHardpointDef& hpd) {
+    Hardpoint hp;
     hp.id          = hpd.id;
     hp.displayName = hpd.displayName;
     hp.isCore      = false; // crafted attachments are never the station core
+    hp.isDockingBay = (hpd.id == "docking_bay");
     hp.maxHull     = hpd.maxHull;
     hp.hull        = hpd.maxHull;
     hp.alive       = true;
-    hp.wSlots      = hpd.wSlots;
-    hp.arSlots     = hpd.arSlots;
-    hp.shSlots     = hpd.shSlots;
-    hp.enSlots     = hpd.enSlots;
-    hp.auxSlots    = hpd.auxSlots;
-    hp.weapons.assign(hpd.wSlots, std::nullopt);
-    hp.shields.assign(hpd.shSlots, std::nullopt);
-    hp.aux.assign(hpd.auxSlots, std::nullopt);
-    if (hp.arSlots > 0) {
-        hp.armor   = Armor_HullPatch();
-        hp.maxHull = 100.0f + hp.armor->armor.hullBonus;
+    for (int i = 0; i < hpd.wSlots;   ++i) hp.slots.push_back({ ModuleType::Weapon });
+    for (int i = 0; i < hpd.arSlots;  ++i) hp.slots.push_back({ ModuleType::Armor });
+    for (int i = 0; i < hpd.shSlots;  ++i) hp.slots.push_back({ ModuleType::Shield });
+    for (int i = 0; i < hpd.enSlots;  ++i) hp.slots.push_back({ ModuleType::Engine });
+    for (int i = 0; i < hpd.auxSlots; ++i) hp.slots.push_back({ ModuleType::Auxiliary });
+    for (int i = 0; i < hpd.fSlots;   ++i) hp.slots.push_back({ ModuleType::Facility });
+    // P4-T4 backward-compat backfill — see FleetManager::SpawnStation's matching note.
+    if (hpd.fSlots == 0) {
+        if (auto kind = LegacyHardpointFacilityKind(hpd.id)) {
+            ModuleSlot fs; fs.type = ModuleType::Facility; fs.equipped = Facility_ForKind(*kind);
+            hp.slots.push_back(fs);
+        }
+    }
+    if (ModuleSlot* armorSlot = hp.Armor()) {
+        armorSlot->equipped = Armor_HullPatch();
+        hp.maxHull = 100.0f + armorSlot->equipped->armor.hullBonus;
         hp.hull    = hp.maxHull;
     }
     return hp;
+}
+
+// P4-T5: the shipyard column used to be gated on the physical isDockingBay
+// marker (a hardcoded id=="docking_bay" check) — the real "hardpointToMenuConnection"
+// fix routes off the installed Facility chip's kind instead, so any hardpoint
+// with a Shipyard facility shows the column, not just ones named "docking_bay".
+// isDockingBay itself stays (it also drives DockRepair targeting and the
+// SpaceFlight minimap/world dot color, unrelated to this menu).
+static bool HasShipyardFacility(const Hardpoint& hp) {
+    const ModuleSlot* f = hp.Facility();
+    return f && f->equipped.has_value() && f->equipped->facility.kind == FacilityKind::Shipyard;
 }
 
 // ── Open / Close ──────────────────────────────────────────────────────────────
@@ -80,19 +98,19 @@ bool StationModuleMenu::CanAttachHardpoint() const {
 // ── Geometry (shared by Update/Draw so hit-rects always match what's drawn) ──
 
 Rectangle StationModuleMenu::HardpointRowRect(int panelX, int panelY, int i) const {
-    return { (float)(panelX + 16), (float)(panelY + 40 + i * 56), 300.0f, 52.0f };
+    return { (float)(panelX + 16), (float)(panelY + ContentY + i * 56), 300.0f, 52.0f };
 }
 
 Rectangle StationModuleMenu::StorageAreaRect(int panelX, int panelY) const {
-    int y = panelY + 40;
-    int h = PanelH - 40 - 16;
+    int y = panelY + ContentY;
+    int h = PanelH - ContentY - 16;
     if (_screen == Screen::HardpointList) {
         int x = panelX + 16 + 300 + kColGap;
         int w = (panelX + PanelW - 16) - x;
         return { (float)x, (float)y, (float)w, (float)h };
     }
     bool docking = _station && _selHp >= 0 && _selHp < (int)_station->hardpoints.size()
-                   && _station->hardpoints[_selHp].isDockingBay;
+                   && HasShipyardFacility(_station->hardpoints[_selHp]);
     int modColW = docking ? kModColWDock : kModColWFull;
     int x = panelX + kModColXOff + modColW + kColGap;
     int w = docking ? kDockShipColW : (panelX + PanelW - 16) - x;
@@ -111,14 +129,14 @@ Rectangle StationModuleMenu::ShipyardAreaRect(int panelX, int panelY) const {
 void StationModuleMenu::BuildSlotRefs(int hpIdx, std::vector<SlotRef>& out) const {
     out.clear();
     if (!_station || hpIdx < 0 || hpIdx >= (int)_station->hardpoints.size()) return;
-    const HardpointState& hp = _station->hardpoints[hpIdx];
+    const Hardpoint& hp = _station->hardpoints[hpIdx];
 
     int sw = GetScreenWidth(), sh = GetScreenHeight();
     int panelX = sw / 2 - PanelW / 2;
     int panelY = sh / 2 - PanelH / 2;
     int labelW = 90;
     int slotsX = panelX + kModColXOff + labelW;
-    int startY = panelY + 40 + 28;
+    int startY = panelY + ContentY + 28;
 
     static constexpr int RowH = 76;
     auto addRow = [&](ModuleType t, int count, int row) {
@@ -130,35 +148,38 @@ void StationModuleMenu::BuildSlotRefs(int hpIdx, std::vector<SlotRef>& out) cons
             out.push_back(sr);
         }
         };
-    addRow(ModuleType::Weapon,    hp.wSlots,   0);
-    addRow(ModuleType::Armor,     hp.arSlots,  1);
-    addRow(ModuleType::Shield,    hp.shSlots,  2);
-    addRow(ModuleType::Engine,    hp.enSlots,  3);
-    addRow(ModuleType::Auxiliary, hp.auxSlots, 4);
+    addRow(ModuleType::Weapon,    (int)hp.WeaponSlots().size(), 0);
+    addRow(ModuleType::Armor,     hp.Armor() ? 1 : 0,           1);
+    addRow(ModuleType::Shield,    (int)hp.ShieldSlots().size(), 2);
+    addRow(ModuleType::Engine,    hp.Engine() ? 1 : 0,          3);
+    addRow(ModuleType::Auxiliary, (int)hp.AuxSlots().size(),    4);
+    addRow(ModuleType::Facility,  hp.Facility() ? 1 : 0,        5);
 }
 
 std::optional<ModuleDef>* StationModuleMenu::GetSlotOpt(SlotRef& s) {
     if (!_station || _selHp < 0 || _selHp >= (int)_station->hardpoints.size()) return nullptr;
-    HardpointState& hp = _station->hardpoints[_selHp];
+    Hardpoint& hp = _station->hardpoints[_selHp];
     switch (s.type) {
-    case ModuleType::Weapon:    return (s.idx < (int)hp.weapons.size()) ? &hp.weapons[s.idx] : nullptr;
-    case ModuleType::Armor:     return &hp.armor;
-    case ModuleType::Shield:    return (s.idx < (int)hp.shields.size()) ? &hp.shields[s.idx] : nullptr;
-    case ModuleType::Engine:    return &hp.engine;
-    case ModuleType::Auxiliary: return (s.idx < (int)hp.aux.size())     ? &hp.aux[s.idx]    : nullptr;
+    case ModuleType::Weapon:    { auto v = hp.WeaponSlots(); return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Armor:     { ModuleSlot* a = hp.Armor(); return a ? &a->equipped : nullptr; }
+    case ModuleType::Shield:    { auto v = hp.ShieldSlots(); return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Engine:    { ModuleSlot* e = hp.Engine(); return e ? &e->equipped : nullptr; }
+    case ModuleType::Auxiliary: { auto v = hp.AuxSlots();   return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Facility:  { ModuleSlot* f = hp.Facility(); return f ? &f->equipped : nullptr; }
     default: return nullptr;
     }
 }
 
 const std::optional<ModuleDef>* StationModuleMenu::GetSlotOpt(const SlotRef& s) const {
     if (!_station || _selHp < 0 || _selHp >= (int)_station->hardpoints.size()) return nullptr;
-    const HardpointState& hp = _station->hardpoints[_selHp];
+    const Hardpoint& hp = _station->hardpoints[_selHp];
     switch (s.type) {
-    case ModuleType::Weapon:    return (s.idx < (int)hp.weapons.size()) ? &hp.weapons[s.idx] : nullptr;
-    case ModuleType::Armor:     return &hp.armor;
-    case ModuleType::Shield:    return (s.idx < (int)hp.shields.size()) ? &hp.shields[s.idx] : nullptr;
-    case ModuleType::Engine:    return &hp.engine;
-    case ModuleType::Auxiliary: return (s.idx < (int)hp.aux.size())     ? &hp.aux[s.idx]    : nullptr;
+    case ModuleType::Weapon:    { auto v = hp.WeaponSlots(); return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Armor:     { const ModuleSlot* a = hp.Armor(); return a ? &a->equipped : nullptr; }
+    case ModuleType::Shield:    { auto v = hp.ShieldSlots(); return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Engine:    { const ModuleSlot* e = hp.Engine(); return e ? &e->equipped : nullptr; }
+    case ModuleType::Auxiliary: { auto v = hp.AuxSlots();   return (s.idx < (int)v.size()) ? &v[s.idx]->equipped : nullptr; }
+    case ModuleType::Facility:  { const ModuleSlot* f = hp.Facility(); return f ? &f->equipped : nullptr; }
     default: return nullptr;
     }
 }
@@ -289,7 +310,7 @@ bool StationModuleMenu::UpdateHardpointList(int panelX, int panelY, Vector2 m) {
             for (int i = 0; i < n; ++i) {
                 Rectangle r = HardpointRowRect(panelX, panelY, i);
                 if (CheckCollisionPointRec(m, r)) {
-                    HardpointState& hp = _station->hardpoints[i];
+                    Hardpoint& hp = _station->hardpoints[i];
                     hp.hull = std::min(hp.hull + _dragMod.consumable.healAmount, hp.maxHull);
                     dropped = true;
                     break;
@@ -334,10 +355,28 @@ bool StationModuleMenu::UpdateModulePage(int panelX, int panelY, Vector2 m) {
     }
 
     if (_selHp < 0 || _selHp >= (int)_station->hardpoints.size()) { _screen = Screen::HardpointList; return true; }
-    const HardpointState& selHp = _station->hardpoints[_selHp];
+    const Hardpoint& selHp = _station->hardpoints[_selHp];
 
-    // Shipyard column (docking bay only)
-    if (selHp.isDockingBay) {
+    // P7-T4: shed-priority nudge buttons (isCore hardpoints are never shed —
+    // see RecalculatePowerBudget's !hp.isCore filter — so they get no control).
+    if (!selHp.isCore) {
+        Rectangle prioMinus = { (float)(panelX + 40), (float)(panelY + 44), 14.0f, 14.0f };
+        Rectangle prioPlus  = { (float)(panelX + 76), (float)(panelY + 44), 14.0f, 14.0f };
+        Hardpoint& hp = _station->hardpoints[_selHp];
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(m, prioMinus)) {
+            int cur = hardpoint_power_detail::EffectiveShedPriority(hp);
+            hp.shedPriority = std::clamp(cur - 1, 0, 9);
+            return true;
+        }
+        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(m, prioPlus)) {
+            int cur = hardpoint_power_detail::EffectiveShedPriority(hp);
+            hp.shedPriority = std::clamp(cur + 1, 0, 9);
+            return true;
+        }
+    }
+
+    // Shipyard column (only when a Shipyard facility is installed here)
+    if (HasShipyardFacility(selHp)) {
         Rectangle shipArea = ShipyardAreaRect(panelX, panelY);
         const auto& allShips = ecs::ShipRegistry::AllShips();
         const int shipRowH = 44;
@@ -421,7 +460,7 @@ bool StationModuleMenu::UpdateModulePage(int panelX, int panelY, Vector2 m) {
         if (_dragMod.type == ModuleType::Consumable) {
             for (int si = 0; si < (int)slots.size(); ++si) {
                 if (CheckCollisionPointRec(m, slots[si].rect)) {
-                    HardpointState& hp = _station->hardpoints[_selHp];
+                    Hardpoint& hp = _station->hardpoints[_selHp];
                     hp.hull = std::min(hp.hull + _dragMod.consumable.healAmount, hp.maxHull);
                     dropped = true;
                     break;
@@ -526,7 +565,7 @@ bool StationModuleMenu::IsMouseOverMenu() const {
 std::string StationModuleMenu::GetSelectedShipId() const {
     if (!isOpen || _screen != Screen::ModulePage) return "";
     if (_selHp < 0 || _selHp >= (int)_station->hardpoints.size()) return "";
-    if (!_station->hardpoints[_selHp].isDockingBay) return "";
+    if (!HasShipyardFacility(_station->hardpoints[_selHp])) return "";
 
     const auto& allShips = ecs::ShipRegistry::AllShips();
     if (_selShipIdx >= 0 && _selShipIdx < (int)allShips.size()) return allShips[_selShipIdx].id;
@@ -557,6 +596,8 @@ void StationModuleMenu::Draw() const {
     DrawHudChamferRect(closeBtn, 4.0f, hovX ? Color{ 90, 25, 25, 220 } : Color{ 30, 12, 12, 180 }, HudCritical, hovX ? 2.0f : 1.0f);
     DrawText("X", (int)(closeBtn.x + 7), (int)(closeBtn.y + 5), 12, hovX ? WHITE : HudLabel);
 
+    DrawPowerBar(panelX, panelY);
+
     if (_screen == Screen::HardpointList) DrawHardpointList(panelX, panelY, mouse);
     else                                  DrawModulePage(panelX, panelY, mouse);
 
@@ -571,12 +612,47 @@ void StationModuleMenu::Draw() const {
     }
 }
 
+void StationModuleMenu::DrawPowerBar(int panelX, int panelY) const {
+    using namespace hudtheme;
+    if (!_station) return;
+    const PowerBudget& pb = _station->powerBudget;
+    float ratio = pb.ratio();
+
+    int   shedCount    = 0;
+    float worstThrottle = 1.0f;
+    for (const Hardpoint& hp : _station->hardpoints) {
+        if (!hp.alive) continue;
+        if (hp.shed) shedCount++;
+        worstThrottle = std::min(worstThrottle, hp.throttle);
+    }
+
+    Color barColor = ratio <= 1.0f ? HudGood : ratio <= 1.25f ? HudCaution : HudCritical;
+
+    char label[96];
+    if (shedCount > 0)
+        std::snprintf(label, sizeof(label), "POWER %.1f / %.1f (%.0f%%)   %d SHED", pb.load, pb.capacity, ratio * 100.0f, shedCount);
+    else if (worstThrottle < 0.999f)
+        std::snprintf(label, sizeof(label), "POWER %.1f / %.1f (%.0f%%)   THROTTLED %.0f%%", pb.load, pb.capacity, ratio * 100.0f, worstThrottle * 100.0f);
+    else
+        std::snprintf(label, sizeof(label), "POWER %.1f / %.1f (%.0f%%)", pb.load, pb.capacity, ratio * 100.0f);
+    DrawText(label, panelX + 16, panelY + 27, 10, barColor);
+
+    Rectangle bar = { (float)(panelX + 16), (float)(panelY + 40), (float)(PanelW - 32), 6.0f };
+    DrawRectangle((int)bar.x, (int)bar.y, (int)bar.width, (int)bar.height, Color{ 20, 20, 30, 200 });
+    // Scaled so the shed threshold (ratio 1.25, RecalculatePowerBudget's own
+    // cutoff — Hardpoint.h) lands at the bar's right edge, not raw ratio=1.0,
+    // so "about to shed" reads as "bar nearly full" rather than pegged early.
+    float frac = std::clamp(ratio, 0.0f, 1.25f) / 1.25f;
+    DrawRectangle((int)bar.x, (int)bar.y, (int)(bar.width * frac), (int)bar.height, barColor);
+    DrawRectangleLinesEx(bar, 0.8f, HudDiv);
+}
+
 void StationModuleMenu::DrawHardpointList(int panelX, int panelY, Vector2 mouse) const {
     using namespace hudtheme;
     int n = (int)_station->hardpoints.size();
 
     for (int i = 0; i < n; ++i) {
-        const HardpointState& hp = _station->hardpoints[i];
+        const Hardpoint& hp = _station->hardpoints[i];
         Rectangle r = HardpointRowRect(panelX, panelY, i);
         bool hov = CheckCollisionPointRec(mouse, r);
         bool destroyed = !hp.alive;
@@ -597,6 +673,18 @@ void StationModuleMenu::DrawHardpointList(int panelX, int panelY, Vector2 mouse)
         DrawRectangleLinesEx({ r.x + 8, r.y + 26, (float)bw, 7.0f }, 0.8f, HudDiv);
 
         if (hp.isCore) DrawText("CORE", (int)(r.x + r.width - MeasureText("CORE", 9) - 8), (int)(r.y + 6), 9, HudCaution);
+
+        // P7-T2: per-hardpoint ACTIVE/THROTTLED/SHED status (derived every
+        // tick by RecalculatePowerBudget, Hardpoint.h). Destroyed rows already
+        // show their own DESTROYED/DROP TO REPAIR text in this slot below.
+        if (!destroyed) {
+            char st[24];
+            Color sc;
+            if (hp.shed)                    { std::snprintf(st, sizeof(st), "SHED");             sc = HudCritical; }
+            else if (hp.throttle < 0.999f)  { std::snprintf(st, sizeof(st), "THROTTLE %.0f%%", hp.throttle * 100.0f); sc = HudCaution; }
+            else                             { std::snprintf(st, sizeof(st), "ACTIVE");           sc = HudGood; }
+            DrawText(st, (int)(r.x + r.width - MeasureText(st, 9) - 8), (int)(r.y + 36), 9, sc);
+        }
 
         if (destroyed) {
             DrawText(hovRepair ? "DROP TO REPAIR" : "DESTROYED", (int)(r.x + 8), (int)(r.y + 36), 9,
@@ -621,7 +709,7 @@ void StationModuleMenu::DrawHardpointList(int panelX, int panelY, Vector2 mouse)
     }
 
     Rectangle sto = StorageAreaRect(panelX, panelY);
-    DrawText("STORAGE", (int)sto.x, panelY + 40 - 16, 11, HudLabel);
+    DrawText("STORAGE", (int)sto.x, panelY + ContentY - 16, 11, HudLabel);
     if (_storage) {
         int cols = std::max(1, ((int)sto.width + SlotGap) / (SlotPx + SlotGap));
         BeginScissorMode((int)sto.x, (int)sto.y, (int)sto.width, (int)sto.height);
@@ -647,25 +735,75 @@ void StationModuleMenu::DrawModulePage(int panelX, int panelY, Vector2 mouse) co
     DrawText("< BACK", (int)(backBtn.x + 8), (int)(backBtn.y + 5), 11, hovBack ? WHITE : HudLabel);
 
     if (_selHp < 0 || _selHp >= (int)_station->hardpoints.size()) return;
-    const HardpointState& hp = _station->hardpoints[_selHp];
+    const Hardpoint& hp = _station->hardpoints[_selHp];
+
+    // P5-T3: adjacency hint — a single line, priority shieldCovered >
+    // reactor-cut > rate-boost (a hardpoint could technically have more than
+    // one active; showing the strongest keeps this from needing its own
+    // layout row — a fuller per-hardpoint status readout is P7's job). Values
+    // come from RecalculateAdjacency (Hardpoint.h), recomputed every tick.
+    {
+        char hint[64] = "";
+        if (hp.shieldCovered) {
+            std::snprintf(hint, sizeof(hint), "SHIELD COVERED");
+        } else if (hp.adjacencyPowerDrawMult < 1.0f) {
+            std::snprintf(hint, sizeof(hint), "REACTOR ADJACENT  -%.0f%% DRAW", (1.0f - hp.adjacencyPowerDrawMult) * 100.0f);
+        } else if (hp.adjacencyRateMult > 1.0f) {
+            std::snprintf(hint, sizeof(hint), "ADJACENCY BOOST  +%.0f%% RATE", (hp.adjacencyRateMult - 1.0f) * 100.0f);
+        }
+        if (hint[0])
+            DrawText(hint, (int)(backBtn.x + backBtn.width + 12), (int)(backBtn.y + 5), 11, HudGood);
+    }
+
+    // P7-T2: ACTIVE/THROTTLED/SHED badge for the selected hardpoint.
+    {
+        char st[24];
+        Color sc;
+        if (hp.shed)                    { std::snprintf(st, sizeof(st), "SHED");             sc = HudCritical; }
+        else if (hp.throttle < 0.999f)  { std::snprintf(st, sizeof(st), "THROTTLE %.0f%%", hp.throttle * 100.0f); sc = HudCaution; }
+        else                             { std::snprintf(st, sizeof(st), "ACTIVE");           sc = HudGood; }
+        DrawText(st, (int)backBtn.x, (int)(backBtn.y + backBtn.height + 4), 10, sc);
+    }
+
+    // P7-T4: shed-priority nudge control — hidden for isCore hardpoints
+    // (never shed, see RecalculatePowerBudget). Ascending = shed first, so
+    // "-" makes this hardpoint shed sooner and "+" protects it longer.
+    if (!hp.isCore) {
+        Rectangle prioMinus = { (float)(panelX + 40), (float)(panelY + 44), 14.0f, 14.0f };
+        Rectangle prioPlus  = { (float)(panelX + 76), (float)(panelY + 44), 14.0f, 14.0f };
+        bool hovMinus = CheckCollisionPointRec(mouse, prioMinus);
+        bool hovPlus  = CheckCollisionPointRec(mouse, prioPlus);
+
+        DrawText("PRI", panelX + 16, (int)(prioMinus.y + 2), 9, HudLabel);
+
+        DrawHudChamferRect(prioMinus, 2.0f, hovMinus ? Color{ 30, 40, 55, 230 } : Color{ 14, 18, 24, 200 }, HudDiv, 1.0f);
+        DrawText("-", (int)(prioMinus.x + 5), (int)(prioMinus.y), 11, hovMinus ? WHITE : HudLabel);
+        DrawHudChamferRect(prioPlus, 2.0f, hovPlus ? Color{ 30, 40, 55, 230 } : Color{ 14, 18, 24, 200 }, HudDiv, 1.0f);
+        DrawText("+", (int)(prioPlus.x + 4), (int)(prioPlus.y), 11, hovPlus ? WHITE : HudLabel);
+
+        char pbuf[8];
+        std::snprintf(pbuf, sizeof(pbuf), "%d", hardpoint_power_detail::EffectiveShedPriority(hp));
+        DrawText(pbuf, (int)(prioMinus.x + 18), (int)(prioMinus.y + 2), 10, HudValue);
+    }
 
     // ── Module rows column ────────────────────────────────────────────────────
     static constexpr int LabelW = 90;
     static constexpr int RowH   = 76;
-    bool docking = hp.isDockingBay;
+    bool docking = HasShipyardFacility(hp);
     int modColX = panelX + kModColXOff;
     int modColW = docking ? kModColWDock : kModColWFull;
-    int rowStartY = panelY + 40 + 28;
+    int rowStartY = panelY + ContentY + 28;
 
     struct RowDef { ModuleType type; const char* label; int count; };
     const RowDef rowDefs[] = {
-        { ModuleType::Weapon,    "WEAPON", hp.wSlots   },
-        { ModuleType::Armor,     "ARMOR",  hp.arSlots  },
-        { ModuleType::Shield,    "SHIELD", hp.shSlots  },
-        { ModuleType::Engine,    "ENGINE", hp.enSlots  },
-        { ModuleType::Auxiliary, "AUX",    hp.auxSlots },
+        { ModuleType::Weapon,    "WEAPON",   (int)hp.WeaponSlots().size() },
+        { ModuleType::Armor,     "ARMOR",    hp.Armor() ? 1 : 0           },
+        { ModuleType::Shield,    "SHIELD",   (int)hp.ShieldSlots().size() },
+        { ModuleType::Engine,    "ENGINE",   hp.Engine() ? 1 : 0          },
+        { ModuleType::Auxiliary, "AUX",      (int)hp.AuxSlots().size()   },
+        { ModuleType::Facility,  "FACILITY", hp.Facility() ? 1 : 0       },
     };
-    for (int row = 0; row < 5; ++row) {
+    for (int row = 0; row < 6; ++row) {
         const RowDef& rd = rowDefs[row];
         int ty = rowStartY + row * RowH + (SlotPx - 14) / 2;
         Color lc = StorageMenu::TypeColor(rd.type);
@@ -690,7 +828,7 @@ void StationModuleMenu::DrawModulePage(int panelX, int panelY, Vector2 mouse) co
 
     // ── Storage column ────────────────────────────────────────────────────────
     Rectangle sto = StorageAreaRect(panelX, panelY);
-    DrawText("STORAGE", (int)sto.x, panelY + 40 - 16, 11, HudLabel);
+    DrawText("STORAGE", (int)sto.x, panelY + ContentY - 16, 11, HudLabel);
     if (_storage) {
         int cols = std::max(1, ((int)sto.width + SlotGap) / (SlotPx + SlotGap));
         BeginScissorMode((int)sto.x, (int)sto.y, (int)sto.width, (int)sto.height);
