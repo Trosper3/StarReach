@@ -109,20 +109,166 @@ static Vector2 GetSafeSpawnPosition(SystemWorld* w, float baseDistance, float ma
 // MODULES/STORAGE/ESCORTS/RANKS moved to the SystemMap pause menu.
 // Right section of the HUD now just holds ENTER (top bar) with BUILD, COMMS,
 // and SEAT (Epic 8, turret seat) stacked vertically as icon buttons below it.
-static void ComputeHudButtons(int sw, int sh,
-    Rectangle& enterBtn, Rectangle& buildBtn, Rectangle& commsBtn, Rectangle& seatBtn) {
-    static constexpr int HudH2 = 178; // +4px to fit the SEAT button's row under COMMS
-    static constexpr int CenterW = 190;
-    int hx = 12, hw = sw - 24;
-    int rDiv = hx + (hw - CenterW) / 2 + CenterW;
-    int hy = sh - HudH2 - 6;
-    int rx = rDiv + 12, ry = hy + 10;
-    int rw = (hx + hw) - rDiv - 16;
-    int btnW = std::min(rw, 160);
-    enterBtn = { (float)rx, (float)ry,        (float)btnW, 38.0f };
-    buildBtn = { (float)rx, (float)(ry + 43), (float)btnW, 38.0f };
-    commsBtn = { (float)rx, (float)(ry + 86), (float)btnW, 38.0f };
-    seatBtn  = { (float)rx, (float)(ry + 129),(float)btnW, 38.0f };
+// ── Redesigned cockpit HUD geometry ─────────────────────────────────────────
+// A single shaped panel spanning the screen bottom: tall left/right thirds that
+// curve down to a shorter middle third. The player's status circle sits in the
+// middle, weapons stack on the raised left, the target cluster on the raised
+// right, and four circular action buttons flank the player circle.
+static constexpr int HudH      = 176; // tall (left/right) section height — also the crosshair / click boundary
+static constexpr int HudShortH = 104; // middle lowered section height
+static constexpr int kWeaponRowsVisible = 4; // weapon rows shown before the stack scrolls
+
+struct HudLayout {
+    float left = 0, right = 0, bottom = 0;
+    float tallTop = 0, shortTop = 0;
+    float leftDiv = 0, rightDiv = 0;   // x of the third boundaries (curve centers)
+    float curveW = 110.0f;             // wider transition = more rounded section curves
+    Vector2 playerC = {}; float playerR = 62.0f;
+    float playerWrap = 24.0f;          // margin the middle panel arcs around the player circle
+    Vector2 targetC = {}; float targetR = 38.0f;
+    float   targetInfoX = 0;
+    Rectangle enter = {}, comms = {}, build = {}, storage = {};
+    Vector2 weaponOrigin = {}; float weaponAreaW = 0;
+    float scale = 1.0f;          // horizontal UI scale, <1 on narrow screens
+    float weaponsRight = 0;      // right extent of the weapon rows (incl. status text)
+    float btnLabelFont = 10.0f;  // action-button label size (shrinks with scale)
+};
+
+static HudLayout ComputeHudLayout(int sw, int sh) {
+    HudLayout L;
+    L.left   = 8.0f;
+    L.right  = (float)sw - 8.0f;
+    L.bottom = (float)sh - 6.0f;
+    L.tallTop  = L.bottom - (float)HudH;
+    L.shortTop = L.bottom - (float)HudShortH;
+    float w = L.right - L.left;
+    L.leftDiv  = L.left + w / 3.0f;
+    L.rightDiv = L.left + 2.0f * w / 3.0f;
+
+    // Shrink the fixed-size graphical elements (circle, target icon, buttons) on
+    // narrow screens so the text panels keep room and nothing overlaps. Full
+    // size at >= 1500px wide.
+    float s = std::clamp(w / 1500.0f, 0.7f, 1.0f);
+    L.scale = s;
+    L.btnLabelFont = std::clamp(10.0f * s, 8.0f, 10.0f);
+
+    float midCx = L.left + w * 0.5f;
+    float midCy = (L.shortTop + L.bottom) * 0.5f;
+    // Larger player circle, raised so its status rings clear the HUD bottom and
+    // leave room for the player name below it (the panel arcs to wrap it).
+    L.playerR = 62.0f * s;
+    L.playerC = { midCx, L.bottom - L.playerR - 38.0f };
+
+    L.targetR     = 38.0f * s;
+    // Sit the target cluster where the right curve ends and the panel top goes
+    // flat. targetC.x is finalized in DrawHUD from the measured label width; the
+    // value here is only an estimate (the renderer overrides x).
+    float tCurveEnd = L.rightDiv + L.curveW * 0.5f;
+    L.targetC     = { tCurveEnd + L.targetR + 15.0f, (L.tallTop + L.bottom) * 0.5f + 8.0f };
+    L.targetInfoX = L.targetC.x + L.targetR + 26.0f;
+
+    L.weaponOrigin = { L.left + 26.0f, L.tallTop + 34.0f };
+    L.weaponAreaW  = (L.leftDiv - L.curveW * 0.5f) - L.weaponOrigin.x - 14.0f;
+    L.weaponsRight = L.weaponOrigin.x + L.weaponAreaW + 34.0f; // + per-row status text
+
+    // Four circular buttons: a single horizontal row in the gap between the
+    // weapon stack and the player circle, centered there (so they sit away from
+    // the circle). On narrow screens the row shrinks to fit that gap and never
+    // crosses into the weapons or the circle. Labels sit underneath.
+    float btnLabelH = 12.0f * s;
+    float btnGap = 10.0f * s;
+    float slotL = L.weaponsRight + 12.0f;
+    float slotR = L.playerC.x - L.playerR - 26.0f;
+    float avail = slotR - slotL;
+    float btnD = 46.0f * s;
+    if (btnD * 4.0f + btnGap * 3.0f > avail && avail > 0.0f)
+        btnD = std::max(24.0f, (avail - btnGap * 3.0f) / 4.0f);
+    float rowW = btnD * 4.0f + btnGap * 3.0f;
+    float gx = slotL + std::max(0.0f, (avail - rowW) * 0.5f);
+    float gy = midCy - (btnD + btnLabelH) * 0.5f;
+    float pitch = btnD + btnGap;
+    L.enter   = { gx,                gy, btnD, btnD };
+    L.comms   = { gx + pitch,        gy, btnD, btnD };
+    L.build   = { gx + pitch * 2.0f, gy, btnD, btnD };
+    L.storage = { gx + pitch * 3.0f, gy, btnD, btnD };
+    return L;
+}
+
+// Top-edge y of the shaped panel at horizontal position x — tall on the outer
+// thirds, short in the middle, with smoothstep curves across each boundary.
+static float HudTopY(const HudLayout& L, float x) {
+    float halfC = L.curveW * 0.5f;
+    auto smooth = [](float t) { t = std::clamp(t, 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    // Middle section top: the flat short edge, arcing up in a circle to wrap
+    // over the raised player circle so the panel encompasses it.
+    auto midTop = [&](float xx) -> float {
+        float top = L.shortTop;
+        float dx = xx - L.playerC.x;
+        float R  = L.playerR + L.playerWrap;
+        float under = R * R - dx * dx;
+        if (under > 0.0f) top = std::min(top, L.playerC.y - sqrtf(under));
+        return top;
+    };
+    if (x < L.leftDiv - halfC)  return L.tallTop;
+    if (x < L.leftDiv + halfC) {
+        float t = (x - (L.leftDiv - halfC)) / L.curveW;
+        return L.tallTop + (L.shortTop - L.tallTop) * smooth(t);
+    }
+    if (x < L.rightDiv - halfC) return midTop(x);
+    if (x < L.rightDiv + halfC) {
+        float t = (x - (L.rightDiv - halfC)) / L.curveW;
+        return L.shortTop + (L.tallTop - L.shortTop) * smooth(t);
+    }
+    return L.tallTop;
+}
+
+// Soft additive bloom ring (LED-in-panel look) used for HUD circle frames.
+static void HudGlowRing(Vector2 c, float radius, float thick, Color col,
+                        float coreA, float strength) {
+    BeginBlendMode(BLEND_ADDITIVE);
+    for (int i = 3; i >= 1; --i) {
+        float spread = thick + (float)i * 4.0f;
+        DrawRing(c, radius - spread * 0.5f, radius + spread * 0.5f, 0.0f, 360.0f, 64,
+                 ColorAlpha(col, 0.06f * strength * (float)(4 - i)));
+    }
+    EndBlendMode();
+    DrawRing(c, radius - thick * 0.5f, radius + thick * 0.5f, 0.0f, 360.0f, 64,
+             ColorAlpha(col, coreA));
+}
+
+static void HudRadialGlow(Vector2 c, float r, Color col, float peak) {
+    DrawCircleGradient((int)c.x, (int)c.y, r, ColorAlpha(col, peak), ColorAlpha(col, 0.0f));
+}
+
+// Filled shaped panel with a glowing chrome top edge that follows the curves.
+static void DrawHudShapedPanel(const HudLayout& L, Color glass, Color chrome) {
+    int xi0 = (int)L.left, xi1 = (int)L.right, bot = (int)L.bottom;
+    const int step = 2;
+    for (int x = xi0; x < xi1; x += step) {
+        int xw = std::min(step, xi1 - x);
+        float ty = HudTopY(L, (float)x + xw * 0.5f);
+        DrawRectangle(x, (int)ty, xw, bot - (int)ty + 1, glass);
+    }
+    // Full outline: the shaped top edge plus both vertical side edges, so the
+    // whole HUD border can bloom.
+    auto border = [&](float thick, Color c) {
+        Vector2 prev = { L.left, HudTopY(L, L.left) };
+        for (int x = xi0 + 4; x <= xi1; x += 4) {
+            Vector2 cur = { (float)x, HudTopY(L, (float)x) };
+            DrawLineEx(prev, cur, thick, c);
+            prev = cur;
+        }
+        DrawLineEx({ L.left,  HudTopY(L, L.left)  }, { L.left,  L.bottom }, thick, c);
+        DrawLineEx({ L.right, HudTopY(L, L.right) }, { L.right, L.bottom }, thick, c);
+    };
+    // Layered additive bloom with a gentle pulse for a pronounced lit-edge look.
+    float pulse = 0.72f + 0.28f * sinf((float)GetTime() * 2.0f);
+    BeginBlendMode(BLEND_ADDITIVE);
+    border(18.0f, ColorAlpha(chrome, 0.05f * pulse));
+    border(11.0f, ColorAlpha(chrome, 0.09f * pulse));
+    border(6.0f,  ColorAlpha(chrome, 0.16f * pulse));
+    EndBlendMode();
+    border(3.0f, chrome);
 }
 
 static const char* FactionName(Faction f) {
@@ -3746,7 +3892,6 @@ void SpaceFlight::UpdateCollisions() {
 }
 
 using namespace hudtheme;
-static constexpr int HudH = 174;
 
 // Simplified icon glyphs for the icon+label HUD buttons.
 static void DrawHudHammerIcon(Vector2 c, float s, Color color) {
@@ -3772,13 +3917,24 @@ static void DrawHudDockIcon(Vector2 c, float s, Color color) {
     DrawLineEx({ c.x + s * 0.5f, by - s * 0.28f }, { c.x + s * 0.5f, by }, 2.0f, color);
     DrawLineEx({ c.x - s * 0.5f, by }, { c.x + s * 0.5f, by }, 2.0f, color);
 }
-// Crosshair-in-a-ring — reads as "man a turret" (Epic 8).
+// Crosshair-in-a-ring — reads as "man a turret" (Epic 8). Retained for the
+// turret/seat feature (deferred from the HUD, to return with docking).
 static void DrawHudTurretIcon(Vector2 c, float s, Color color) {
     DrawRing(c, s * 0.38f, s * 0.5f, 0.0f, 360.0f, 20, color);
     DrawLineEx({ c.x - s * 0.62f, c.y }, { c.x - s * 0.3f, c.y }, 2.0f, color);
     DrawLineEx({ c.x + s * 0.3f, c.y },  { c.x + s * 0.62f, c.y }, 2.0f, color);
     DrawLineEx({ c.x, c.y - s * 0.62f }, { c.x, c.y - s * 0.3f }, 2.0f, color);
     DrawLineEx({ c.x, c.y + s * 0.3f },  { c.x, c.y + s * 0.62f }, 2.0f, color);
+}
+// Open crate — reads as "cargo / storage".
+static void DrawHudStorageIcon(Vector2 c, float s, Color color) {
+    Rectangle box = { c.x - s * 0.55f, c.y - s * 0.35f, s * 1.1f, s * 0.85f };
+    DrawRectangleLinesEx(box, 2.0f, color);
+    DrawLineEx({ box.x, box.y + box.height * 0.34f }, { box.x + box.width, box.y + box.height * 0.34f }, 2.0f, color);
+    DrawLineEx({ c.x, box.y + box.height * 0.34f }, { c.x, box.y + box.height }, 2.0f, color);
+    // lid flaps
+    DrawLineEx({ box.x, box.y }, { c.x - s * 0.2f, box.y - s * 0.28f }, 2.0f, color);
+    DrawLineEx({ box.x + box.width, box.y }, { c.x + s * 0.2f, box.y - s * 0.28f }, 2.0f, color);
 }
 
 void SpaceFlight::UpdateTarget() {
@@ -3934,521 +4090,421 @@ void SpaceFlight::UpdateTarget() {
 
 void SpaceFlight::DrawHUD() const {
     int sw = GetScreenWidth(), sh = GetScreenHeight();
-    int hx = 12, hy = sh - HudH - 6;
-    int hw = sw - hx * 2;
     Vector2 mouse = GetMousePosition();
+    HudLayout L = ComputeHudLayout(sw, sh);
+    const bool hasSensors = _hasSensors;
 
-    static constexpr int CenterW = 190;
-    int lDiv = hx + (hw - CenterW) / 2;
-    int rDiv = lDiv + CenterW;
+    // Target cluster horizontal position, resolved up front from the measured
+    // "TARGET" label width so the stat legend can keep clear of the icon.
+    Vector2 tgTs      = MeasureTextEx(_hudFontUi, "TARGET", 11.0f, 1.0f);
+    float   tCurveEnd = L.rightDiv + L.curveW * 0.5f;
+    float   targetCx  = tCurveEnd + tgTs.x * 0.5f;
+    float   targetLeft = targetCx - (L.targetR + 15.0f); // icon ring/glow left edge
 
-    DrawHudBracketPanel({ (float)hx, (float)hy, (float)hw, (float)HudH }, HudBg, HudBorder, 18.0f, 2.0f);
-    DrawRectangle(lDiv, hy + 10, 1, HudH - 20, HudDiv);
-    DrawRectangle(rDiv, hy + 10, 1, HudH - 20, HudDiv);
+    // ── Shaped panel ────────────────────────────────────────────────────────
+    DrawHudShapedPanel(L, HudBg, HudBorder);
 
-    auto DrawStatusRing = [](Vector2 c, float iR, float oR,
-        float pct, Color fill, Color bg) {
-            DrawRing(c, iR, oR, -90.0f, 270.0f, 64, bg);
-            if (pct > 0.005f) {
-                Color glow = fill; glow.a = 55;
-                DrawRing(c, iR - 2.0f, oR + 2.0f, -90.0f, -90.0f + 360.0f * pct, 64, glow);
-                DrawRing(c, iR, oR, -90.0f, -90.0f + 360.0f * pct, 64, fill);
-            }
-            for (int t = 0; t < 4; ++t) {
-                float ang = (-90.0f + 90.0f * t) * DEG2RAD;
-                Vector2 dir = { cosf(ang), sinf(ang) };
-                DrawLineEx({ c.x + dir.x * (iR - 2.0f), c.y + dir.y * (iR - 2.0f) },
-                    { c.x + dir.x * (oR + 2.0f), c.y + dir.y * (oR + 2.0f) },
-                    1.0f, Color{ 10,14,18,200 });
-            }
-        };
-    auto DrawHalfRing = [](Vector2 c, float iR, float oR,
-        float pct, Color fill, Color bg, bool left) {
-            float s = left ? 90.0f : -90.0f;
-            DrawRing(c, iR, oR, s, s + 180.0f, 32, bg);
-            if (pct > 0.005f) {
-                Color glow = fill; glow.a = 55;
-                DrawRing(c, iR - 2.0f, oR + 2.0f, s, s + 180.0f * pct, 32, glow);
-                DrawRing(c, iR, oR, s, s + 180.0f * pct, 32, fill);
-            }
-        };
     auto Rot2D = [](Vector2 v, float deg) -> Vector2 {
         float r = deg * DEG2RAD;
         return { v.x * cosf(r) - v.y * sinf(r), v.x * sinf(r) + v.y * cosf(r) };
+    };
+
+    // Four-quadrant status ring: Health, Energy shield, Particle (kinetic)
+    // shield, Fuel. Each 90° arc filled by its pct, with an additive bloom.
+    auto DrawFourRing = [&](Vector2 c, float iR, float oR,
+                            float hp, Color hpCol, float es, float ps, float fu, bool showFuel) {
+        struct Q { float start; float pct; Color col; Color bg; bool on; };
+        Q qs[4] = {
+            { -90.0f, hp, hpCol,                   Color{ 22,32,22,200 }, true },
+            {   0.0f, es, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, true },
+            {  90.0f, ps, Color{ 235,175, 60,255 }, Color{ 62,48,14,200 }, true },
+            { 180.0f, fu, Color{ 150,110,230,255 }, Color{ 30,22,48,200 }, showFuel },
         };
+        float gap = 7.0f;
+        for (const Q& q : qs) {
+            float a0 = q.start + gap * 0.5f, a1 = q.start + 90.0f - gap * 0.5f;
+            DrawRing(c, iR, oR, a0, a1, 24, q.bg);
+            if (q.on && q.pct > 0.005f) {
+                float af = a0 + (a1 - a0) * std::clamp(q.pct, 0.0f, 1.0f);
+                BeginBlendMode(BLEND_ADDITIVE);
+                DrawRing(c, iR - 2.0f, oR + 2.0f, a0, af, 24, ColorAlpha(q.col, 0.30f));
+                EndBlendMode();
+                DrawRing(c, iR, oR, a0, af, 24, q.col);
+            }
+        }
+    };
 
-    const float sAreaR = 28.0f;
-    const float sHpIn = 30.0f, sHpOut = 37.0f;
-    const float sShIn = 39.0f, sShOut = 46.0f;
-    Vector2 sc = { (float)((lDiv + rDiv) / 2), (float)(hy + HudH / 2 - 6) };
+    // ── Weapon stack (raised left section) ──────────────────────────────────
+    {
+        float wx = L.weaponOrigin.x, wy0 = L.weaponOrigin.y;
+        DrawTextEx(_hudFontUi, "WEAPONS", { wx - 4.0f, L.tallTop + 12.0f }, 11.0f, 1.0f, HudLabel);
+        auto weaponSlots = _loadout.WeaponSlots();
+        int n = _playerMeta.weaponSlots;
+        const float rowH = 30.0f, icoR = 12.0f;
+        // Page the stack when there are more weapons than fit vertically.
+        int maxScroll = std::max(0, n - kWeaponRowsVisible);
+        int firstRow  = std::clamp(_weaponScroll, 0, maxScroll);
+        int lastRow   = std::min(n, firstRow + kWeaponRowsVisible);
+        for (int i = firstRow; i < lastRow; ++i) {
+            float ry = wy0 + (float)(i - firstRow) * rowH;
+            Vector2 ic = { wx + icoR, ry + icoR };
+            bool hasWeapon = (i < (int)weaponSlots.size() && weaponSlots[i]->equipped);
+            bool isOn = hasWeapon && IsWeaponEnabled(i);
+            Color acc = isOn ? HudGood : (hasWeapon ? HudCaution : HudDiv);
+            DrawCircleV(ic, icoR, Color{ 10,16,20,225 });
+            if (isOn) HudGlowRing(ic, icoR, 2.0f, acc, 0.9f, 0.8f);
+            else      DrawRing(ic, icoR - 1.0f, icoR + 0.5f, 0.0f, 360.0f, 32, ColorAlpha(acc, 0.7f));
 
-    DrawCircleV(sc, sShOut + 1.0f, Color{ 6, 10, 6, 230 });
-    DrawCircleLines((int)sc.x, (int)sc.y, (int)(sShOut + 3.0f), Color{ 90,150,190,90 });
+            const char* abbr = "--";
+            if (hasWeapon) {
+                const ModuleDef& wm = *weaponSlots[i]->equipped;
+                abbr = (wm.weapon.fireMode == WeaponFireMode::LockOn) ? "MIS"
+                     : (wm.weapon.fireMode == WeaponFireMode::Charge) ? "CHG"
+                     : (wm.weapon.damageType == DamageType::Energy) ? "ENR"
+                     : (wm.weapon.effect == WeaponEffect::EMP) ? "EMP"
+                     : (wm.weapon.effect == WeaponEffect::Ion) ? "ION" : "KIN";
+            }
+            Vector2 abTs = MeasureTextEx(_hudFontVal, abbr, 10.0f, 1.0f);
+            DrawTextEx(_hudFontVal, abbr, { ic.x - abTs.x * 0.5f, ic.y - abTs.y * 0.5f }, 10.0f, 1.0f,
+                       isOn ? Color{ 150,235,150,255 } : ColorAlpha(acc, 0.9f));
+
+            char kh[2] = { (char)('1' + i), 0 }; if (i == 9) kh[0] = '0';
+            DrawTextEx(_hudFontVal, kh, { wx - 4.0f, ry - 3.0f }, 9.0f, 1.0f, Color{ 90,120,140,180 });
+
+            float bx = ic.x + icoR + 10.0f;
+            float bw = std::max(30.0f, L.weaponAreaW - (bx - wx));
+            const float bh = 9.0f;
+            float by = ic.y - bh * 0.5f;
+            DrawRectangleRounded({ bx, by, bw, bh }, 0.5f, 6, Color{ 18,26,30,210 });
+
+            float fillPct = 0.0f; Color barCol = HudDiv; const char* st = "";
+            if (hasWeapon) {
+                const ModuleDef& wm = *weaponSlots[i]->equipped;
+                if (!isOn) { fillPct = 0.0f; barCol = HudDiv; st = "OFF"; }
+                else if (wm.weapon.fireMode == WeaponFireMode::Charge) {
+                    fillPct = _playerMeta.ChargePct();
+                    barCol  = fillPct >= 1.0f ? HudGood : Color{ 60,150,220,255 };
+                    st = fillPct >= 1.0f ? "FULL" : "CHG";
+                }
+                else if (wm.weapon.fireMode == WeaponFireMode::LockOn) {
+                    fillPct = 1.0f - _playerMeta.FireCooldownPct();
+                    barCol  = (_lockTargetId != 0) ? HudCritical : (fillPct >= 1.0f ? HudGood : HudCaution);
+                    st = (_lockTargetId != 0) ? "LOCK" : (fillPct >= 1.0f ? "RDY" : "...");
+                }
+                else {
+                    fillPct = 1.0f - _playerMeta.FireCooldownPct();
+                    barCol  = fillPct >= 1.0f ? HudGood : HudCaution;
+                    st = fillPct >= 1.0f ? "RDY" : "CHG";
+                }
+            }
+            if (fillPct > 0.005f) {
+                float fw = bw * std::clamp(fillPct, 0.0f, 1.0f);
+                BeginBlendMode(BLEND_ADDITIVE);
+                DrawRectangleRounded({ bx, by - 1.0f, fw, bh + 2.0f }, 0.5f, 6, ColorAlpha(barCol, 0.25f));
+                EndBlendMode();
+                DrawRectangleRounded({ bx, by, fw, bh }, 0.5f, 6, barCol);
+            }
+            DrawRectangleRoundedLinesEx({ bx, by, bw, bh }, 0.5f, 6, 1.0f, ColorAlpha(HudBorder, 0.5f));
+            if (st[0]) DrawTextEx(_hudFontVal, st, { bx + bw + 6.0f, ic.y - 5.0f }, 9.0f, 1.0f, barCol);
+        }
+        if (n == 0)
+            DrawTextEx(_hudFontVal, "NO WEAPONS", { wx, wy0 }, 11.0f, 1.0f, HudCritical);
+
+        // Scroll affordance: up/down chevrons above and below the visible rows.
+        if (maxScroll > 0) {
+            float ax = wx + icoR;
+            Color upC = firstRow > 0        ? Color{ 150,200,240,235 } : ColorAlpha(HudDiv, 0.4f);
+            Color dnC = firstRow < maxScroll ? Color{ 150,200,240,235 } : ColorAlpha(HudDiv, 0.4f);
+            DrawPoly({ ax, wy0 - 6.0f }, 3, 4.0f, -90.0f, upC);
+            DrawPoly({ ax, wy0 + kWeaponRowsVisible * rowH + 5.0f }, 3, 4.0f, 90.0f, dnC);
+            char cnt[16]; std::snprintf(cnt, sizeof(cnt), "%d-%d/%d", firstRow + 1, lastRow, n);
+            DrawTextEx(_hudFontVal, cnt, { ax + 12.0f, wy0 + kWeaponRowsVisible * rowH + 1.0f }, 9.0f, 1.0f,
+                       ColorAlpha(HudLabel, 0.8f));
+        }
+    }
+
+    // ── Four action buttons (middle section, left of the player circle) ─────
+    auto DrawCircBtn = [&](Rectangle box, void (*icon)(Vector2, float, Color),
+                           const char* label, bool available, bool hot, Color accent) {
+        Vector2 c = { box.x + box.width * 0.5f, box.y + box.height * 0.5f };
+        float r = box.width * 0.5f;
+        Color fill = available ? (hot ? Color{ 20,40,54,235 } : Color{ 12,20,30,215 })
+                               : Color{ 12,15,20,170 };
+        DrawCircleV(c, r, fill);
+        HudRadialGlow(c, r, accent, available ? 0.10f : 0.03f);
+        if (available && hot) HudGlowRing(c, r, 2.5f, accent, 0.95f, 1.0f);
+        else DrawRing(c, r - 1.0f, r + 0.5f, 0.0f, 360.0f, 48,
+                      ColorAlpha(available ? accent : Color{ 55,70,82,255 }, available ? 0.9f : 0.5f));
+        Color fg = available ? (hot ? WHITE : accent) : Color{ 60,70,80,160 };
+        icon({ c.x, c.y }, box.width * 0.36f, fg);
+        const float lblFont = L.btnLabelFont;
+        Vector2 ts = MeasureTextEx(_hudFontUi, label, lblFont, 1.0f);
+        DrawTextEx(_hudFontUi, label, { c.x - ts.x * 0.5f, box.y + box.height + 3.0f }, lblFont, 1.0f, fg);
+    };
+
+    bool nearStation = IsNearEnterableStation();
+    bool nearPlanet  = nearStation || IsNearPlanet();
+    bool commsAvail  = (_npcTargetId != 0) || (_target.valid && _target.isStellar && _target.hasFaction);
+    DrawCircBtn(L.enter,   DrawHudDockIcon,    "ENTER", nearPlanet, nearPlanet && CheckCollisionPointRec(mouse, L.enter), Color{ 60,160,220,255 });
+    DrawCircBtn(L.comms,   DrawHudRadarIcon,   "COMMS", commsAvail, commsAvail && CheckCollisionPointRec(mouse, L.comms), Color{ 50,165,205,255 });
+    DrawCircBtn(L.build,   DrawHudHammerIcon,  "BUILD", true,       CheckCollisionPointRec(mouse, L.build),   Color{ 80,150,230,255 });
+    DrawCircBtn(L.storage, DrawHudStorageIcon, "STORE", true,       CheckCollisionPointRec(mouse, L.storage), Color{ 120,190,130,255 });
+
+    // ── Player status circle (center of middle section) ─────────────────────
+    Vector2 sc = L.playerC;
+    float ringIn = L.playerR + 3.0f, ringOut = L.playerR + 10.0f;
+    DrawCircleV(sc, L.playerR, Color{ 8,12,18,235 });
+    HudRadialGlow(sc, L.playerR, Color{ 60,180,220,255 }, 0.10f);
 
     float hullPct = _playerEntity.health.currentHull / _playerEntity.health.maxStats.hull;
-    Color hullCol = hullPct > 0.5f ? HudGood
-        : hullPct > 0.25f ? HudCaution
-        : HudCritical;
-    if (hullPct <= 0.25f) {
-        float pulse = 0.55f + 0.45f * sinf((float)GetTime() * 6.0f);
-        hullCol.a = (unsigned char)(150 + 90 * pulse);
-    }
-    DrawStatusRing(sc, sHpIn, sHpOut, hullPct, hullCol, Color{ 22,32,22,200 });
-
     float ksPct = _playerEntity.health.maxStats.shield > 0.0f
         ? _playerEntity.health.currentShield / _playerEntity.health.maxStats.shield : 0.0f;
     float esPct = _playerMeta.maxEnergyShield > 0.0f
         ? _playerMeta.energyShield / _playerMeta.maxEnergyShield : 0.0f;
-    DrawHalfRing(sc, sShIn, sShOut, ksPct, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
-    DrawHalfRing(sc, sShIn, sShOut, esPct, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-    DrawCircleLines((int)sc.x, (int)sc.y, (int)sAreaR, Color{ 30,55,30,160 });
+    float fuelPct = std::clamp(_fuel / kMaxFuel, 0.0f, 1.0f);
+    Color hullCol = hullPct > 0.5f ? HudGood : hullPct > 0.25f ? HudCaution : HudCritical;
+    DrawFourRing(sc, ringIn, ringOut, hullPct, hullCol, esPct, ksPct, fuelPct, true);
 
-    {
-        char pctBuf[8];
-        std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", hullPct * 100.0f);
-        Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 15.0f, 1.0f);
-        DrawTextEx(_hudFontVal, pctBuf, { sc.x - hpTs.x / 2.0f, sc.y + sShOut + 6.0f }, 15.0f, 1.0f, hullCol);
+    Color frameCol = { 90,150,190,255 }; float framePulse = 0.85f;
+    if (hullPct <= 0.25f) { frameCol = HudCritical; framePulse = 0.6f + 0.4f * sinf((float)GetTime() * 6.0f); }
+    HudGlowRing(sc, ringOut + 3.0f, 2.0f, frameCol, 0.55f, framePulse);
 
-        if (_playerEntity.health.maxStats.shield > 0.0f) {
-            std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", ksPct * 100.0f);
-            Vector2 ksTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
-            DrawTextEx(_hudFontVal, pctBuf, { sc.x - sShOut - ksTs.x - 5.0f, sc.y - ksTs.y / 2.0f },
-                14.0f, 1.0f, Color{ 255,210,60,255 });
-        }
-        if (_playerMeta.maxEnergyShield > 0.0f) {
-            std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", esPct * 100.0f);
-            Vector2 esTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
-            DrawTextEx(_hudFontVal, pctBuf, { sc.x + sShOut + 5.0f, sc.y - esTs.y / 2.0f },
-                14.0f, 1.0f, Color{ 60,180,220,255 });
-        }
-    }
-
-    Texture2D* shipTexPtr = _playerShipTex;
-    if (shipTexPtr && shipTexPtr->id > 0) {
-        const Texture2D& shipTex = *shipTexPtr;
-        float tw = (float)shipTex.width;
-        float th = (float)shipTex.height;
-        float scale = (sAreaR * 1.75f) / std::max(tw, th);
-        Rectangle src = { 0.0f, 0.0f, tw, th };
-        Rectangle dst = { sc.x, sc.y, tw * scale, th * scale };
-        Vector2   origin = { tw * scale / 2.0f, th * scale / 2.0f };
-        DrawTexturePro(shipTex, src, dst, origin, _playerEntity.transform.rotation, WHITE);
+    if (_playerShipTex && _playerShipTex->id > 0) {
+        const Texture2D& shipTex = *_playerShipTex;
+        float tw = (float)shipTex.width, th = (float)shipTex.height;
+        float scale = (L.playerR * 1.4f) / std::max(tw, th);
+        DrawTexturePro(shipTex, { 0,0,tw,th }, { sc.x, sc.y, tw * scale, th * scale },
+            { tw * scale / 2.0f, th * scale / 2.0f }, _playerEntity.transform.rotation, WHITE);
         if (_playerMeta.thrusting) {
             Vector2 exh = Vector2Add(sc, Rot2D({ 0.0f, th * scale * 0.38f }, _playerEntity.transform.rotation));
             DrawCircleV(exh, 2.5f, Color{ 255,160,60,110 });
         }
-    }
-    else {
-        const float iSz = sAreaR * 0.55f;
-        Vector2 tip = Vector2Add(sc, Rot2D({ 0.0f,      -iSz }, _playerEntity.transform.rotation));
-        Vector2 lft = Vector2Add(sc, Rot2D({ -iSz * 0.6f,  iSz * 0.55f }, _playerEntity.transform.rotation));
-        Vector2 rgt = Vector2Add(sc, Rot2D({ iSz * 0.6f,  iSz * 0.55f }, _playerEntity.transform.rotation));
+    } else {
+        const float iSz = L.playerR * 0.5f;
+        Vector2 tip = Vector2Add(sc, Rot2D({ 0.0f, -iSz }, _playerEntity.transform.rotation));
+        Vector2 lft = Vector2Add(sc, Rot2D({ -iSz * 0.6f, iSz * 0.55f }, _playerEntity.transform.rotation));
+        Vector2 rgt = Vector2Add(sc, Rot2D({ iSz * 0.6f, iSz * 0.55f }, _playerEntity.transform.rotation));
         DrawTriangle(tip, rgt, lft, Color{ 60,140,230,255 });
         DrawTriangleLines(tip, rgt, lft, Color{ 140,200,255,255 });
     }
-    const char* snc = _playerMeta.displayName.c_str();
-    Vector2 sncTs = MeasureTextEx(_hudFontUi, snc, 11.0f, 1.0f);
-    DrawTextEx(_hudFontUi, snc, { sc.x - sncTs.x / 2.0f, (float)(hy + HudH - 17) }, 11.0f, 1.0f, HudLabel);
+    {
+        const char* pname = _playerMeta.displayName.c_str();
+        Vector2 pnTs = MeasureTextEx(_hudFontUi, pname, 12.0f, 1.0f);
+        // Below the status rings with clear separation so it doesn't look pinched.
+        float pnY = sc.y + ringOut + 13.0f;
+        DrawTextEx(_hudFontUi, pname, { sc.x - pnTs.x / 2.0f, pnY }, 12.0f, 1.0f, WHITE);
+    }
+    {
+        // Stat legend to the right of the player circle. It adapts to the width
+        // between the circle and the target icon: full labels when there's room,
+        // compact labels (and a smaller font) when the screen narrows, with the
+        // percent column tabbed so all values line up and never overrun the
+        // target cluster.
+        float lFont = 14.0f, lStep = 21.0f;
+        float lx = sc.x + ringOut + 18.0f, ly = L.shortTop + 12.0f;
+        float rightLimit = targetLeft - 12.0f;
+        const char* eLbl = "Energy Shield"; const char* pLbl = "Particle Shield";
+        float labelW = MeasureTextEx(_hudFontVal, pLbl, lFont, 1.0f).x;
+        float valW   = MeasureTextEx(_hudFontVal, "100%", lFont, 1.0f).x;
+        float valX   = lx + labelW + 18.0f;
+        if (valX + valW > rightLimit) {                 // compact labels
+            eLbl = "ENR SH"; pLbl = "PART SH";
+            labelW = MeasureTextEx(_hudFontVal, pLbl, lFont, 1.0f).x;
+            valX = lx + labelW + 12.0f;
+        }
+        if (valX + valW > rightLimit) {                 // shrink font a touch
+            lFont = 12.0f; lStep = 18.0f;
+            labelW = MeasureTextEx(_hudFontVal, pLbl, lFont, 1.0f).x;
+            valW   = MeasureTextEx(_hudFontVal, "100%", lFont, 1.0f).x;
+            valX   = lx + labelW + 10.0f;
+        }
+        // Keep the values on-screen even in the worst case.
+        valX = std::max(lx + labelW + 6.0f, std::min(valX, rightLimit - valW));
+        auto stat = [&](const char* tag, float pct, Color col) {
+            DrawTextEx(_hudFontVal, tag, { lx, ly }, lFont, 1.0f, HudLabel);
+            char b[12]; std::snprintf(b, sizeof(b), "%.0f%%", pct * 100.0f);
+            DrawTextEx(_hudFontVal, b, { valX, ly }, lFont, 1.0f, col);
+            ly += lStep;
+        };
+        stat("HULL", hullPct, hullCol);
+        stat(eLbl,   esPct,   Color{ 60,180,220,255 });
+        stat(pLbl,   ksPct,   Color{ 235,175,60,255 });
+        stat("FUEL", fuelPct, Color{ 150,110,230,255 });
+    }
 
-    const float tAreaR = 26.0f;
-    const float tHpIn = 28.0f, tHpOut = 35.0f;
-    const float tShIn = 37.0f, tShOut = 44.0f;
-    Vector2 tc = { (float)(hx + 60), (float)(hy + HudH / 2 - 6) };
-    DrawCircleV(tc, tShOut + 1.0f, Color{ 6, 8, 14, 230 });
-    DrawCircleLines((int)tc.x, (int)tc.y, (int)(tShOut + 3.0f), Color{ 90,150,190,90 });
+    // ── Target cluster (raised right section) ───────────────────────────────
+    // The "TARGET" label's left edge sits where the panel stops curving; the
+    // icon is centered under that label (position resolved at the top of DrawHUD).
+    Vector2 tc = { targetCx, L.targetC.y };
+    float tRingIn = L.targetR + 4.0f, tRingOut = L.targetR + 11.0f;
+    float dxInfo = tc.x + L.targetR + 26.0f, dyTop = tc.y - tRingOut - 18.0f - tgTs.y; // top of the "TARGET" label
+    DrawTextEx(_hudFontUi, "TARGET", { tc.x - tgTs.x * 0.5f, dyTop }, 11.0f, 1.0f, HudLabel);
+    DrawCircleV(tc, L.targetR, Color{ 8,10,16,235 });
+    HudRadialGlow(tc, L.targetR, Color{ 90,150,190,255 }, 0.08f);
 
-    const bool hasSensors = _hasSensors;
+    auto relColor = [](bool hostile, bool neutral) -> Color {
+        return hostile ? Color{ 200,70,70,255 } : neutral ? Color{ 230,175,60,255 } : Color{ 60,210,130,255 };
+    };
+
+    // Target name centered horizontally under the target icon (mirrors the
+    // player name under the player circle).
+    auto drawTargetName = [&](const char* nm) {
+        Vector2 nts = MeasureTextEx(_hudFontUi, nm, 13.0f, 1.0f);
+        DrawTextEx(_hudFontUi, nm, { tc.x - nts.x * 0.5f, tc.y + tRingOut + 14.0f }, 13.0f, 1.0f, HudValue);
+    };
 
     if (_target.valid) {
         if (_target.isNpc) {
-            float tHpPct = _target.health / _target.maxHealth;
-            Color tHpCol = tHpPct > 0.5f ? HudGood
-                : tHpPct > 0.25f ? HudCaution
-                : HudCritical;
-            DrawStatusRing(tc, tHpIn, tHpOut, tHpPct, tHpCol, Color{ 22,22,32,200 });
-            float tKsPct = (_target.maxKineticShield > 0.0f)
-                ? _target.kineticShield / _target.maxKineticShield : 0.0f;
-            float tEsPct = (_target.maxEnergyShield > 0.0f)
-                ? _target.energyShield / _target.maxEnergyShield : 0.0f;
-            DrawHalfRing(tc, tShIn, tShOut, tKsPct, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
-            DrawHalfRing(tc, tShIn, tShOut, tEsPct, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-            bool isHostileNpc = (_target.npcFaction == NpcFaction::Hostile);
-            bool isNeutralNpc = (_target.npcFaction == NpcFaction::Neutral);
-            Color tgtRing = isHostileNpc ? Color{ 120,30,30,180 }
-                : isNeutralNpc ? Color{ 100,90,20,180 } : Color{ 30,80,30,180 };
-            DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, tgtRing);
+            float hp = _target.health / _target.maxHealth;
+            Color hpc = hp > 0.5f ? HudGood : hp > 0.25f ? HudCaution : HudCritical;
+            float ks = (_target.maxKineticShield > 0.0f) ? _target.kineticShield / _target.maxKineticShield : 0.0f;
+            float es = (_target.maxEnergyShield > 0.0f) ? _target.energyShield / _target.maxEnergyShield : 0.0f;
+            DrawFourRing(tc, tRingIn, tRingOut, hp, hpc, es, ks, 0.0f, false);
+            bool hostile = (_target.npcFaction == NpcFaction::Hostile);
+            bool neutral = (_target.npcFaction == NpcFaction::Neutral);
+            HudGlowRing(tc, tRingOut + 4.0f, 2.0f, relColor(hostile, neutral), 0.55f, 0.85f);
 
-            // Percentage readouts stacked below the ring — the target cluster sits
-            // close to the screen edge, so flanking labels (as on the player ring)
-            // would clip; a centered stack always has room to grow.
-            if (hasSensors || _target.isWingman) {
-                char pctBuf[8];
-                std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", tHpPct * 100.0f);
-                Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
-                DrawTextEx(_hudFontVal, pctBuf, { tc.x - hpTs.x / 2.0f, tc.y + tShOut + 6.0f }, 14.0f, 1.0f, tHpCol);
-            }
-            if (_target.isWingman && (_target.maxKineticShield > 0.0f || _target.maxEnergyShield > 0.0f)) {
-                char shBuf[24];
-                std::snprintf(shBuf, sizeof(shBuf), "%.0f%% / %.0f%%", tKsPct * 100.0f, tEsPct * 100.0f);
-                Vector2 shTs = MeasureTextEx(_hudFontVal, shBuf, 12.0f, 1.0f);
-                DrawTextEx(_hudFontVal, shBuf, { tc.x - shTs.x / 2.0f, tc.y + tShOut + 23.0f }, 12.0f, 1.0f, HudLabel);
-            }
             Texture2D* npcTexPtr = nullptr;
             for (size_t ni = 0; ni < _w->npcMeta.size(); ++ni) {
                 if (_w->npcMeta[ni].id == _npcTargetId && _w->npcMeta[ni].alive) {
-                    if (_w->npcMeta[ni].shipTypeId == "gargos")
-                        npcTexPtr = const_cast<Texture2D*>(&_gargosTex);
-                    else if (_w->entities[ni].sprite.texture && _w->entities[ni].sprite.texture->id > 0)
-                        npcTexPtr = _w->entities[ni].sprite.texture;
-                    else if (const auto* sd = ecs::ShipRegistry::ShipById(_w->npcMeta[ni].shipTypeId))
-                        npcTexPtr = ResourceManager::Load(sd->assetPath);
+                    if (_w->npcMeta[ni].shipTypeId == "gargos") npcTexPtr = const_cast<Texture2D*>(&_gargosTex);
+                    else if (_w->entities[ni].sprite.texture && _w->entities[ni].sprite.texture->id > 0) npcTexPtr = _w->entities[ni].sprite.texture;
+                    else if (const auto* sd = ecs::ShipRegistry::ShipById(_w->npcMeta[ni].shipTypeId)) npcTexPtr = ResourceManager::Load(sd->assetPath);
                     break;
                 }
             }
-            const Texture2D& npcTex = npcTexPtr ? *npcTexPtr : Texture2D{};
-            if (npcTex.id > 0) {
-                float tw = (float)npcTex.width, th = (float)npcTex.height;
-                float sc2 = (tAreaR * 1.8f) / std::max(tw, th);
-                Color tint = isHostileNpc ? Color{ 255,160,160,255 }
-                    : isNeutralNpc ? Color{ 255,240,160,255 } : Color{ 160,255,190,255 };
-                Rectangle isrc = { 0, 0, tw, th };
-                Rectangle idst = { tc.x, tc.y, tw * sc2, th * sc2 };
-                DrawTexturePro(npcTex, isrc, idst, { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, tint);
+            if (npcTexPtr && npcTexPtr->id > 0) {
+                float tw = (float)npcTexPtr->width, th = (float)npcTexPtr->height;
+                float s2 = (L.targetR * 1.5f) / std::max(tw, th);
+                Color tint = hostile ? Color{ 255,160,160,255 } : neutral ? Color{ 255,240,160,255 } : Color{ 160,255,190,255 };
+                DrawTexturePro(*npcTexPtr, { 0,0,tw,th }, { tc.x, tc.y, tw * s2, th * s2 }, { tw * s2 * 0.5f, th * s2 * 0.5f }, 0.0f, tint);
             }
             if (hasSensors || _target.isWingman) {
-                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
-                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                drawTargetName(_target.name.c_str());
+                float dx = dxInfo, dy = dyTop; char db[64];
                 DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
-                char db[64];
-                std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance);
-                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
-                std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth);
-                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
+                std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
+                std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 if (hasSensors && _target.hasFaction) {
-                    char fb[48];
-                    std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
-                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    char fb[48]; std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction)); DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180,210,255,255 }); dy += 16;
                     Relation stand = ReputationRegistry::PlayerRelation(_target.gameFaction);
-                    char sb[48];
-                    std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand));
-                    DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    char sb[48]; std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand)); DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180,210,255,255 }); dy += 16;
                 }
-                if (hasSensors && _target.role != NpcRole::None) {
-                    char rb[48];
-                    std::snprintf(rb, sizeof(rb), "ROLE  %s", NpcRoleName(_target.role));
-                    DrawTextEx(_hudFontVal, rb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
-                }
-                if (hasSensors && _target.disabled) {
-                    DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255, 200, 60, 255 }); dy += 16;
-                }
-                if (_target.isWingman && _target.maxKineticShield > 0.0f) {
-                    std::snprintf(db, sizeof(db), "KS  %.0f / %.0f",
-                        _target.kineticShield, _target.maxKineticShield);
-                    DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 255,210,60,255 }); dy += 16;
-                }
-                if (_target.isWingman && _target.maxEnergyShield > 0.0f) {
-                    std::snprintf(db, sizeof(db), "ES  %.0f / %.0f",
-                        _target.energyShield, _target.maxEnergyShield);
-                    DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 60,180,220,255 });
-                }
+                if (hasSensors && _target.role != NpcRole::None) { char rb[48]; std::snprintf(rb, sizeof(rb), "ROLE  %s", NpcRoleName(_target.role)); DrawTextEx(_hudFontVal, rb, { dx, dy }, 12.0f, 1.0f, Color{ 180,210,255,255 }); dy += 16; }
+                if (hasSensors && _target.disabled) { DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255,200,60,255 }); dy += 16; }
+                if (_target.isWingman && _target.maxKineticShield > 0.0f) { std::snprintf(db, sizeof(db), "PS  %.0f / %.0f", _target.kineticShield, _target.maxKineticShield); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 235,175,60,255 }); dy += 16; }
+                if (_target.isWingman && _target.maxEnergyShield > 0.0f) { std::snprintf(db, sizeof(db), "ES  %.0f / %.0f", _target.energyShield, _target.maxEnergyShield); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, Color{ 60,180,220,255 }); }
             }
         }
         else if (_target.isStellar) {
-            // Stations get a faction-relation tint (same rule as NPC ships);
-            // planets have no faction data so they keep the original blue look.
-            bool isHostileStn = _target.hasFaction && (_target.npcFaction == NpcFaction::Hostile);
-            bool isNeutralStn = _target.hasFaction && (_target.npcFaction == NpcFaction::Neutral);
-            Color stnRing = !_target.hasFaction ? Color{ 30,50,100,180 }
-                : isHostileStn ? Color{ 120,30,30,180 }
-                : isNeutralStn ? Color{ 100,90,20,180 } : Color{ 30,80,30,180 };
-            Color stnTint = !_target.hasFaction ? WHITE
-                : isHostileStn ? Color{ 255,160,160,255 }
-                : isNeutralStn ? Color{ 255,240,160,255 } : Color{ 160,255,190,255 };
-
-            DrawStatusRing(tc, tHpIn, tHpOut, 0.0f, Color{ 48,88,188,255 }, Color{ 22,22,32,200 });
-            DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
-            DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-            DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, stnRing);
+            bool hostile = _target.hasFaction && (_target.npcFaction == NpcFaction::Hostile);
+            bool neutral = _target.hasFaction && (_target.npcFaction == NpcFaction::Neutral);
+            Color fr = !_target.hasFaction ? Color{ 60,120,200,255 } : relColor(hostile, neutral);
+            DrawFourRing(tc, tRingIn, tRingOut, 0.0f, HudGood, 0.0f, 0.0f, 0.0f, false);
+            HudGlowRing(tc, tRingOut + 4.0f, 2.0f, fr, 0.5f, 0.8f);
+            Color stnTint = !_target.hasFaction ? WHITE : hostile ? Color{ 255,160,160,255 } : neutral ? Color{ 255,240,160,255 } : Color{ 160,255,190,255 };
             if (_target.iconTex && _target.iconTex->id > 0) {
                 float tw = (float)_target.iconTex->width, th = (float)_target.iconTex->height;
-                float sc2 = (tAreaR * 1.85f) / std::max(tw, th);
-                DrawTexturePro(*_target.iconTex,
-                    { 0, 0, tw, th }, { tc.x, tc.y, tw * sc2, th * sc2 },
-                    { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, stnTint);
+                float s2 = (L.targetR * 1.6f) / std::max(tw, th);
+                DrawTexturePro(*_target.iconTex, { 0,0,tw,th }, { tc.x, tc.y, tw * s2, th * s2 }, { tw * s2 * 0.5f, th * s2 * 0.5f }, 0.0f, stnTint);
             }
             if (hasSensors) {
-                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
-                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                drawTargetName(_target.name.c_str());
+                float dx = dxInfo, dy = dyTop;
                 DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
                 if (_target.hasFaction) {
-                    char fb[48];
-                    std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction));
-                    DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    char fb[48]; std::snprintf(fb, sizeof(fb), "FACTION  %s", FactionName(_target.gameFaction)); DrawTextEx(_hudFontVal, fb, { dx, dy }, 12.0f, 1.0f, Color{ 180,210,255,255 }); dy += 16;
                     Relation stand = ReputationRegistry::PlayerRelation(_target.gameFaction);
-                    char sb[48];
-                    std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand));
-                    DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180, 210, 255, 255 }); dy += 16;
+                    char sb[48]; std::snprintf(sb, sizeof(sb), "STANDING  %s", PlayerRelationLabel(stand)); DrawTextEx(_hudFontVal, sb, { dx, dy }, 12.0f, 1.0f, Color{ 180,210,255,255 }); dy += 16;
                 }
-                if (_target.disabled) {
-                    DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255, 200, 60, 255 });
-                }
+                if (_target.disabled) DrawTextEx(_hudFontVal, "STATUS  DISABLED - APPROACH TO CAPTURE", { dx, dy }, 12.0f, 1.0f, Color{ 255,200,60,255 });
             }
         }
         else {
-            float tHpPct = _target.health / _target.maxHealth;
-            Color tHpCol = tHpPct > 0.5f ? HudGood
-                : tHpPct > 0.25f ? HudCaution
-                : HudCritical;
-            DrawStatusRing(tc, tHpIn, tHpOut, hasSensors ? tHpPct : 0.0f, tHpCol, Color{ 22,22,32,200 });
-            DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
-            DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-            DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, Color{ 30,30,55,180 });
+            float hp = _target.health / _target.maxHealth;
+            Color hpc = hp > 0.5f ? HudGood : hp > 0.25f ? HudCaution : HudCritical;
+            DrawFourRing(tc, tRingIn, tRingOut, hasSensors ? hp : 0.0f, hpc, 0.0f, 0.0f, 0.0f, false);
+            HudGlowRing(tc, tRingOut + 4.0f, 2.0f, Color{ 130,115,90,255 }, 0.5f, 0.8f);
             if (_target.iconTex && _target.iconTex->id > 0) {
                 float tw = (float)_target.iconTex->width, th = (float)_target.iconTex->height;
-                float sc2 = (tAreaR * 1.3f) / std::max(tw, th);
-                DrawTexturePro(*_target.iconTex,
-                    { 0, 0, tw, th }, { tc.x, tc.y, tw * sc2, th * sc2 },
-                    { tw * sc2 * 0.5f, th * sc2 * 0.5f }, 0.0f, WHITE);
+                float s2 = (L.targetR * 1.2f) / std::max(tw, th);
+                DrawTexturePro(*_target.iconTex, { 0,0,tw,th }, { tc.x, tc.y, tw * s2, th * s2 }, { tw * s2 * 0.5f, th * s2 * 0.5f }, 0.0f, WHITE);
             } else {
-                int   sides = _target.tier == 2 ? 8 : _target.tier == 1 ? 7 : 6;
+                int sides = _target.tier == 2 ? 8 : _target.tier == 1 ? 7 : 6;
                 float spin = (float)(GetTime() * 22.0);
-                DrawPoly(tc, sides, tAreaR * 0.65f, spin, Color{ 30,26,21,255 });
-                DrawPolyLinesEx(tc, sides, tAreaR * 0.65f, spin, 1.0f, Color{ 130,115,90,255 });
+                DrawPoly(tc, sides, L.targetR * 0.6f, spin, Color{ 30,26,21,255 });
+                DrawPolyLinesEx(tc, sides, L.targetR * 0.6f, spin, 1.0f, Color{ 130,115,90,255 });
             }
             if (hasSensors) {
-                char pctBuf[8];
-                std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", tHpPct * 100.0f);
-                Vector2 hpTs = MeasureTextEx(_hudFontVal, pctBuf, 14.0f, 1.0f);
-                DrawTextEx(_hudFontVal, pctBuf, { tc.x - hpTs.x / 2.0f, tc.y + tShOut + 6.0f }, 14.0f, 1.0f, tHpCol);
-            }
-            if (hasSensors) {
-                float dx = tc.x + tShOut + 12, dy = (float)(hy + 12);
-                DrawTextEx(_hudFontUi, _target.name.c_str(), { dx, dy }, 13.0f, 1.0f, HudValue); dy += 18;
+                drawTargetName(_target.name.c_str());
+                float dx = dxInfo, dy = dyTop; char db[64];
                 DrawTextEx(_hudFontVal, _target.typeDesc.c_str(), { dx, dy }, 12.0f, 1.0f, HudLabel); dy += 16;
-                char db[64];
-                std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance);
-                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
-                std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth);
-                DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
+                std::snprintf(db, sizeof(db), "DIST  %.0f u", _target.distance); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
+                std::snprintf(db, sizeof(db), "HP  %.0f / %.0f", _target.health, _target.maxHealth); DrawTextEx(_hudFontVal, db, { dx, dy }, 12.0f, 1.0f, HudValue); dy += 16;
                 for (const auto& mc : _target.materialComps) {
                     const MatDef* mat = FindMaterial(mc.materialId);
-                    char mb[48];
-                    std::snprintf(mb, sizeof(mb), "%-10s %d%%",
-                        mat ? mat->displayName : mc.materialId.c_str(), mc.percent);
-                    DrawTextEx(_hudFontVal, mb, { dx, dy }, 11.0f, 1.0f, mat ? mat->hudColor : HudValue);
-                    dy += 14;
+                    char mb[48]; std::snprintf(mb, sizeof(mb), "%-10s %d%%", mat ? mat->displayName : mc.materialId.c_str(), mc.percent);
+                    DrawTextEx(_hudFontVal, mb, { dx, dy }, 11.0f, 1.0f, mat ? mat->hudColor : HudValue); dy += 14;
                 }
             }
         }
     }
     else {
-        DrawStatusRing(tc, tHpIn, tHpOut, 0.0f, HudGood, Color{ 22,22,32,200 });
-        DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 255,210,60,255 }, Color{ 62,48,14,200 }, true);
-        DrawHalfRing(tc, tShIn, tShOut, 0.0f, Color{ 60,180,220,255 }, Color{ 14,34,72,200 }, false);
-        DrawCircleLines((int)tc.x, (int)tc.y, (int)tAreaR, Color{ 30,30,55,110 });
+        DrawFourRing(tc, tRingIn, tRingOut, 0.0f, HudGood, 0.0f, 0.0f, 0.0f, false);
+        DrawRing(tc, tRingOut + 3.0f, tRingOut + 4.0f, 0.0f, 360.0f, 48, ColorAlpha(HudBorder, 0.3f));
         Vector2 noTs = MeasureTextEx(_hudFontUi, "NO", 10.0f, 1.0f);
-        Vector2 tgtTs = MeasureTextEx(_hudFontUi, "TARGET", 10.0f, 1.0f);
+        Vector2 tgtTs = MeasureTextEx(_hudFontUi, "SIGNAL", 10.0f, 1.0f);
         DrawTextEx(_hudFontUi, "NO", { tc.x - noTs.x / 2.0f, tc.y - 10.0f }, 10.0f, 1.0f, Color{ 80,80,100,200 });
-        DrawTextEx(_hudFontUi, "TARGET", { tc.x - tgtTs.x / 2.0f, tc.y + 2.0f }, 10.0f, 1.0f, Color{ 80,80,100,200 });
+        DrawTextEx(_hudFontUi, "SIGNAL", { tc.x - tgtTs.x / 2.0f, tc.y + 2.0f }, 10.0f, 1.0f, Color{ 80,80,100,200 });
     }
 
-    bool showTargetData = hasSensors || (_target.valid && _target.isNpc && _target.isWingman);
-    int weapX = (int)(tc.x + tShOut) + 10 + (showTargetData ? 168 : 12);
-    int wy = hy + 10;
-
-    DrawTextEx(_hudFontUi, "WEAPON", { (float)weapX, (float)wy }, 11.0f, 1.0f, HudLabel); wy += 14;
-    if (_playerMeta.canFire) {
-        int barW = std::min(lDiv - weapX - 10, 140);
-        if (_playerMeta.weaponFireMode == WeaponFireMode::Charge) {
-            float chargePct = _playerMeta.ChargePct();
-            bool  full = chargePct >= 1.0f;
-            Color cFill = full ? HudGood : Color{ 60,150,220,255 };
-            DrawRectangle(weapX, wy, barW, 10, Color{ 20,28,20,200 });
-            DrawRectangle(weapX, wy, (int)(barW * chargePct), 10, cFill);
-            DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,10.0f }, 1.0f, HudDiv);
-            wy += 12;
-            const char* cl = full ? "FULL CHARGE" : chargePct > 0.01f ? "CHARGING" : "HOLD TO CHARGE";
-            DrawTextEx(_hudFontVal, cl, { (float)weapX, (float)wy }, 11.0f, 1.0f,
-                full ? HudGood : Color{ 100,175,220,255 });
-            wy += 16;
+    // ── Top-left radar (requires a sensor aux module) ───────────────────────
+    if (hasSensors) {
+        float rr = 78.0f;
+        Vector2 rc = { 12.0f + rr + 6.0f, 12.0f + rr + 6.0f };
+        DrawCircleV(rc, rr, Color{ 6,12,16,205 });
+        HudRadialGlow(rc, rr, Color{ 60,180,220,255 }, 0.10f);
+        DrawRing(rc, rr * 0.33f - 0.5f, rr * 0.33f, 0.0f, 360.0f, 48, ColorAlpha(HudBorder, 0.22f));
+        DrawRing(rc, rr * 0.66f - 0.5f, rr * 0.66f, 0.0f, 360.0f, 48, ColorAlpha(HudBorder, 0.22f));
+        HudGlowRing(rc, rr, 1.5f, HudBorder, 0.85f, 0.7f);
+        float sweep = (float)fmod(GetTime() * 60.0, 360.0);
+        Vector2 sd = { cosf(sweep * DEG2RAD), sinf(sweep * DEG2RAD) };
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawLineEx(rc, { rc.x + sd.x * rr, rc.y + sd.y * rr }, 2.0f, ColorAlpha(Color{ 60,200,230,255 }, 0.5f));
+        EndBlendMode();
+        const float radarRange = 2600.0f;
+        Vector2 pp = _playerEntity.transform.position;
+        auto plot = [&](Vector2 wp, Color col, float dsz) {
+            Vector2 d = Vector2Subtract(wp, pp);
+            if (Vector2Length(d) > radarRange) return;
+            DrawCircleV({ rc.x + (d.x / radarRange) * rr, rc.y + (d.y / radarRange) * rr }, dsz, col);
+        };
+        for (const SpacePlanet& p : _w->planets) plot(p.position, Color{ 120,120,150,255 }, 3.0f);
+        for (const SpaceStation& s : _w->stations) if (s.alive) plot(s.position, Color{ 90,150,220,255 }, 2.5f);
+        for (size_t ni = 0; ni < _w->npcMeta.size(); ++ni) {
+            const NpcMeta& m = _w->npcMeta[ni]; if (!m.alive) continue;
+            Color c = m.faction == NpcFaction::Hostile ? HudCritical : m.faction == NpcFaction::Neutral ? HudCaution : HudGood;
+            plot(_w->entities[ni].transform.position, c, 2.0f);
         }
-        else if (_playerMeta.weaponFireMode == WeaponFireMode::LockOn) {
-            bool locked = (_lockTargetId != 0);
-            DrawTextEx(_hudFontVal, locked ? "TARGET LOCKED" : "CLICK TO LOCK",
-                { (float)weapX, (float)wy + 2.0f }, 11.0f, 1.0f,
-                locked ? HudCritical : Color{ 120,120,140,220 });
-            wy += 16;
-            float readyPct = 1.0f - _playerMeta.FireCooldownPct();
-            DrawRectangle(weapX, wy, barW, 6, Color{ 20,28,20,200 });
-            DrawRectangle(weapX, wy, (int)(barW * readyPct), 6,
-                readyPct >= 1.0f ? HudGood : HudCaution);
-            DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,6.0f }, 1.0f, HudDiv);
-            wy += 10;
-        }
-        else {
-            float readyPct = 1.0f - _playerMeta.FireCooldownPct();
-            bool  isReady = readyPct >= 1.0f;
-            Color wFill = isReady ? HudGood : HudCaution;
-            if (isReady) {
-                float pulse = 0.6f + 0.4f * sinf((float)GetTime() * 5.0f);
-                wFill.a = (unsigned char)(170 + 85 * pulse);
-            }
-            DrawRectangle(weapX, wy, barW, 10, Color{ 20,28,20,200 });
-            DrawRectangle(weapX, wy, (int)(barW * readyPct), 10, wFill);
-            DrawRectangleLinesEx({ (float)weapX,(float)wy,(float)barW,10.0f }, 1.0f, HudDiv);
-            wy += 12;
-            DrawTextEx(_hudFontVal, isReady ? "READY" : "CHARGING", { (float)weapX, (float)wy }, 11.0f, 1.0f,
-                isReady ? HudGood : HudCaution);
-            wy += 16;
-        }
-    }
-    else {
-        DrawTextEx(_hudFontVal, "NO WEAPON", { (float)weapX, (float)wy + 2.0f }, 11.0f, 1.0f, HudCritical); wy += 28;
+        DrawCircleV(rc, 2.5f, WHITE);
+        DrawTextEx(_hudFontUi, "RADAR", { rc.x - rr + 2.0f, rc.y + rr + 4.0f }, 9.0f, 1.0f, HudLabel);
     }
 
-    DrawTextEx(_hudFontUi, "SLOTS", { (float)weapX, (float)wy }, 10.0f, 1.0f, HudLabel); wy += 12;
+    // ── Corner key hints (bottom-right of the raised right section) ─────────
     {
-        auto weaponSlots = _loadout.WeaponSlots();
-        for (int i = 0; i < _playerMeta.weaponSlots; ++i) {
-            bool hasWeapon = (i < (int)weaponSlots.size() && weaponSlots[i]->equipped);
-            // An armed slot (equipped + toggled on via its number key) fires
-            // with the group; a disabled or empty slot is dimmed.
-            bool isOn = hasWeapon && IsWeaponEnabled(i);
-            Rectangle slot = { (float)(weapX + i * 38), (float)wy, 32.0f, 26.0f };
-            DrawHudChamferRect(slot, 5.0f,
-                isOn ? Color{ 20,38,20,230 } : Color{ 14,22,14,200 },
-                isOn ? HudGood : HudDiv,
-                isOn ? 2.0f : 1.0f);
-            char kh[2] = { (char)('1' + i), 0 };
-            if (i == 9) kh[0] = '0';
-            DrawText(kh, (int)slot.x + 3, (int)slot.y + 3, 7, Color{ 60,100,60,175 });
-            if (hasWeapon) {
-                const ModuleDef& wm = *weaponSlots[i]->equipped;
-                const char* abbr = (wm.weapon.fireMode == WeaponFireMode::LockOn) ? "MIS"
-                    : (wm.weapon.fireMode == WeaponFireMode::Charge) ? "CHG"
-                    : (wm.weapon.damageType == DamageType::Energy) ? "ENR"
-                    : (wm.weapon.effect == WeaponEffect::EMP) ? "EMP"
-                    : (wm.weapon.effect == WeaponEffect::Ion) ? "ION"
-                    : "KIN";
-                DrawText(abbr, (int)(slot.x + 5), (int)(slot.y + 13), 9,
-                    isOn ? Color{ 100,210,100,220 } : Color{ 70,90,70,180 });
-            }
-            else {
-                DrawText("--", (int)(slot.x + 9), (int)(slot.y + 7), 10, Color{ 50,80,50,175 });
-            }
-        }
-    }
-
-    Rectangle enterBtn, buildBtn, commsBtn, seatBtn;
-    ComputeHudButtons(sw, sh, enterBtn, buildBtn, commsBtn, seatBtn);
-    bool nearStation = IsNearEnterableStation();
-    bool nearPlanet  = nearStation || IsNearPlanet();
-    bool hovEnter    = nearPlanet && CheckCollisionPointRec(mouse, enterBtn);
-
-    float breathe = 0.6f + 0.4f * sinf((float)GetTime() * 3.0f);
-
-    // ENTER — dock-arrow icon, label below (contextual, breathes when actionable)
-    {
-        Color enterBg = nearPlanet ? (hovEnter ? Color{ 30,70,90,230 } : Color{ 12,25,35,200 })
-            : Color{ 16,16,16,150 };
-        Color enterBdr = nearPlanet ? Color{ 60,160,220,200 } : HudDiv;
-        if (nearPlanet && !hovEnter) enterBdr.a = (unsigned char)(140 + 100 * breathe);
-        Color enterFg = nearPlanet ? (hovEnter ? WHITE : Color{ 60,160,220,255 })
-            : Color{ 50,55,60,160 };
-        DrawHudChamferRect(enterBtn, 6.0f, enterBg, enterBdr, 1.5f);
-        DrawHudDockIcon({ enterBtn.x + enterBtn.width / 2.0f, enterBtn.y + enterBtn.height * 0.38f }, 16.0f, enterFg);
-        const char* enterLbl = "ENTER";
-        Vector2 enterTs = MeasureTextEx(_hudFontUi, enterLbl, 9.0f, 1.0f);
-        DrawTextEx(_hudFontUi, enterLbl,
-            { enterBtn.x + (enterBtn.width - enterTs.x) / 2.0f, enterBtn.y + enterBtn.height - enterTs.y - 3.0f },
-            9.0f, 1.0f, enterFg);
-    }
-
-    // BUILD — hammer icon, label below
-    {
-        bool hovBuild = CheckCollisionPointRec(mouse, buildBtn);
-        Color bg = hovBuild ? Color{ 20,50,110,230 } : Color{ 10,22,50,200 };
-        Color bdr = Color{ 40,100,200,200 };
-        Color fg = hovBuild ? WHITE : Color{ 80,150,230,255 };
-        DrawHudChamferRect(buildBtn, 6.0f, bg, bdr, 1.5f);
-        DrawHudHammerIcon({ buildBtn.x + buildBtn.width / 2.0f, buildBtn.y + buildBtn.height * 0.38f }, 16.0f, fg);
-        const char* buildLbl = "BUILD";
-        Vector2 buildTs = MeasureTextEx(_hudFontUi, buildLbl, 9.0f, 1.0f);
-        DrawTextEx(_hudFontUi, buildLbl,
-            { buildBtn.x + (buildBtn.width - buildTs.x) / 2.0f, buildBtn.y + buildBtn.height - buildTs.y - 3.0f },
-            9.0f, 1.0f, fg);
-    }
-
-    // COMMS — radar dish icon, label below. Epic 13: also actionable with a
-    // station targeted (hail for its contract board without needing to dock).
-    {
-        bool commsAvailable = (_npcTargetId != 0) ||
-            (_target.valid && _target.isStellar && _target.hasFaction);
-        bool hovComms = commsAvailable && CheckCollisionPointRec(mouse, commsBtn);
-        Color bg = commsAvailable ? (hovComms ? Color{ 20,60,80,230 } : Color{ 10,28,40,200 })
-            : Color{ 16,16,16,150 };
-        Color bdr = commsAvailable ? Color{ 30,100,160,200 } : HudDiv;
-        Color fg = commsAvailable ? (hovComms ? WHITE : Color{ 50,140,190,255 })
-            : Color{ 45,50,55,150 };
-        DrawHudChamferRect(commsBtn, 6.0f, bg, bdr, 1.5f);
-        DrawHudRadarIcon({ commsBtn.x + commsBtn.width / 2.0f, commsBtn.y + commsBtn.height * 0.38f }, 16.0f, fg);
-        const char* commsLbl = "COMMS";
-        Vector2 commsTs = MeasureTextEx(_hudFontUi, commsLbl, 9.0f, 1.0f);
-        DrawTextEx(_hudFontUi, commsLbl,
-            { commsBtn.x + (commsBtn.width - commsTs.x) / 2.0f, commsBtn.y + commsBtn.height - commsTs.y - 3.0f },
-            9.0f, 1.0f, fg);
-    }
-
-    // SEAT — turret-crosshair icon (Epic 8). Always actionable while seated
-    // (doubles as EXIT); otherwise only when a friendly capital hardpoint is
-    // in range.
-    {
-        unsigned int seatNpcId; int seatHpIdx; Vector2 seatPos;
-        // Epic 8 is host/singleplayer-only for now: only the host resolves
-        // hit detection (UpdateCollisions/UpdateNpcCollisions are skipped
-        // entirely for clients), so a client's local turret shots would
-        // fly but never damage anything — gate seating out for clients
-        // rather than ship a control that silently does nothing.
-        bool seatAvailable = !net::Game().IsClient() && (_seated || FindNearestFriendlySeat(seatNpcId, seatHpIdx, seatPos));
-        bool hovSeat = seatAvailable && CheckCollisionPointRec(mouse, seatBtn);
-        Color bg = seatAvailable ? (hovSeat ? Color{ 70,40,20,230 } : Color{ 35,20,10,200 })
-            : Color{ 16,16,16,150 };
-        Color bdr = seatAvailable ? Color{ 200,120,50,200 } : HudDiv;
-        Color fg = seatAvailable ? (hovSeat ? WHITE : Color{ 220,150,80,255 })
-            : Color{ 45,50,55,150 };
-        DrawHudChamferRect(seatBtn, 6.0f, bg, bdr, 1.5f);
-        DrawHudTurretIcon({ seatBtn.x + seatBtn.width / 2.0f, seatBtn.y + seatBtn.height * 0.38f }, 16.0f, fg);
-        const char* seatLbl = _seated ? "EXIT SEAT" : "MAN TURRET";
-        Vector2 seatTs = MeasureTextEx(_hudFontUi, seatLbl, 9.0f, 1.0f);
-        DrawTextEx(_hudFontUi, seatLbl,
-            { seatBtn.x + (seatBtn.width - seatTs.x) / 2.0f, seatBtn.y + seatBtn.height - seatTs.y - 3.0f },
-            9.0f, 1.0f, fg);
-    }
-
-    (void)rDiv;
-
-    Vector2 escMapTs = MeasureTextEx(_hudFontVal, "[ESC] MAP", 11.0f, 1.0f);
-    DrawTextEx(_hudFontVal, "[ESC] MAP", { (float)(hx + hw) - escMapTs.x - 8.0f, (float)(hy + HudH - 15) },
-        11.0f, 1.0f, HudLabel);
-
-    // Epic 12.1: received-comms panel toggle, always available once there's a
-    // log to read.
-    Vector2 logHintTs = MeasureTextEx(_hudFontVal, "[L] LOG", 11.0f, 1.0f);
-    DrawTextEx(_hudFontVal, "[L] LOG", { (float)(hx + hw) - logHintTs.x - 8.0f, (float)(hy + HudH - 30) },
-        11.0f, 1.0f, HudLabel);
-
-    // Epic 12.2: persistent skip control, visible for the whole tutorial, not
-    // just a one-time start prompt.
-    if (_tutorialActive) {
-        Vector2 skipTs = MeasureTextEx(_hudFontVal, "[T] SKIP TUTORIAL", 11.0f, 1.0f);
-        DrawTextEx(_hudFontVal, "[T] SKIP TUTORIAL", { (float)(hx + hw) - skipTs.x - 8.0f, (float)(hy + HudH - 45) },
-            11.0f, 1.0f, HudCaution);
+        auto rhint = [&](const char* t, float yoff, Color c) {
+            Vector2 ts = MeasureTextEx(_hudFontVal, t, 11.0f, 1.0f);
+            DrawTextEx(_hudFontVal, t, { L.right - ts.x - 8.0f, L.bottom - yoff }, 11.0f, 1.0f, c);
+        };
+        rhint("[ESC] MAP", 18.0f, HudLabel);
+        rhint("[L] LOG",   33.0f, HudLabel);
+        if (_tutorialActive) rhint("[T] SKIP TUTORIAL", 48.0f, HudCaution);
     }
 
     bool menuOpen = (_storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen ||
         _escortMenuOpen || _commsMenuOpen || _ranksMenuOpen || _commsLogOpen || _enterPopupOpen || _stationServicesMenu.isOpen || _localMapOpen ||
         _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen);
-    if (!menuOpen && mouse.y < hy) {
+    if (!menuOpen && mouse.y < L.tallTop) {
         int cs = 8;
         DrawLine((int)mouse.x - cs, (int)mouse.y, (int)mouse.x + cs, (int)mouse.y, Color{ 255,255,255,155 });
         DrawLine((int)mouse.x, (int)mouse.y - cs, (int)mouse.x, (int)mouse.y + cs, Color{ 255,255,255,155 });
@@ -7543,54 +7599,14 @@ void SpaceFlight::Update(float dt) {
     bool clickedHudBtn = _storageMenu.isOpen || _modulesMenu.isOpen || _galaxyMap.isOpen || _ranksMenuOpen || (mousePos.y >= hy);
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Rectangle enterBtn, buildBtn, commsBtn, seatBtn;
-        ComputeHudButtons(GetScreenWidth(), GetScreenHeight(), enterBtn, buildBtn, commsBtn, seatBtn);
+        HudLayout HL = ComputeHudLayout(GetScreenWidth(), GetScreenHeight());
         Vector2 m = GetMousePosition();
 
-        // Epic 8: SEAT button toggles manning/unmanning a friendly capital's
-        // turret. Checked ahead of the other buttons since it's a toggle
-        // (both entry and exit share the same rect) rather than an
-        // enable/disable-gated single action.
-        {
-            unsigned int seatNpcId; int seatHpIdx; Vector2 seatPos;
-            // Epic 8 is host/singleplayer-only for now: only the host resolves
-        // hit detection (UpdateCollisions/UpdateNpcCollisions are skipped
-        // entirely for clients), so a client's local turret shots would
-        // fly but never damage anything — gate seating out for clients
-        // rather than ship a control that silently does nothing.
-        bool seatAvailable = !net::Game().IsClient() && (_seated || FindNearestFriendlySeat(seatNpcId, seatHpIdx, seatPos));
-            if (seatAvailable && CheckCollisionPointRec(m, seatBtn)) {
-                if (_seated) {
-                    // Unseat: park the player's ship at the hardpoint's last
-                    // known position (found again below since _seatedNpcId
-                    // may have moved/died since the frame started).
-                    Vector2 exitPos = _playerEntity.transform.position;
-                    for (size_t i = 0; i < _w->npcMeta.size(); ++i) {
-                        if (_w->npcMeta[i].id != _seatedNpcId || !_w->npcMeta[i].alive) continue;
-                        if (_seatedHardpointIdx >= 0 && _seatedHardpointIdx < (int)_w->npcMeta[i].hardpoints.size()) {
-                            exitPos = GetCapitalHardpointWorldPos(_w->entities[i].transform.position,
-                                _w->entities[i].transform.rotation,
-                                _w->npcMeta[i].hardpoints[_seatedHardpointIdx].localOffset);
-                        }
-                        break;
-                    }
-                    _playerEntity.transform.position = exitPos;
-                    _playerEntity.transform.velocity = { 0.0f, 0.0f };
-                    _seated = false;
-                    _seatedNpcId = 0;
-                    _seatedHardpointIdx = -1;
-                } else {
-                    _seated = true;
-                    _seatedNpcId = seatNpcId;
-                    _seatedHardpointIdx = seatHpIdx;
-                    _playerEntity.transform.position = seatPos;
-                    _playerEntity.transform.velocity = { 0.0f, 0.0f };
-                }
-                clickedHudBtn = true;
-            }
-        }
+        // Turret/seat manning is deferred from the HUD (to return with a
+        // docking feature). FindNearestFriendlySeat and the _seated flow remain
+        // in the code; they are simply no longer wired to a HUD button.
         EnterableStation es = FindEnterableStation();
-        if ((es.found || IsNearPlanet()) && CheckCollisionPointRec(m, enterBtn)) {
+        if ((es.found || IsNearPlanet()) && CheckCollisionPointRec(m, HL.enter)) {
             if (es.found) {
                 _dockedStationId       = es.id;
                 _dockedIsPlayerStation = es.isPlayerStation;
@@ -7617,11 +7633,15 @@ void SpaceFlight::Update(float dt) {
             }
             clickedHudBtn = true;
         }
-        else if (CheckCollisionPointRec(m, buildBtn)) {
+        else if (CheckCollisionPointRec(m, HL.build)) {
             _buildMenu.Open(&_storageMenu.slots);
             clickedHudBtn = true;
         }
-        else if (CheckCollisionPointRec(m, commsBtn) &&
+        else if (CheckCollisionPointRec(m, HL.storage)) {
+            _storageMenu.Open((int)_storageMenu.slots.size());
+            clickedHudBtn = true;
+        }
+        else if (CheckCollisionPointRec(m, HL.comms) &&
                  (_npcTargetId != 0 || (_target.valid && _target.isStellar && _target.hasFaction))) {
             _commsMenuOpen  = true;
             _commsMenuPhase = 0;
@@ -7913,8 +7933,17 @@ void SpaceFlight::Update(float dt) {
                        _buildMenu.isOpen || _stationModMenu.isOpen || _miningMenu.isOpen || _placementConfirmOpen;
     if (!anyMenuOpen) {
         float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f)
-            _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
+        if (wheel != 0.0f) {
+            // Scrolling over the HUD weapon stack pages it; otherwise zoom.
+            HudLayout L = ComputeHudLayout(GetScreenWidth(), GetScreenHeight());
+            int maxScroll = std::max(0, _playerMeta.weaponSlots - kWeaponRowsVisible);
+            Rectangle wArea = { L.weaponOrigin.x - 10.0f, L.weaponOrigin.y - 4.0f,
+                                L.weaponAreaW + 90.0f, kWeaponRowsVisible * 30.0f + 8.0f };
+            if (maxScroll > 0 && CheckCollisionPointRec(GetMousePosition(), wArea))
+                _weaponScroll = std::clamp(_weaponScroll - (int)wheel, 0, maxScroll);
+            else
+                _cameraZoom = std::clamp(_cameraZoom * powf(1.1f, wheel), 0.25f, 4.0f);
+        }
     }
     _camera.zoom = _cameraZoom;
 

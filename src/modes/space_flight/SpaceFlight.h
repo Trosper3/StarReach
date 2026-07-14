@@ -576,6 +576,9 @@ private:
     // First enabled+equipped weapon slot (-1 if none). Only the HUD WEAPON
     // readiness/charge panel uses it as a representative; firing is per-slot.
     int          _primaryWeapon     = -1;
+    // First visible row when the HUD weapon stack scrolls (>4 weapons); driven
+    // by the mouse wheel in Update() when hovering the weapon panel.
+    int          _weaponScroll      = 0;
     unsigned int _lockTargetId      = 0;
     Vector2      _lockTargetPos     = {};
     bool         _enterPopupOpen    = false;

@@ -35,6 +35,28 @@ static std::vector<std::string> SplitLines(const std::string& s) {
 static bool IsHovered(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(), r); }
 static bool IsClicked(Rectangle r) { return IsHovered(r) && IsMouseButtonReleased(MOUSE_BUTTON_LEFT); }
 
+// ── Neon palette ─────────────────────────────────────────────────────────────
+// "Holographic emitter" look: matte dark blue-grey surfaces with LED-like accent
+// lines that bloom softly into a deep-midnight-slate canvas (never pure black).
+namespace neon {
+    // Canvas — deep midnight slate
+    static constexpr Color BgTop     = {  15,  23,  30, 255 };  // #0f171e
+    static constexpr Color BgBottom  = {   9,  13,  18, 255 };  // just below #0b1116
+    // Surface panels — dark blue-grey, subtle vertical gradient
+    static constexpr Color SurfaceLo = {  16,  22,  32, 225 };  // ~#16222a
+    static constexpr Color SurfaceHi = {  28,  45,  55, 238 };  // #1c2d37
+    // Accents
+    static constexpr Color Cyan      = {   0, 229, 255, 255 };  // #00e5ff  primary/active
+    static constexpr Color CyanSoft  = {  43, 214, 214, 255 };  // #2bd6d6
+    static constexpr Color Amber     = { 255, 128,   0, 255 };  // #ff8000  warm (warnings)
+    static constexpr Color EBlue     = {  42, 108, 255, 255 };  // #2a6cff  cool
+    // Muted / structural
+    static constexpr Color Seafoam   = {  58,  95, 104, 255 };  // #3a5f68  inactive borders/text
+    static constexpr Color TextHi    = { 216, 240, 252, 255 };  // bright active text
+    static constexpr Color TextMid   = { 150, 180, 200, 255 };
+    static constexpr Color TextLo    = {  92, 120, 135, 255 };
+}
+
 static void DrawTechCorners(Rectangle r, float len, float thick, Color col) {
     DrawLineEx({ r.x,                 r.y + len            }, { r.x,              r.y             }, thick, col);
     DrawLineEx({ r.x,                 r.y                  }, { r.x + len,        r.y             }, thick, col);
@@ -46,26 +68,105 @@ static void DrawTechCorners(Rectangle r, float len, float thick, Color col) {
     DrawLineEx({ r.x + r.width,       r.y + r.height - len }, { r.x + r.width,    r.y + r.height  }, thick, col);
 }
 
-static constexpr float UISpacing = 1.0f;
+static constexpr float UISpacing = 1.5f;  // slightly wide letter-tracking
+
+// Soft additive bloom around a line — light bleeding from an LED edge.
+static void GlowLine(Vector2 a, Vector2 b, float core, Color c, float strength = 1.0f) {
+    BeginBlendMode(BLEND_ADDITIVE);
+    DrawLineEx(a, b, core + 9.0f, ColorAlpha(c, 0.05f * strength));
+    DrawLineEx(a, b, core + 5.0f, ColorAlpha(c, 0.09f * strength));
+    DrawLineEx(a, b, core + 2.0f, ColorAlpha(c, 0.16f * strength));
+    EndBlendMode();
+    DrawLineEx(a, b, core, c);
+}
+
+// Crisp rim-light along the TOP edge of a rect, brightest at center and fading
+// to the sides — the "physical bevel catching light" look on an active element.
+static void RimLightTop(Rectangle r, Color c, float strength) {
+    int half = (int)(r.width * 0.5f);
+    int px   = (int)r.x, py = (int)r.y;
+    Color edge = ColorAlpha(c, 0.0f);
+    BeginBlendMode(BLEND_ADDITIVE);
+    // Sharp 2px core highlight
+    DrawRectangleGradientH(px,        py, half, 2, edge, ColorAlpha(c, 0.75f * strength));
+    DrawRectangleGradientH(px + half, py, half, 2, ColorAlpha(c, 0.75f * strength), edge);
+    // Soft bloom bleeding downward from the edge
+    DrawRectangleGradientH(px,        py, half, 7, edge, ColorAlpha(c, 0.20f * strength));
+    DrawRectangleGradientH(px + half, py, half, 7, ColorAlpha(c, 0.20f * strength), edge);
+    EndBlendMode();
+}
+
+// Centered text with an additive bloom halo of the accent color.
+static void GlowTextCenter(const Font& f, const char* t, float cx, float y, float fs,
+                           Color core, Color glow) {
+    float tw = MeasureTextEx(f, t, fs, UISpacing).x;
+    float x  = cx - tw * 0.5f;
+    BeginBlendMode(BLEND_ADDITIVE);
+    for (float o : { 3.0f, 1.5f }) {
+        DrawTextEx(f, t, { x - o, y }, fs, UISpacing, ColorAlpha(glow, 0.10f));
+        DrawTextEx(f, t, { x + o, y }, fs, UISpacing, ColorAlpha(glow, 0.10f));
+        DrawTextEx(f, t, { x, y - o }, fs, UISpacing, ColorAlpha(glow, 0.10f));
+        DrawTextEx(f, t, { x, y + o }, fs, UISpacing, ColorAlpha(glow, 0.10f));
+    }
+    EndBlendMode();
+    DrawTextEx(f, t, { x, y }, fs, UISpacing, core);
+}
+
+// Radial inner glow that gives circular panels a concave, volumetric depth.
+static void RadialInnerGlow(float cx, float cy, float r, Color tint, float peak) {
+    DrawCircleGradient((int)cx, (int)cy, r, ColorAlpha(tint, peak), ColorAlpha(tint, 0.0f));
+}
+
+// A glowing neon ring: soft additive bloom bleeding off both sides of a bright
+// crisp core ring — simulates an LED strip embedded in the panel edge.
+static void GlowRing(float cx, float cy, float radius, float thick, Color c,
+                     float coreAlpha, float strength = 1.0f) {
+    BeginBlendMode(BLEND_ADDITIVE);
+    for (int i = 3; i >= 1; --i) {
+        float spread = thick + (float)i * 5.0f;
+        float a      = 0.07f * strength * (float)(4 - i);
+        DrawRing({ cx, cy }, radius - spread * 0.5f, radius + spread * 0.5f,
+                 0.0f, 360.0f, 96, ColorAlpha(c, a));
+    }
+    EndBlendMode();
+    DrawRing({ cx, cy }, radius - thick * 0.5f, radius + thick * 0.5f,
+             0.0f, 360.0f, 96, ColorAlpha(c, coreAlpha));
+}
 
 static void DrawButton(const Font& fnt, Rectangle r, const char* label, float fs) {
-    bool hov = IsHovered(r);
-    DrawRectangleRec(r, hov ? Color{ 32, 46, 62, 230 } : Color{ 16, 22, 32, 210 });
-    DrawRectangleLinesEx(r, 1.0f, Color{ 52, 68, 88, 150 });
-    DrawTechCorners(r, 10.0f, 1.5f, Color{ 120, 150, 180, 255 });
-    Color lc = hov ? Color{ 220, 232, 248, 255 } : Color{ 165, 192, 220, 255 };
+    bool  hov   = IsHovered(r);
+    float round = 0.32f;
+    // Frosted panel with a subtle top-lit vertical gradient (brushed-glass feel)
+    DrawRectangleRounded(r, round, 10, hov ? neon::SurfaceHi : neon::SurfaceLo);
+    BeginBlendMode(BLEND_ADDITIVE);
+    DrawRectangleGradientV((int)(r.x + 8), (int)(r.y + 2),
+                           (int)(r.width - 16), (int)(r.height * 0.55f),
+                           ColorAlpha(neon::CyanSoft, hov ? 0.07f : 0.035f),
+                           ColorAlpha(neon::CyanSoft, 0.0f));
+    EndBlendMode();
+    // Border — muted seafoam idle, glowing cyan when active
+    if (hov) {
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawRectangleRoundedLinesEx(r, round, 10, 4.0f, ColorAlpha(neon::Cyan, 0.12f));
+        EndBlendMode();
+        DrawRectangleRoundedLinesEx(r, round, 10, 1.0f, neon::Cyan);
+        RimLightTop(r, neon::Cyan, 1.0f);
+    } else {
+        DrawRectangleRoundedLinesEx(r, round, 10, 1.0f, ColorAlpha(neon::Seafoam, 0.85f));
+    }
+    Color lc = hov ? neon::TextHi : neon::TextMid;
     Vector2 ts = MeasureTextEx(fnt, label, fs, UISpacing);
     DrawTextEx(fnt, label, { r.x + (r.width - ts.x) * 0.5f, r.y + (r.height - ts.y) * 0.5f },
                fs, UISpacing, lc);
 }
 
 static void DrawButtonDisabled(const Font& fnt, Rectangle r, const char* label, float fs) {
-    DrawRectangleRec(r, Color{ 12, 15, 20, 155 });
-    DrawRectangleLinesEx(r, 1.0f, Color{ 36, 44, 54, 120 });
-    DrawTechCorners(r, 10.0f, 1.5f, Color{ 58, 72, 88, 150 });
+    float round = 0.32f;
+    DrawRectangleRounded(r, round, 10, Color{ 12, 16, 22, 170 });
+    DrawRectangleRoundedLinesEx(r, round, 10, 1.0f, ColorAlpha(neon::Seafoam, 0.35f));
     Vector2 ts = MeasureTextEx(fnt, label, fs, UISpacing);
     DrawTextEx(fnt, label, { r.x + (r.width - ts.x) * 0.5f, r.y + (r.height - ts.y) * 0.5f },
-               fs, UISpacing, Color{ 75, 90, 108, 165 });
+               fs, UISpacing, ColorAlpha(neon::TextLo, 0.6f));
 }
 
 static void UITextCenter(const Font& f, const char* t, float cx, float y, float fs, Color c) {
@@ -222,7 +323,8 @@ void MainMenu::UpdateShowcase(float dt, float cx, float cy, float circleR) {
 }
 
 void MainMenu::DrawShowcase(float cx, float cy, float circleR) const {
-    DrawCircleV({ cx, cy }, circleR, Color{ 8, 12, 22, 235 });
+    DrawCircleV({ cx, cy }, circleR, Color{ 10, 16, 24, 235 });
+    RadialInnerGlow(cx, cy, circleR, neon::CyanSoft, 0.10f);
 
     for (const auto& p : _particles) {
         float t = p.life / p.maxLife;
@@ -258,24 +360,26 @@ void MainMenu::DrawShowcase(float cx, float cy, float circleR) const {
             0.0f, Color{ 255, 255, 255, alpha });
     }
 
-    // ── Border ring ───────────────────────────────────────────────────────────
-    float bInner = circleR + 3.0f;
-    float bOuter = circleR + 13.0f;
-    unsigned char bA = (unsigned char)((int)alpha * 210 / 255);
+    // ── Neon border ring ──────────────────────────────────────────────────────
+    float aScale  = (float)alpha / 255.0f;
+    float pulse   = 0.72f + 0.28f * sinf((float)GetTime() * 1.6f);  // gentle LED breathing
+    float ringRad = circleR + 8.0f;
 
-    // Thick grey base ring
-    DrawRing({ cx, cy }, bInner, bOuter, 0.0f, 360.0f, 72,
-        Color{ 48, 52, 60, bA });
+    // Glowing faction-colored ring with an outer bloom halo bleeding into space
+    GlowRing(cx, cy, ringRad, 5.0f, ringCol, 0.92f * aScale, pulse * aScale);
 
-    // Faction-colored arc accents at diagonal positions
-    unsigned char fA = (unsigned char)((int)alpha * 235 / 255);
-    Color accent = { ringCol.r, ringCol.g, ringCol.b, fA };
-    for (float ctr : { -135.0f, -45.0f, 45.0f, 135.0f })
-        DrawRing({ cx, cy }, bInner, bOuter, ctr - 22.0f, ctr + 22.0f, 10, accent);
+    // Brighter accent arcs at the diagonals, each with its own bloom
+    for (float ctr : { -135.0f, -45.0f, 45.0f, 135.0f }) {
+        BeginBlendMode(BLEND_ADDITIVE);
+        DrawRing({ cx, cy }, ringRad - 6.0f, ringRad + 6.0f, ctr - 20.0f, ctr + 20.0f, 16,
+                 ColorAlpha(ringCol, 0.20f * pulse * aScale));
+        EndBlendMode();
+        DrawRing({ cx, cy }, ringRad - 3.5f, ringRad + 3.5f, ctr - 20.0f, ctr + 20.0f, 16,
+                 ColorAlpha(ringCol, aScale));
+    }
 
-    // Subtle inner-edge faction line
-    DrawCircleLines((int)cx, (int)cy, bInner - 1.0f,
-        { ringCol.r, ringCol.g, ringCol.b, (unsigned char)((int)alpha * 70 / 255) });
+    // Crisp inner-edge line hugging the sprite disc
+    DrawCircleLines((int)cx, (int)cy, circleR + 2.0f, ColorAlpha(ringCol, 0.55f * aScale));
 }
 
 // ── Singleplayer screen ────────────────────────────────────────────────────────
@@ -480,10 +584,12 @@ void MainMenu::DrawSingleplayer() const {
     // Faction name
     static constexpr float nameFontSize = 42.0f;
     static constexpr float nameY        = 44.0f;
-    UITextCenter(_uiFont, fi.displayName.c_str(), cx, nameY, nameFontSize,
-                 Color{ fi.color.r, fi.color.g, fi.color.b, 255 });
-    DrawRectangle((int)(cx - 340.0f), (int)(nameY + nameFontSize + 12.0f), 680, 1,
-                  Color{ 55, 72, 95, 140 });
+    GlowTextCenter(_uiFont, fi.displayName.c_str(), cx, nameY, nameFontSize,
+                   neon::TextHi, fi.color);
+    {
+        float uy = nameY + nameFontSize + 12.0f;
+        GlowLine({ cx - 340.0f, uy }, { cx + 340.0f, uy }, 1.0f, fi.color, 0.7f);
+    }
 
     static constexpr float loreFontSize = 17.0f;
     static constexpr float loreLineH    = 24.0f;
@@ -527,10 +633,11 @@ void MainMenu::DrawSingleplayer() const {
 
         // Faction icon circle
         Color rc = fi.color;
-        DrawCircleV({ cx, circleCY }, circleR, Color{ 8, 12, 22, 235 });
-        DrawCircleLines((int)cx, (int)circleCY, circleR + 1.5f, { rc.r, rc.g, rc.b,  38 });
-        DrawCircleLines((int)cx, (int)circleCY, circleR,         { rc.r, rc.g, rc.b, 178 });
-        DrawCircleLines((int)cx, (int)circleCY, circleR - 2.0f,  { rc.r, rc.g, rc.b,  68 });
+        DrawCircleV({ cx, circleCY }, circleR, Color{ 10, 16, 24, 235 });
+        RadialInnerGlow(cx, circleCY, circleR, rc, 0.12f);
+        float ringPulse = 0.72f + 0.28f * sinf((float)GetTime() * 1.6f);
+        GlowRing(cx, circleCY, circleR + 5.0f, 5.0f, rc, 0.92f, ringPulse);
+        DrawCircleLines((int)cx, (int)circleCY, circleR - 1.0f, ColorAlpha(rc, 0.55f));
 
         if (fi.iconTex && fi.iconTex->id != 0) {
             float pad = circleR * 0.10f;
@@ -550,29 +657,28 @@ void MainMenu::DrawSingleplayer() const {
         Rectangle leftR  = { cx - arrowGap - arrowW, circleCY - arrowH * 0.5f, arrowW, arrowH };
         Rectangle rightR = { cx + arrowGap,           circleCY - arrowH * 0.5f, arrowW, arrowH };
 
-        auto DrawArrow = [&](Rectangle r, const char* sym) {
-            bool hov = IsHovered(r);
-            DrawRectangleRec(r, hov ? Color{ 32, 46, 62, 230 } : Color{ 16, 22, 32, 210 });
-            DrawRectangleLinesEx(r, 1.0f, Color{ 52, 68, 88, 150 });
-            DrawTechCorners(r, 6.0f, 1.2f, Color{ 120, 150, 180, 255 });
-            Vector2 ts = MeasureTextEx(_uiFont, sym, 22.0f, UISpacing);
-            DrawTextEx(_uiFont, sym,
-                { r.x + (r.width - ts.x) * 0.5f, r.y + (r.height - ts.y) * 0.5f },
-                22.0f, UISpacing, hov ? Color{ 220, 232, 248, 255 } : Color{ 165, 192, 220, 255 });
-        };
-        DrawArrow(leftR, "<");
-        DrawArrow(rightR, ">");
+        DrawButton(_uiFont, leftR,  "<", 22.0f);
+        DrawButton(_uiFont, rightR, ">", 22.0f);
 
         // Galaxy seed field (optional)
         {
             Rectangle seedBoxR = { cx - 156.0f, circleCY + circleR + 14.0f, 240.0f, 32.0f };
             Rectangle seedBtnR = { seedBoxR.x + seedBoxR.width + 8.0f, seedBoxR.y, 64.0f, 32.0f };
 
-            bool editing = _editingSeed;
-            DrawRectangleRec(seedBoxR, editing ? Color{ 24, 36, 52, 230 } : Color{ 16, 22, 32, 210 });
-            DrawRectangleLinesEx(seedBoxR, 1.0f,
-                editing ? Color{ 80, 120, 180, 255 } : Color{ 52, 68, 88, 150 });
-            if (editing) DrawTechCorners(seedBoxR, 6.0f, 1.2f, Color{ 80, 140, 220, 255 });
+            bool  editing = _editingSeed;
+            bool  hov     = IsHovered(seedBoxR);
+            float round   = 0.30f;
+            DrawRectangleRounded(seedBoxR, round, 8,
+                (editing || hov) ? neon::SurfaceHi : neon::SurfaceLo);
+            if (editing || hov) {
+                BeginBlendMode(BLEND_ADDITIVE);
+                DrawRectangleRoundedLinesEx(seedBoxR, round, 8, 4.0f, ColorAlpha(neon::Cyan, 0.12f));
+                EndBlendMode();
+                DrawRectangleRoundedLinesEx(seedBoxR, round, 8, 1.0f, neon::Cyan);
+                if (editing) RimLightTop(seedBoxR, neon::Cyan, 1.0f);
+            } else {
+                DrawRectangleRoundedLinesEx(seedBoxR, round, 8, 1.0f, ColorAlpha(neon::Seafoam, 0.85f));
+            }
 
             std::string shown = editing ? _seedEditBuffer : _galaxySeedText;
             bool isPlaceholder = shown.empty() && !editing;
@@ -607,12 +713,14 @@ void MainMenu::DrawSingleplayer() const {
         // Shift up so the ship name label aligns with the PLAYER/RANK row
         float rpCY = circleCY - (circleR + 52.0f) + (rpCircleR + 38.0f);
 
-        // Circle frame
+        // Circle frame — dropped below the label above it for more breathing room
+        float rpDrawCY = rpCY + 26.0f;
         Color rc = fi.color;
-        DrawCircleV({ rpx, rpCY }, rpCircleR, Color{ 8, 12, 22, 235 });
-        DrawCircleLines((int)rpx, (int)rpCY, rpCircleR + 1.5f, { rc.r, rc.g, rc.b,  38 });
-        DrawCircleLines((int)rpx, (int)rpCY, rpCircleR,         { rc.r, rc.g, rc.b, 178 });
-        DrawCircleLines((int)rpx, (int)rpCY, rpCircleR - 2.0f,  { rc.r, rc.g, rc.b,  68 });
+        DrawCircleV({ rpx, rpDrawCY }, rpCircleR, Color{ 10, 16, 24, 235 });
+        RadialInnerGlow(rpx, rpDrawCY, rpCircleR, rc, 0.12f);
+        float ringPulse = 0.72f + 0.28f * sinf((float)GetTime() * 1.6f);
+        GlowRing(rpx, rpDrawCY, rpCircleR + 5.0f, 5.0f, rc, 0.92f, ringPulse);
+        DrawCircleLines((int)rpx, (int)rpDrawCY, rpCircleR - 1.0f, ColorAlpha(rc, 0.55f));
 
         // Rotating ship sprite
         if (shipDef) {
@@ -629,7 +737,7 @@ void MainMenu::DrawSingleplayer() const {
                 float tw = tex->width * scale, th = tex->height * scale;
                 DrawTexturePro(*tex,
                     { 0.0f, 0.0f, (float)tex->width, (float)tex->height },
-                    { rpx, rpCY, tw, th }, { tw * 0.5f, th * 0.5f },
+                    { rpx, rpDrawCY, tw, th }, { tw * 0.5f, th * 0.5f },
                     angle, WHITE);
             }
         }
@@ -757,8 +865,8 @@ void MainMenu::DrawMultiplayer() const {
     DrawButton(_uiFont, { 16.0f, 16.0f, 110.0f, 40.0f }, "< BACK", 13.0f);
 
     // Title
-    UITextCenter(_uiFont, "MULTIPLAYER", cx, 44.0f, 42.0f, Color{ 165, 192, 220, 255 });
-    DrawRectangle((int)(cx - 200.0f), (int)(44.0f + 48.0f), 400, 1, Color{ 55, 72, 95, 140 });
+    GlowTextCenter(_uiFont, "MULTIPLAYER", cx, 44.0f, 42.0f, neon::TextHi, neon::Cyan);
+    GlowLine({ cx - 200.0f, 44.0f + 48.0f }, { cx + 200.0f, 44.0f + 48.0f }, 1.0f, neon::Cyan, 0.7f);
 
     if (_mpState == MpState::Connecting) {
         UITextCenter(_uiFont, "Connecting...", cx, (float)sh * 0.45f, 24.0f, Color{ 165, 192, 220, 255 });
@@ -947,6 +1055,9 @@ void MainMenu::Draw() {
     int   sw = GetScreenWidth(), sh = GetScreenHeight();
     float cx = sw * 0.5f;
 
+    // Deep midnight-slate canvas — gives accent glows something to bleed into.
+    DrawRectangleGradientV(0, 0, sw, sh, neon::BgTop, neon::BgBottom);
+
     DrawStars();
 
     if (_screen == MenuScreen::Singleplayer) {
@@ -959,8 +1070,13 @@ void MainMenu::Draw() {
         return;
     }
 
-    // Main screen
-    UITextCenter(_uiFont, "STAR REACH", cx, TitleY, TitleFontSize, RAYWHITE);
+    // Main screen — glowing title with a cyan bloom + underline accent
+    GlowTextCenter(_uiFont, "STAR REACH", cx, TitleY, TitleFontSize, neon::TextHi, neon::Cyan);
+    {
+        float tw = MeasureTextEx(_uiFont, "STAR REACH", TitleFontSize, UISpacing).x;
+        float uy = TitleY + TitleFontSize + 6.0f;
+        GlowLine({ cx - tw * 0.5f, uy }, { cx + tw * 0.5f, uy }, 1.5f, neon::Cyan, 0.9f);
+    }
 
     float circleR  = std::min((float)sh * 0.20f, 185.0f);
     float circleCY = TitleY + TitleFontSize + CircleGapTop + circleR;
